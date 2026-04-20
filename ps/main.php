@@ -408,10 +408,11 @@ function ps_generate_ticket_number($business_id, $root_ticket = '') {
 }
 function ps_log_ticket_event($data) {
     global $wpdb;
-    $wpdb->insert($wpdb->prefix . 'ps_ticket_history', array_merge(
+    $result = $wpdb->insert($wpdb->prefix . 'ps_ticket_history', array_merge(
         ['rand_id' => bntm_rand_id()],
         $data
     ));
+    return $result;
 }
 
 function ps_get_branches(): array {
@@ -863,20 +864,21 @@ function ps_render_modals() {
                             <label>Karat</label>
                             <select name="collateral_karat"><option value="">N/A</option><option value="10k">10k</option><option value="14k">14k</option><option value="18k">18k</option><option value="21k">21k</option><option value="22k">22k</option><option value="24k">24k</option></select>
                         </div>
-                        <div class="bntm-form-group">
-                         <label>Appraised Value (auto)</label>
-    <input type="number" name="collateral_appraised_value" step=".01" placeholder="0.00" id="appraised-val-input" readonly style="background:#f9fafb;">
-</div>
                       
+                      
+<div class="bntm-form-group">
+                            <label>Principal Amount <span style="color:#ef4444;">*</span></label>
+                            <input type="number" name="principal" step=".01" placeholder="0.00" required id="loan-principal-input" onchange="psUpdateLoanSummary()" oninput="psUpdateLoanSummary()">
+                            <div style="font-size:11px;color:#6b7280;margin-top:4px;">Amount to be lent based on collateral valuation.</div>
+                        </div>
 
                         <div style="grid-column:1/-1;background:#f8fafc;border-radius:8px;padding:12px 14px;margin-top:4px;">
                             <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#059669;margin-bottom:4px;">Loan Terms</div>
                         </div>
-                        <div class="bntm-form-group">
-                            <label>Principal Amount <span style="color:#ef4444;">*</span></label>
-                            <input type="number" name="principal" step=".01" placeholder="0.00" required id="loan-principal-input">
-                            <div style="font-size:11px;color:#6b7280;margin-top:4px;">Amount to be lent based on collateral valuation.</div>
-                        </div>
+                                        <div class="bntm-form-group">
+                         <label>Appraised Value (auto)</label>
+    <input type="number" name="collateral_appraised_value" step=".01" placeholder="0.00" id="appraised-val-input" readonly style="background:#f9fafb;">
+</div>
                         <div class="bntm-form-group">
                             <label>Ticket Number Override</label>
                             <input type="text" name="ticket_number_override" id="loan-ticket-override-input" value="<?php echo esc_attr($next_ticket_number); ?>" data-default-ticket="<?php echo esc_attr($next_ticket_number); ?>" placeholder="Leave blank to auto-generate" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
@@ -6738,7 +6740,7 @@ function bntm_ajax_ps_create_loan() {
 
     $customer_id   = intval($_POST['customer_id'] ?? 0);
     $principal     = floatval($_POST['principal'] ?? 0);
-    $appraised_value = floatval($_POST['collateral_appraised_value'] ?? 0);
+    $appraised_value = $principal * 1.15;
     $interest_rate = floatval($_POST['interest_rate'] ?? 0);
     $service_fee   = floatval($_POST['service_fee'] ?? 0);
     $term_months   = intval($_POST['term_months'] ?? 1);
@@ -6794,10 +6796,17 @@ function bntm_ajax_ps_create_loan() {
 
     $wpdb->query('START TRANSACTION');
 
+    // Insert collateral
     $cr = $wpdb->insert($wpdb->prefix.'ps_collaterals', $col_data);
-    if (!$cr) { $wpdb->query('ROLLBACK'); wp_send_json_error(['message'=>'Failed to save collateral.']); return; }
+    if (!$cr) { 
+        $error = $wpdb->last_error ?: 'Unknown collateral insert error';
+        $wpdb->query('ROLLBACK'); 
+        wp_send_json_error(['message'=>'Failed to save collateral: ' . $error]); 
+        return; 
+    }
     $collateral_id = $wpdb->insert_id;
 
+    // Insert loan
     $penalty_rate = floatval(bntm_get_setting('ps_penalty_rate', '1.00'));
     $lr = $wpdb->insert($wpdb->prefix.'ps_loans', [
         'rand_id'          => bntm_rand_id(),
@@ -6808,6 +6817,7 @@ function bntm_ajax_ps_create_loan() {
         'parent_loan_id'   => 0,
         'customer_id'      => $customer_id,
         'collateral_id'    => $collateral_id,
+        'branch'           => '',
         'principal'        => $principal,
         'interest_rate'    => $interest_rate,
         'service_fee'      => $service_fee,
@@ -6817,26 +6827,49 @@ function bntm_ajax_ps_create_loan() {
         'grace_days'       => $grace_days,
         'term_months'      => $term_months,
         'transaction_type' => 'new',
+        'additional_to_principal' => 0,
+        'reduction_from_principal' => 0,
+        'accrued_interest_carried' => 0,
         'status'           => 'active',
         'payment_method'   => $payment_method,
         'or_number'        => $or_number,
         'notes'            => $notes,
     ]);
 
-    if (!$lr) { $wpdb->query('ROLLBACK'); wp_send_json_error(['message'=>'Failed to create loan.']); return; }
+    if (!$lr) { 
+        $error = $wpdb->last_error ?: 'Unknown loan insert error';
+        $wpdb->query('ROLLBACK'); 
+        wp_send_json_error(['message'=>'Failed to create loan: ' . $error]); 
+        return; 
+    }
     $loan_id = $wpdb->insert_id;
 
-    $wpdb->update($wpdb->prefix.'ps_collaterals', ['loan_id'=>$loan_id], ['id'=>$collateral_id]);
+    // Update collateral with loan_id
+    $ur = $wpdb->update($wpdb->prefix.'ps_collaterals', ['loan_id'=>$loan_id], ['id'=>$collateral_id]);
+    if ($ur === false) {
+        $error = $wpdb->last_error ?: 'Unknown collateral update error';
+        $wpdb->query('ROLLBACK');
+        wp_send_json_error(['message'=>'Failed to link collateral: ' . $error]);
+        return;
+    }
 
+    // Insert service fee payment if applicable
     if ($service_fee > 0) {
-        $wpdb->insert($wpdb->prefix.'ps_payments', [
+        $pr = $wpdb->insert($wpdb->prefix.'ps_payments', [
             'rand_id'=>bntm_rand_id(),'business_id'=>$business_id,'loan_id'=>$loan_id,
             'payment_type'=>'service_fee','amount'=>$service_fee,'service_fee'=>$service_fee,
             'payment_method'=>$payment_method,'processed_by'=>$processed_by,
         ]);
+        if (!$pr) {
+            $error = $wpdb->last_error ?: 'Unknown payment insert error';
+            $wpdb->query('ROLLBACK');
+            wp_send_json_error(['message'=>'Failed to save service fee: ' . $error]);
+            return;
+        }
     }
 
-    ps_log_ticket_event([
+    // Log ticket event
+    $log_result = ps_log_ticket_event([
         'business_id'     => $business_id,
         'root_ticket'     => $root_ticket,
         'loan_id'         => $loan_id,
@@ -6847,6 +6880,12 @@ function bntm_ajax_ps_create_loan() {
         'due_date'        => $due_date,
         'notes'           => 'New pawn loan created',
     ]);
+    if (!$log_result) {
+        $error = $wpdb->last_error ?: 'Unknown ticket history error';
+        $wpdb->query('ROLLBACK');
+        wp_send_json_error(['message'=>'Failed to log ticket event: ' . $error]);
+        return;
+    }
 
     $wpdb->query('COMMIT');
     wp_send_json_success(['message'=>"Pawn ticket {$ticket_number} created!",'loan_id'=>$loan_id,'ticket_number'=>$ticket_number]);
@@ -6952,7 +6991,12 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'updated_at'=>current_time('mysql'),
     ], ['id'=>$loan_id,'business_id'=>$business_id]);
 
-    if ($old_updated === false) { $wpdb->query('ROLLBACK'); wp_send_json_error(['message'=>'Failed to close previous pawn ticket.']); return; }
+    if ($old_updated === false) { 
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK'); 
+        wp_send_json_error(['message'=>'Failed to close previous pawn ticket: ' . $error]); 
+        return; 
+    }
 
     $loan_inserted = $wpdb->insert($wpdb->prefix.'ps_loans', [
         'rand_id'=>bntm_rand_id(),
@@ -6980,11 +7024,21 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'notes'=>$payment_notes,
     ]);
 
-    if (!$loan_inserted) { $wpdb->query('ROLLBACK'); wp_send_json_error(['message'=>'Failed to create the new pawn ticket.']); return; }
+    if (!$loan_inserted) { 
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK'); 
+        wp_send_json_error(['message'=>'Failed to create the new pawn ticket: ' . $error]); 
+        return; 
+    }
     $new_loan_id = $wpdb->insert_id;
 
     $collateral_updated = $wpdb->update($wpdb->prefix.'ps_collaterals', ['loan_id'=>$new_loan_id], ['id'=>$loan->collateral_id,'business_id'=>$business_id]);
-    if ($collateral_updated === false) { $wpdb->query('ROLLBACK'); wp_send_json_error(['message'=>'Failed to attach collateral to the new pawn ticket.']); return; }
+    if ($collateral_updated === false) { 
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK'); 
+        wp_send_json_error(['message'=>'Failed to attach collateral to the new pawn ticket: ' . $error]); 
+        return; 
+    }
 
     $payment_inserted = $wpdb->insert($wpdb->prefix.'ps_payments', [
         'rand_id'=>bntm_rand_id(),'business_id'=>$business_id,'loan_id'=>$new_loan_id,
@@ -6995,14 +7049,25 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'notes'=>trim($payment_notes . ' Previous ticket: ' . $loan->ticket_number),
     ]);
 
-    if (!$payment_inserted) { $wpdb->query('ROLLBACK'); wp_send_json_error(['message'=>'Failed to save payment.']); return; }
+    if (!$payment_inserted) { 
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK'); 
+        wp_send_json_error(['message'=>'Failed to save payment: ' . $error]); 
+        return; 
+    }
 
-    ps_log_ticket_event([
+    $log_result = ps_log_ticket_event([
         'business_id'=>$business_id,'root_ticket'=>$root_ticket,'loan_id'=>$new_loan_id,
         'ticket_number'=>$new_ticket_number,'event_type'=>$event_type,'principal_before'=>$loan->principal,
         'principal_after'=>$new_principal,'interest_paid'=>round($interest_due,2),'amount_paid'=>$total_paid,
         'due_date'=>$base_due,'notes'=>ucwords(str_replace('_',' ',$transaction_type)).'. Paid: ₱'.number_format($total_paid,2),
     ]);
+    if (!$log_result) {
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK');
+        wp_send_json_error(['message'=>'Failed to log ticket event: ' . $error]);
+        return;
+    }
 
     // Log extra fees as separate payment notes
     if (!empty($extra_fees) || $lost_ticket_fee > 0) {
@@ -7010,13 +7075,19 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         if ($lost_ticket_fee > 0) $extra_notes[] = 'Affidavit of Loss: ₱'.number_format($lost_ticket_fee,2);
         foreach ($extra_fees as $ef) { if (!empty($ef['desc']) && $ef['amt'] > 0) $extra_notes[] = $ef['desc'].': ₱'.number_format($ef['amt'],2); }
         if ($extra_notes) {
-            $wpdb->insert($wpdb->prefix.'ps_payments',[
+            $extra_insert = $wpdb->insert($wpdb->prefix.'ps_payments',[
                 'rand_id'=>bntm_rand_id(),'business_id'=>$business_id,'loan_id'=>$new_loan_id,
                 'payment_type'=>'service_fee','amount'=>$lost_ticket_fee+$extra_total,
                 'service_fee'=>$lost_ticket_fee+$extra_total,'interest_amount'=>0,'principal_amount'=>0,'penalty_amount'=>0,
                 'days_accrued'=>0,'payment_method'=>$payment_method,'reference_number'=>$reference_number,
                 'processed_by'=>$processed_by,'notes'=>implode('; ',$extra_notes),'status'=>'completed',
             ]);
+            if (!$extra_insert) {
+                $error = $wpdb->last_error ?: 'Unknown error';
+                $wpdb->query('ROLLBACK');
+                wp_send_json_error(['message'=>'Failed to save extra fees: ' . $error]);
+                return;
+            }
         }
     }
 
@@ -7060,7 +7131,8 @@ function bntm_ajax_ps_redeem_loan() {
 
     $wpdb->query('START TRANSACTION');
 
-    $wpdb->insert($wpdb->prefix.'ps_payments', [
+    // Insert redemption payment
+    $payment_insert = $wpdb->insert($wpdb->prefix.'ps_payments', [
         'rand_id'=>bntm_rand_id(),'business_id'=>$business_id,'loan_id'=>$loan_id,
         'payment_type'=>'redemption','amount'=>round($total_due,2),'interest_amount'=>round($interest,2),
         'principal_amount'=>(float)$loan->principal,'penalty_amount'=>round($penalty,2),
@@ -7068,6 +7140,12 @@ function bntm_ajax_ps_redeem_loan() {
         'days_accrued'=>$breakdown['days_elapsed'],'payment_method'=>$payment_method,
         'reference_number'=>$reference_number,'processed_by'=>$processed_by,'notes'=>$notes,'status'=>'completed',
     ]);
+    if (!$payment_insert) {
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK');
+        wp_send_json_error(['message'=>'Failed to record payment: ' . $error]);
+        return;
+    }
 
     // Extra fees/lost ticket note
     if (!empty($extra_fees) || $lost_ticket_fee > 0) {
@@ -7077,15 +7155,38 @@ function bntm_ajax_ps_redeem_loan() {
     }
 
     $loan_notes = $is_lost_ticket ? trim($loan->notes.' [LOST TICKET]') : $loan->notes;
-    $wpdb->update($wpdb->prefix.'ps_loans', ['status'=>'redeemed','redeemed_at'=>current_time('mysql'),'notes'=>$loan_notes], ['id'=>$loan_id]);
-    $wpdb->update($wpdb->prefix.'ps_collaterals', ['status'=>'redeemed'], ['loan_id'=>$loan_id,'business_id'=>$business_id]);
+    
+    // Update loan status to redeemed
+    $loan_update = $wpdb->update($wpdb->prefix.'ps_loans', ['status'=>'redeemed','redeemed_at'=>current_time('mysql'),'notes'=>$loan_notes], ['id'=>$loan_id]);
+    if ($loan_update === false) {
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK');
+        wp_send_json_error(['message'=>'Failed to update loan status: ' . $error]);
+        return;
+    }
+    
+    // Update collateral status to redeemed
+    $collateral_update = $wpdb->update($wpdb->prefix.'ps_collaterals', ['status'=>'redeemed'], ['loan_id'=>$loan_id,'business_id'=>$business_id]);
+    if ($collateral_update === false) {
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK');
+        wp_send_json_error(['message'=>'Failed to update collateral status: ' . $error]);
+        return;
+    }
 
-    ps_log_ticket_event([
+    // Log ticket event
+    $log_result = ps_log_ticket_event([
         'business_id'=>$business_id,'root_ticket'=>$loan->root_ticket,'loan_id'=>$loan_id,
         'ticket_number'=>$loan->ticket_number,'event_type'=>'redeemed','principal_before'=>$loan->principal,
         'principal_after'=>0,'interest_paid'=>round($interest,2),'amount_paid'=>round($total_due,2),
         'due_date'=>$loan->due_date,'notes'=>'Loan redeemed. Total paid: ₱'.number_format($total_due,2).($is_lost_ticket?' [LOST TICKET]':''),
     ]);
+    if (!$log_result) {
+        $error = $wpdb->last_error ?: 'Unknown error';
+        $wpdb->query('ROLLBACK');
+        wp_send_json_error(['message'=>'Failed to log ticket event: ' . $error]);
+        return;
+    }
 
     $wpdb->query('COMMIT');
     wp_send_json_success(['message'=>'Loan redeemed. Total: ₱'.number_format($total_due,2),'loan_id'=>$loan_id,'is_lost'=>$is_lost_ticket]);
