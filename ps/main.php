@@ -864,9 +864,9 @@ function ps_render_modals() {
                             <select name="collateral_karat"><option value="">N/A</option><option value="10k">10k</option><option value="14k">14k</option><option value="18k">18k</option><option value="21k">21k</option><option value="22k">22k</option><option value="24k">24k</option></select>
                         </div>
                         <div class="bntm-form-group">
-                            <label>Appraised Value <span style="color:#ef4444;">*</span></label>
-                            <input type="number" name="collateral_appraised_value" step=".01" placeholder="0.00" required id="appraised-val-input">
-                        </div>
+                         <label>Appraised Value (auto)</label>
+    <input type="number" name="collateral_appraised_value" step=".01" placeholder="0.00" id="appraised-val-input" readonly style="background:#f9fafb;">
+</div>
                       
 
                         <div style="grid-column:1/-1;background:#f8fafc;border-radius:8px;padding:12px 14px;margin-top:4px;">
@@ -1168,14 +1168,14 @@ function ps_render_modals() {
                                 <div class="bntm-form-group"><label>Email</label><input type="email" name="email" placeholder="email@example.com"></div>
                                 <div class="bntm-form-group">
                                     <label>ID Type <span style="color:#ef4444;">*</span></label>
-                                    <select name="id_type" required>
-                                        <option value="">Select ID</option>
+                                    <select name="id_type" >
+                                        <option value="none">Select ID</option>
                                         <option>National ID</option><option>Driver's License</option><option>Passport</option>
                                         <option>SSS ID</option><option>PhilHealth ID</option><option>UMID</option>
                                         <option>Voter's ID</option><option>Barangay ID</option><option>Other</option>
                                     </select>
                                 </div>
-                                <div class="bntm-form-group"><label>ID Number <span style="color:#ef4444;">*</span></label><input type="text" name="id_number" required placeholder="ID number"></div>
+                                <div class="bntm-form-group"><label>ID Number <span style="color:#ef4444;">*</span></label><input type="text" name="id_number" placeholder="ID number"></div>
                                 <div class="bntm-form-group">
                                     <label>Customer Flag</label>
                                     <select name="customer_flag">
@@ -1500,6 +1500,9 @@ function ps_render_js() {
         const ld = document.getElementById('loan-date-input')?.value;
         const daily = p * (r / 100 / 30);
         const int = daily * t * 30;
+        const appraisedVal = p * 1.15;
+const appraisedEl = document.getElementById('appraised-val-input');
+if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         if (document.getElementById('sum-principal')) document.getElementById('sum-principal').textContent = '₱' + p.toLocaleString('en-PH', {minimumFractionDigits:2});
         if (document.getElementById('sum-interest')) document.getElementById('sum-interest').textContent = '₱' + int.toLocaleString('en-PH', {minimumFractionDigits:2});
         if (document.getElementById('sum-fee')) document.getElementById('sum-fee').textContent = '₱' + f.toLocaleString('en-PH', {minimumFractionDigits:2});
@@ -6908,7 +6911,12 @@ function bntm_ajax_ps_renew_loan() {
         $reduce_principal = min($principal_adj, $new_principal);
         $new_principal = max(0, $new_principal - $reduce_principal);
     }
-
+// Auto-compute appraised value on renewal
+$new_appraised = round($new_principal * 1.15, 2);
+$wpdb->update($wpdb->prefix.'ps_collaterals', 
+    ['appraised_value' => $new_appraised], 
+    ['id' => $loan->collateral_id, 'business_id' => $business_id]
+);
     $today = current_time('Y-m-d');
     $base_due = ($transaction_type === 'renewal')
         ? date('Y-m-d', strtotime($today." +{$add_months} months"))
