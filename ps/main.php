@@ -6063,7 +6063,7 @@ body { font-family:'Courier New',Courier,monospace; font-size:10px; }
 </style>
 </head><body>
 <div class="tk-dot-sheet">
- 
+    <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(20, 20)); ?>"><?php echo esc_html(number_format($loan->principal)); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(28, 40)); ?>"><?php echo esc_html($loan_date_fmt); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(25, 135)); ?>"><?php echo esc_html($due_date_fmt); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(30, 150)); ?>"><?php echo esc_html($expiry_date); ?></div>
@@ -6075,7 +6075,6 @@ body { font-family:'Courier New',Courier,monospace; font-size:10px; }
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(44, 110)); ?>"><?php echo esc_html(number_format($loan->principal,2)); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(44, 176)); ?>"><?php echo esc_html($rate_pct); ?></div>
 
-    <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(48,15)); ?>"><?php echo esc_html($term_display); ?></div>
      <div class="tk-dot-wrap2 tk-dot-small2" style="<?php echo esc_attr($pos(54, 20, 'width:70mm;')); ?>"><?php echo esc_html(ps_number_to_words($loan->appraised_value)); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(52, 110)); ?>"><?php echo esc_html(number_format($loan->appraised_value,2)); ?></div>
 
@@ -6088,10 +6087,10 @@ body { font-family:'Courier New',Courier,monospace; font-size:10px; }
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(63, 165)); ?>"><?php echo esc_html(number_format($bd['regular_interest'],2)); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(66, 165)); ?>"><?php echo esc_html(number_format($loan->service_fee,2)); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(70, 165)); ?>"><?php echo esc_html(number_format($net_proceeds,2)); ?></div>
-    <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(73, 132)); ?>"><?php echo esc_html($effective_rate); ?></div>
-  
+    <!-- <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(73, 132)); ?>"><?php echo esc_html($effective_rate); ?></div>
+   -->
 
-    <div class="tk-dot-wrap tk-dot-small" style="<?php echo esc_attr($pos(95, 25, 'width:76mm;')); ?>"><?php echo esc_html($id_presented); ?></div>
+    <!-- <div class="tk-dot-wrap tk-dot-small" style="<?php echo esc_attr($pos(95, 25, 'width:76mm;')); ?>"><?php echo esc_html($id_presented); ?></div> -->
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(95, 126)); ?>"><?php echo esc_html($loan->contact_number); ?></div>
 </div>
 </body></html>
