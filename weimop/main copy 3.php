@@ -286,16 +286,16 @@ function bntm_weimop_result_profile( $result_type, $settings = [] ) {
             break;
         case 'MPLMP':
             if ( $profile['market_run'] === 'HAP' ) {
-                $profile['table']          = 'HAPResults';
+                $profile['table']          = 'HAPSchedules';
                 $profile['interval_shift'] = 5 * MINUTE_IN_SECONDS;
             } else {
-                $profile['table']          = 'DAPResults';
+                $profile['table']          = 'HAPSchedules';
                 $profile['market_run']     = $profile['market_run'] !== '' ? $profile['market_run'] : 'DAP';
                 $profile['interval_shift'] = HOUR_IN_SECONDS;
             }
             break;
         case 'TIPCLMP':
-            $profile['table']          = 'DAPResults';
+            $profile['table']          = 'HAPSchedules';
             $profile['interval_shift'] = HOUR_IN_SECONDS;
             break;
         case 'OCCRESOURCECOMPLIANCEDETAIL':
@@ -335,8 +335,7 @@ function bntm_weimop_db_tables() {
 
     return [
         'RTDSchedules'                 => $wpdb->prefix . 'weimop_rtd_schedules',
-        'HAPResults'                   => $wpdb->prefix . 'weimop_hap_results',
-        'DAPResults'                   => $wpdb->prefix . 'weimop_dap_results',
+        'HAPSchedules'                 => $wpdb->prefix . 'weimop_hap_schedules',
         'OCCResourcesComplianceDetail' => $wpdb->prefix . 'weimop_occ_resources_compliance_detail',
         'ExtractorLog'                 => $wpdb->prefix . 'weimop_extractor_log',
         'weimop_watchlist'             => $wpdb->prefix . 'weimop_watchlist',
@@ -356,51 +355,39 @@ function bntm_weimop_mysql_schema() {
 
     return [
         'RTDSchedules' => "CREATE TABLE {$tables['RTDSchedules']} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            TIME_INTERVAL DATETIME NOT NULL,
-            SCHEDULE DOUBLE DEFAULT 0,
-            LMP DOUBLE DEFAULT 0,
-            PRICE_NODE VARCHAR(191) DEFAULT '',
-            UNIT_ID VARCHAR(191) DEFAULT '',
-            MARKET_RUN VARCHAR(64) DEFAULT '',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_time_interval (TIME_INTERVAL),
+            TIME_INTERVAL DATETIME,
+            RESOURCE_NAME TEXT,
+            SCHEDULE TEXT,
+            LMP TEXT,
+            LOSS_FACTOR TEXT,
+            LMP_ENERGY TEXT,
+            LMP_LOSS TEXT,
+            LMP_CONGESTION TEXT,
             KEY idx_time_interval (TIME_INTERVAL)
         ) {$charset};",
-        'HAPResults' => "CREATE TABLE {$tables['HAPResults']} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            TIME_INTERVAL DATETIME NOT NULL,
-            PRICE DOUBLE DEFAULT 0,
-            PRICE_NODE VARCHAR(191) DEFAULT '',
-            MARKET_RUN VARCHAR(64) DEFAULT '',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_time_interval (TIME_INTERVAL),
-            KEY idx_time_interval (TIME_INTERVAL)
-        ) {$charset};",
-        'DAPResults' => "CREATE TABLE {$tables['DAPResults']} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            TIME_INTERVAL DATETIME NOT NULL,
-            PRICE DOUBLE DEFAULT 0,
-            PRICE_NODE VARCHAR(191) DEFAULT '',
-            MARKET_RUN VARCHAR(64) DEFAULT '',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_time_interval (TIME_INTERVAL),
+        'HAPSchedules' => "CREATE TABLE {$tables['HAPSchedules']} (
+            TIME_INTERVAL DATETIME,
+            RESOURCE_NAME TEXT,
+            SCHEDULE TEXT,
+            LMP TEXT,
+            LOSS_FACTOR TEXT,
+            LMP_ENERGY TEXT,
+            LMP_LOSS TEXT,
+            LMP_CONGESTION TEXT,
             KEY idx_time_interval (TIME_INTERVAL)
         ) {$charset};",
         'OCCResourcesComplianceDetail' => "CREATE TABLE {$tables['OCCResourcesComplianceDetail']} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            TIME_INTERVAL DATETIME NOT NULL,
-            OFFERED_CAP DOUBLE DEFAULT 0,
-            SCHEDULED_CAP DOUBLE DEFAULT 0,
-            UNIT_ID VARCHAR(191) DEFAULT '',
-            REGION VARCHAR(191) DEFAULT '',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            UNIQUE KEY uniq_time_interval (TIME_INTERVAL),
-            KEY idx_time_interval (TIME_INTERVAL)
+            TIME_INTERVAL TEXT,
+            RESOURCE_NAME TEXT,
+            REGISTERED_CAP BIGINT,
+            OFFERED_CAP BIGINT,
+            NON_COMPLIANCE_FLAG TEXT,
+            NON_COMPLIANCE_COUNT BIGINT,
+            PROBABLE_BREACH TEXT,
+            PREVIOUS_VIOLATION TEXT,
+            OCC_ENABLED TEXT,
+            COMPLIANCE_EXEMPT TEXT,
+            EMAIL_SENT BIGINT DEFAULT 0
         ) {$charset};",
         'ExtractorLog' => "CREATE TABLE {$tables['ExtractorLog']} (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -423,56 +410,6 @@ function bntm_weimop_open_db( $readonly = false ) {
 
     bntm_weimop_ensure_data_tables();
     return isset( $wpdb ) ? $wpdb : null;
-}
-
-function bntm_weimop_import_sql_data() {
-    global $wpdb;
-    $sql_file = BNTM_WEIMOP_PATH . 'sql.sql';
-    
-    if ( ! file_exists( $sql_file ) ) {
-        return [ 'success' => false, 'message' => 'SQL file not found: ' . $sql_file ];
-    }
-    
-    $sql_content = file_get_contents( $sql_file );
-    
-    if ( ! $sql_content ) {
-        return [ 'success' => false, 'message' => 'Failed to read SQL file' ];
-    }
-    
-    // Split statements by semicolon, but be careful with strings containing semicolons
-    $statements = preg_split( '/;(?=(?:[^\']*\'[^\']*\')*[^\'"]*$)/', $sql_content );
-    $imported    = 0;
-    $failed      = 0;
-    $errors      = [];
-    
-    foreach ( $statements as $statement ) {
-        $statement = trim( $statement );
-        
-        // Skip empty statements and comments
-        if ( empty( $statement ) || substr( $statement, 0, 2 ) === '--' || substr( $statement, 0, 1 ) === '#' ) {
-            continue;
-        }
-        
-        // Execute the statement
-        $result = $wpdb->query( $statement );
-        
-        if ( $result !== false ) {
-            $imported++;
-        } else {
-            $failed++;
-            $errors[] = 'Error: ' . $wpdb->last_error . ' | Query: ' . substr( $statement, 0, 100 ) . '...';
-        }
-    }
-    
-    return [
-        'success' => $failed === 0,
-        'message' => "Imported: $imported statements, Failed: $failed",
-        'details' => [
-            'imported' => $imported,
-            'failed'   => $failed,
-            'errors'   => $errors
-        ]
-    ];
 }
 
 /* -------------------------------------------------------
@@ -519,7 +456,6 @@ add_action( 'wp_ajax_weimop_connection_status',   'bntm_ajax_weimop_connection_s
 add_action( 'wp_ajax_weimop_save_settings',       'bntm_ajax_weimop_save_settings'       );
 add_action( 'wp_ajax_weimop_upload_pfx',          'bntm_ajax_weimop_upload_pfx'          );
 add_action( 'wp_ajax_weimop_fetch_historical',    'bntm_ajax_weimop_fetch_historical'    );
-add_action( 'wp_ajax_weimop_import_sql_data',     'bntm_ajax_weimop_import_sql_data'     );
 add_action( 'wp_ajax_weimop_diag',               'bntm_ajax_weimop_diag'               );
 
 /* -------------------------------------------------------
@@ -665,8 +601,6 @@ function bntm_shortcode_weimop() {
     .weimop-chart-wrap { width:100%; height:280px; position:relative; }
     @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
     </style>
-
-    <script type="application/json" id="weimop-config-data"><?php echo wp_json_encode(['ajaxurl'=>admin_url('admin-ajax.php'),'nonce'=>wp_create_nonce('weimop_nonce'),'refreshMs'=>intval($settings['refresh_interval']??300)*1000]); ?></script>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <script>
@@ -1097,12 +1031,8 @@ function weimop_tab_settings( $uid, $s ) {
                         <td style="padding:12px 0;"><code style="background:var(--wesm-surface2);padding:4px 8px;border-radius:4px;"><?php echo esc_html( $tables['RTDSchedules'] ); ?></code></td>
                     </tr>
                     <tr style="border-bottom:1px solid var(--wesm-border);">
-                        <td style="padding:12px 0;">HAP Results Table</td>
-                        <td style="padding:12px 0;"><code style="background:var(--wesm-surface2);padding:4px 8px;border-radius:4px;"><?php echo esc_html( $tables['HAPResults'] ); ?></code></td>
-                    </tr>
-                    <tr style="border-bottom:1px solid var(--wesm-border);">
-                        <td style="padding:12px 0;">DAP Results Table</td>
-                        <td style="padding:12px 0;"><code style="background:var(--wesm-surface2);padding:4px 8px;border-radius:4px;"><?php echo esc_html( $tables['DAPResults'] ); ?></code></td>
+                        <td style="padding:12px 0;">HAP Schedules Table</td>
+                        <td style="padding:12px 0;"><code style="background:var(--wesm-surface2);padding:4px 8px;border-radius:4px;"><?php echo esc_html( $tables['HAPSchedules'] ); ?></code></td>
                     </tr>
                     <tr style="border-bottom:1px solid var(--wesm-border);">
                         <td style="padding:12px 0;">OCC Records Table</td>
@@ -1186,7 +1116,7 @@ function weimop_tab_settings( $uid, $s ) {
         <div id="weimop-backfill-status" style="display:none;margin-top:12px;padding:10px;border-radius:6px;font-size:12px;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);color:var(--wesm-success);"></div>
         <div id="weimop-backfill-history" style="display:none;margin-top:12px;"></div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:16px;">
-            <?php foreach ( ['sqlite3_ext'=>'WordPress DB connection','db_exists'=>'MySQL storage','db_writable'=>'MySQL tables writable','tables_exist'=>'All WESM tables','has_rtd'=>'RTDSchedules has data','has_hap'=>'HAPResults has data','has_dap'=>'DAPResults has data','has_occ'=>'OCC table has data','pfx_set'=>'Certificate path set','pfx_exists'=>'Certificate file exists','curl_ssl'=>'cURL + OpenSSL','nmms_url'=>'NMMS URL set','cert_name'=>'Certificate Name set'] as $key=>$label ):
+            <?php foreach ( ['sqlite3_ext'=>'WordPress DB connection','db_exists'=>'MySQL storage','db_writable'=>'MySQL tables writable','tables_exist'=>'All WESM tables','has_rtd'=>'RTDSchedules has data','has_hap'=>'HAPSchedules has data','has_dap'=>'HAP data available','has_occ'=>'OCC table has data','pfx_set'=>'Certificate path set','pfx_exists'=>'Certificate file exists','curl_ssl'=>'cURL + OpenSSL','nmms_url'=>'NMMS URL set','cert_name'=>'Certificate Name set'] as $key=>$label ):
                 $pass = $status['checks'][$key]??false; ?>
             <div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:6px 10px;border-radius:5px;background:<?php echo $pass?'rgba(34,197,94,0.15)':'rgba(239,68,68,0.15)'; ?>;color:<?php echo $pass?'var(--wesm-success)':'var(--wesm-danger)'; ?>;">
                 <span><?php echo $pass?'✓':'✗'; ?></span><?php echo esc_html($label); ?>
@@ -1749,40 +1679,51 @@ function bntm_weimop_insert_rows( $db, $table, $rows, $result_type = '' ) {
                     $ok = $db->replace(
                         $table_name,
                         [
-                            'TIME_INTERVAL' => $ts,
-                            'SCHEDULE'      => (float)($r['schedule']??$r['SCHEDULE']??0),
-                            'LMP'           => (float)($r['lmp']??$r['LMP']??0),
-                            'PRICE_NODE'    => (string)($r['priceNode']??$r['PRICE_NODE']??''),
-                            'UNIT_ID'       => (string)($r['unitId']??$r['UNIT_ID']??''),
-                            'MARKET_RUN'    => (string)$profile['market_run'],
+                            'TIME_INTERVAL'  => $ts,
+                            'RESOURCE_NAME'  => (string)($r['resourceName']??$r['RESOURCE_NAME']??$r['priceNode']??$r['PRICE_NODE']??''),
+                            'SCHEDULE'       => (string)($r['schedule']??$r['SCHEDULE']??''),
+                            'LMP'            => (string)($r['lmp']??$r['LMP']??''),
+                            'LOSS_FACTOR'    => (string)($r['lossFactor']??$r['LOSS_FACTOR']??''),
+                            'LMP_ENERGY'     => (string)($r['lmpEnergy']??$r['LMP_ENERGY']??''),
+                            'LMP_LOSS'       => (string)($r['lmpLoss']??$r['LMP_LOSS']??''),
+                            'LMP_CONGESTION' => (string)($r['lmpCongestion']??$r['LMP_CONGESTION']??''),
                         ],
-                        [ '%s', '%f', '%f', '%s', '%s', '%s' ]
+                        [ '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ]
                     );
                     if ( false !== $ok ) $inserted++;
                     break;
-                case 'HAPResults':
+                case 'HAPSchedules':
                     $ok = $db->replace(
                         $table_name,
                         [
-                            'TIME_INTERVAL' => $ts,
-                            'PRICE'         => (float)($r['price']??$r['PRICE']??0),
-                            'PRICE_NODE'    => (string)($r['priceNode']??$r['PRICE_NODE']??''),
-                            'MARKET_RUN'    => (string)$profile['market_run'],
+                            'TIME_INTERVAL'  => $ts,
+                            'RESOURCE_NAME'  => (string)($r['resourceName']??$r['RESOURCE_NAME']??$r['priceNode']??$r['PRICE_NODE']??''),
+                            'SCHEDULE'       => (string)($r['schedule']??$r['SCHEDULE']??''),
+                            'LMP'            => (string)($r['price']??$r['lmp']??$r['LMP']??''),
+                            'LOSS_FACTOR'    => (string)($r['lossFactor']??$r['LOSS_FACTOR']??''),
+                            'LMP_ENERGY'     => (string)($r['lmpEnergy']??$r['LMP_ENERGY']??''),
+                            'LMP_LOSS'       => (string)($r['lmpLoss']??$r['LMP_LOSS']??''),
+                            'LMP_CONGESTION' => (string)($r['lmpCongestion']??$r['LMP_CONGESTION']??''),
                         ],
-                        [ '%s', '%f', '%s', '%s' ]
+                        [ '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ]
                     );
                     if ( false !== $ok ) $inserted++;
                     break;
                 case 'DAPResults':
+                case 'HAPSchedules':
                     $ok = $db->replace(
                         $table_name,
                         [
-                            'TIME_INTERVAL' => $ts,
-                            'PRICE'         => (float)($r['price']??$r['PRICE']??0),
-                            'PRICE_NODE'    => (string)($r['priceNode']??$r['PRICE_NODE']??''),
-                            'MARKET_RUN'    => (string)$profile['market_run'],
+                            'TIME_INTERVAL'  => $ts,
+                            'RESOURCE_NAME'  => (string)($r['resourceName']??$r['RESOURCE_NAME']??$r['priceNode']??$r['PRICE_NODE']??''),
+                            'SCHEDULE'       => (string)($r['schedule']??$r['SCHEDULE']??''),
+                            'LMP'            => (string)($r['price']??$r['lmp']??$r['LMP']??''),
+                            'LOSS_FACTOR'    => (string)($r['lossFactor']??$r['LOSS_FACTOR']??''),
+                            'LMP_ENERGY'     => (string)($r['lmpEnergy']??$r['LMP_ENERGY']??''),
+                            'LMP_LOSS'       => (string)($r['lmpLoss']??$r['LMP_LOSS']??''),
+                            'LMP_CONGESTION' => (string)($r['lmpCongestion']??$r['LMP_CONGESTION']??''),
                         ],
-                        [ '%s', '%f', '%s', '%s' ]
+                        [ '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ]
                     );
                     if ( false !== $ok ) $inserted++;
                     break;
@@ -1790,13 +1731,19 @@ function bntm_weimop_insert_rows( $db, $table, $rows, $result_type = '' ) {
                     $ok = $db->replace(
                         $table_name,
                         [
-                            'TIME_INTERVAL' => $ts,
-                            'OFFERED_CAP'   => (float)($r['offeredCapacity']??$r['OFFERED_CAP']??0),
-                            'SCHEDULED_CAP' => (float)($r['scheduledCapacity']??$r['SCHEDULED_CAP']??0),
-                            'UNIT_ID'       => (string)($r['unitId']??$r['UNIT_ID']??''),
-                            'REGION'        => (string)($r['regionName']??$r['REGION']??''),
+                            'TIME_INTERVAL'         => $ts,
+                            'RESOURCE_NAME'         => (string)($r['resourceName']??$r['RESOURCE_NAME']??$r['unitId']??$r['UNIT_ID']??''),
+                            'REGISTERED_CAP'        => (int)($r['registeredCapacity']??$r['REGISTERED_CAP']??0),
+                            'OFFERED_CAP'           => (int)($r['offeredCapacity']??$r['OFFERED_CAP']??0),
+                            'NON_COMPLIANCE_FLAG'   => (string)($r['nonComplianceFlag']??$r['NON_COMPLIANCE_FLAG']??''),
+                            'NON_COMPLIANCE_COUNT'  => (int)($r['nonComplianceCount']??$r['NON_COMPLIANCE_COUNT']??0),
+                            'PROBABLE_BREACH'       => (string)($r['probableBreach']??$r['PROBABLE_BREACH']??''),
+                            'PREVIOUS_VIOLATION'    => (string)($r['previousViolation']??$r['PREVIOUS_VIOLATION']??''),
+                            'OCC_ENABLED'           => (string)($r['occEnabled']??$r['OCC_ENABLED']??''),
+                            'COMPLIANCE_EXEMPT'     => (string)($r['complianceExempt']??$r['COMPLIANCE_EXEMPT']??''),
+                            'EMAIL_SENT'            => 0,
                         ],
-                        [ '%s', '%f', '%f', '%s', '%s' ]
+                        [ '%s', '%s', '%d', '%d', '%s', '%d', '%s', '%s', '%s', '%s', '%d' ]
                     );
                     if ( false !== $ok ) $inserted++;
                     break;
@@ -1959,23 +1906,18 @@ function bntm_weimop_check_connection() {
 
     if ($checks['sqlite3_ext']) {
         bntm_weimop_ensure_data_tables();
-        $needed = [ 'RTDSchedules', 'HAPResults', 'DAPResults', 'OCCResourcesComplianceDetail' ];
+        $needed = [ 'RTDSchedules', 'HAPSchedules', 'OCCResourcesComplianceDetail' ];
         $checks['tables_exist'] = true;
         foreach ( $needed as $logical ) {
             $table = $tables[ $logical ];
-            // Use INFORMATION_SCHEMA for faster checks instead of COUNT
-            $exists = ( $wpdb->get_var( $wpdb->prepare( 'SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s LIMIT 1', $table ) ) === '1' );
-            if (!$exists) {
-                $exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table );
-            }
+            $exists = ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) === $table );
             $checks['tables_exist'] = $checks['tables_exist'] && $exists;
         }
         if (!$checks['tables_exist']) $issues[] = 'One or more WESM tables are missing. Click Re-initialize Tables.';
-        // Use LIMIT 1 with EXISTS for fast checks instead of COUNT(*)
-        $checks['has_rtd'] = ( $wpdb->get_var( "SELECT 1 FROM {$tables['RTDSchedules']} LIMIT 1" ) !== null );
-        $checks['has_hap'] = ( $wpdb->get_var( "SELECT 1 FROM {$tables['HAPResults']} LIMIT 1" ) !== null );
-        $checks['has_dap'] = ( $wpdb->get_var( "SELECT 1 FROM {$tables['DAPResults']} LIMIT 1" ) !== null );
-        $checks['has_occ'] = ( $wpdb->get_var( "SELECT 1 FROM {$tables['OCCResourcesComplianceDetail']} LIMIT 1" ) !== null );
+        $checks['has_rtd'] = (int)$wpdb->get_var( "SELECT COUNT(*) FROM {$tables['RTDSchedules']}" ) > 0;
+        $checks['has_hap'] = (int)$wpdb->get_var( "SELECT COUNT(*) FROM {$tables['HAPSchedules']}" ) > 0;
+        $checks['has_dap'] = false; // DAP table not in current schema
+        $checks['has_occ'] = (int)$wpdb->get_var( "SELECT COUNT(*) FROM {$tables['OCCResourcesComplianceDetail']}" ) > 0;
     }
 
     $checks['pfx_set']    = !empty($s['nmms_cert_path']);
@@ -2000,30 +1942,6 @@ function bntm_weimop_check_connection() {
 
 
 /* -------------------------------------------------------
-   SQL DATA IMPORT HANDLER
-   Imports RTDSchedules and related data from sql.sql file
-------------------------------------------------------- */
-
-function bntm_ajax_weimop_import_sql_data() {
-    check_ajax_referer( 'weimop_nonce', 'nonce' );
-    if ( ! is_user_logged_in() ) {
-        wp_send_json_error( [ 'message' => 'Unauthorized' ] );
-    }
-    
-    if ( ! current_user_can( 'manage_options' ) ) {
-        wp_send_json_error( [ 'message' => 'You do not have permission to import data' ] );
-    }
-    
-    $result = bntm_weimop_import_sql_data();
-    
-    if ( $result['success'] ) {
-        wp_send_json_success( $result );
-    } else {
-        wp_send_json_error( $result );
-    }
-}
-
-/* -------------------------------------------------------
    DIAGNOSTIC HANDLER
    Tests every prerequisite for openssl_pkcs12_read and
    the NMMS SOAP call. Returns a structured report so the
@@ -2033,10 +1951,6 @@ function bntm_ajax_weimop_import_sql_data() {
 function bntm_ajax_weimop_diag() {
     check_ajax_referer('weimop_nonce','nonce');
     if (!is_user_logged_in()) wp_send_json_error(['message'=>'Unauthorized']);
-    if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'Insufficient permissions']);
-    
-    try {
-        set_time_limit(60); // Allow up to 60 seconds for diagnostics
 
     $uid      = get_current_user_id();
     $s        = bntm_weimop_get_settings($uid);
@@ -2251,106 +2165,70 @@ function bntm_ajax_weimop_diag() {
         'previous_run'  => $previous_run,
         'notice'        => bntm_weimop_build_run_notice( $current_run, $previous_run ),
     ]);
-    } catch (Exception $e) {
-        wp_send_json_error([
-            'message' => 'Diagnostic check failed: '.$e->getMessage(),
-            'code' => $e->getCode(),
-            'report' => $report ?? []
-        ], 500);
-    }
 }
 
 function bntm_ajax_weimop_connection_status() {
     check_ajax_referer('weimop_nonce','nonce');
-    if (!is_user_logged_in()) wp_send_json_error(['message'=>'Unauthorized']);
-    
-    try {
-        wp_send_json_success(bntm_weimop_check_connection());
-    } catch (Exception $e) {
-        wp_send_json_error(['message'=>'Connection check failed: '.$e->getMessage()], 400);
-    }
+    if (!is_user_logged_in()) wp_send_json_error();
+    wp_send_json_success(bntm_weimop_check_connection());
 }
 
 function bntm_ajax_weimop_upload_pfx() {
     check_ajax_referer('weimop_nonce','nonce');
     if (!is_user_logged_in()) wp_send_json_error(['message'=>'Unauthorized']);
-    if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'Insufficient permissions']);
-    
-    try {
-        if (empty($_FILES['pfx_file']) || $_FILES['pfx_file']['error'] !== UPLOAD_ERR_OK)
-            throw new Exception('File upload failed (code: '.($_FILES['pfx_file']['error']??'unknown').').', 400);
-        
-        $file = $_FILES['pfx_file'];
-        $ext  = strtolower(pathinfo($file['name'],PATHINFO_EXTENSION));
-        if (!in_array($ext,['pfx','p12'],true)) throw new Exception('Only .pfx or .p12 files are permitted.', 400);
-        
-        if ($file['size'] > 5242880) throw new Exception('File size exceeds 5MB limit.', 400);
-        
-        $dir      = bntm_weimop_pfx_dir();
-        $uid      = get_current_user_id();
-        $filename = 'cert_u' . $uid . '_' . time() . '_' . sanitize_file_name($file['name']);
-        $dest     = trailingslashit($dir) . $filename;
-        
-        if (!is_dir($dir)) wp_mkdir_p($dir);
-        if (!is_writable($dir)) throw new Exception('Upload directory is not writable: '.$dir, 500);
-        if (!move_uploaded_file($file['tmp_name'],$dest)) throw new Exception('Could not write file.', 500);
-        
-        $settings = bntm_weimop_get_settings($uid);
-        $settings['nmms_cert_path'] = wp_normalize_path($dest);
-        update_user_meta($uid,'bntm_weimop_settings',$settings);
-        
-        wp_send_json_success(['path'=>$dest,'filename'=>$filename,'message'=>'Certificate uploaded successfully.']);
-    } catch (Exception $e) {
-        wp_send_json_error(['message'=>$e->getMessage(),'code'=>$e->getCode()], $e->getCode() ?: 400);
-    }
+    if (empty($_FILES['pfx_file']) || $_FILES['pfx_file']['error'] !== UPLOAD_ERR_OK)
+        wp_send_json_error(['message'=>'File upload failed (code: '.($_FILES['pfx_file']['error']??'?').').']);
+    $file = $_FILES['pfx_file'];
+    $ext  = strtolower(pathinfo($file['name'],PATHINFO_EXTENSION));
+    if (!in_array($ext,['pfx','p12'],true)) wp_send_json_error(['message'=>'Only .pfx or .p12 files are permitted.']);
+    $dir      = bntm_weimop_pfx_dir();
+    $uid      = get_current_user_id();
+    $filename = 'cert_u' . $uid . '_' . sanitize_file_name($file['name']);
+    $dest     = trailingslashit($dir) . $filename;
+    if (!move_uploaded_file($file['tmp_name'],$dest))
+        wp_send_json_error(['message'=>'Could not write file. Check directory permissions on '.$dir]);
+    $settings = bntm_weimop_get_settings($uid);
+    $settings['nmms_cert_path'] = wp_normalize_path($dest);
+    update_user_meta($uid,'bntm_weimop_settings',$settings);
+    wp_send_json_success(['path'=>$dest,'filename'=>$filename,'message'=>'Certificate uploaded and path saved.']);
 }
 
 function bntm_ajax_weimop_save_settings() {
     check_ajax_referer('weimop_nonce','nonce');
     if (!is_user_logged_in()) wp_send_json_error(['message'=>'Unauthorized']);
-    if (!current_user_can('manage_options')) wp_send_json_error(['message'=>'Insufficient permissions']);
-    
-    try {
-        $uid = get_current_user_id();
-        $cur = bntm_weimop_get_settings($uid);
-        
-        $new = [
-            'email_sender'       => sanitize_text_field($_POST['email_sender']??''),
-            'email_password'     => $cur['email_password'],
-            'email_recipients'   => sanitize_text_field($_POST['email_recipients']??''),
-            'price_alert'        => floatval($_POST['price_alert']??0),
-            'refresh_interval'   => max(60,intval($_POST['refresh_interval']??300)),
-            'nmms_operation'     => 'exportResults',
-            'nmms_main_url'      => esc_url_raw($_POST['nmms_main_url']??''),
-            'nmms_backup_url'    => esc_url_raw($_POST['nmms_backup_url']??''),
-            'nmms_url'           => esc_url_raw($_POST['nmms_url']??''),
-            'nmms_cert_name'     => sanitize_text_field($_POST['nmms_cert_name']??''),
-            'nmms_cert_path'     => bntm_weimop_normalize_cert_path(!empty($_POST['nmms_cert_path'])?$_POST['nmms_cert_path']:$cur['nmms_cert_path']),
-            'nmms_cert_password' => $cur['nmms_cert_password'],
-            'nmms_friendly_name' => sanitize_text_field($_POST['nmms_friendly_name']??''),
-            'nmms_export_conf'   => bntm_weimop_normalize_local_file_path($_POST['nmms_export_conf']??''),
-            'nmms_result_type'   => sanitize_text_field($_POST['nmms_result_type']??''),
-            'nmms_market_run'    => sanitize_text_field($_POST['nmms_market_run']??''),
-            'nmms_region_name'   => sanitize_text_field($_POST['nmms_region_name']??''),
-            'nmms_run_time'      => sanitize_text_field($_POST['nmms_run_time']??''),
-            'nmms_commodity'     => sanitize_text_field($_POST['nmms_commodity']??''),
-            'nmms_price_node'    => sanitize_text_field($_POST['nmms_price_node']??''),
-            'nmms_interval_end'  => sanitize_text_field($_POST['nmms_interval_end']??''),
-            'nmms_unit_id'       => sanitize_text_field($_POST['nmms_unit_id']??''),
-        ];
-        
-        // Passwords: wp_unslash only — sanitize_text_field strips special chars
-        $ep = isset($_POST['email_password'])     ? wp_unslash($_POST['email_password'])     : '';
-        if ($ep !== '') $new['email_password'] = wp_hash_password($ep);
-        $cp = isset($_POST['nmms_cert_password']) ? wp_unslash($_POST['nmms_cert_password']) : '';
-        if ($cp !== '') $new['nmms_cert_password'] = wp_hash_password($cp);
-        
-        update_user_meta($uid,'bntm_weimop_settings',$new);
-        
-        wp_send_json_success(['message'=>'Settings saved successfully.','updated'=>true]);
-    } catch (Exception $e) {
-        wp_send_json_error(['message'=>'Error saving settings: '.$e->getMessage()], 400);
-    }
+    $uid = get_current_user_id();
+    $cur = bntm_weimop_get_settings($uid);
+    $new = [
+        'email_sender'       => sanitize_text_field($_POST['email_sender']??''),
+        'email_password'     => $cur['email_password'],
+        'email_recipients'   => sanitize_text_field($_POST['email_recipients']??''),
+        'price_alert'        => floatval($_POST['price_alert']??0),
+        'refresh_interval'   => max(60,intval($_POST['refresh_interval']??300)),
+        'nmms_operation'     => 'exportResults',
+        'nmms_main_url'      => esc_url_raw($_POST['nmms_main_url']??''),
+        'nmms_backup_url'    => esc_url_raw($_POST['nmms_backup_url']??''),
+        'nmms_url'           => esc_url_raw($_POST['nmms_url']??''),
+        'nmms_cert_name'     => sanitize_text_field($_POST['nmms_cert_name']??''),
+        'nmms_cert_path'     => bntm_weimop_normalize_cert_path(!empty($_POST['nmms_cert_path'])?$_POST['nmms_cert_path']:$cur['nmms_cert_path']),
+        'nmms_cert_password' => $cur['nmms_cert_password'],
+        'nmms_friendly_name' => sanitize_text_field($_POST['nmms_friendly_name']??''),
+        'nmms_export_conf'   => bntm_weimop_normalize_local_file_path($_POST['nmms_export_conf']??''),
+        'nmms_result_type'   => sanitize_text_field($_POST['nmms_result_type']??''),
+        'nmms_market_run'    => sanitize_text_field($_POST['nmms_market_run']??''),
+        'nmms_region_name'   => sanitize_text_field($_POST['nmms_region_name']??''),
+        'nmms_run_time'      => sanitize_text_field($_POST['nmms_run_time']??''),
+        'nmms_commodity'     => sanitize_text_field($_POST['nmms_commodity']??''),
+        'nmms_price_node'    => sanitize_text_field($_POST['nmms_price_node']??''),
+        'nmms_interval_end'  => sanitize_text_field($_POST['nmms_interval_end']??''),
+        'nmms_unit_id'       => sanitize_text_field($_POST['nmms_unit_id']??''),
+    ];
+    // Passwords: wp_unslash only — sanitize_text_field strips special chars
+    $ep = isset($_POST['email_password'])     ? wp_unslash($_POST['email_password'])     : '';
+    if ($ep !== '') $new['email_password'] = wp_hash_password($ep);
+    $cp = isset($_POST['nmms_cert_password']) ? wp_unslash($_POST['nmms_cert_password']) : '';
+    if ($cp !== '') $new['nmms_cert_password'] = wp_hash_password($cp);
+    update_user_meta($uid,'bntm_weimop_settings',$new);
+    wp_send_json_success(['message'=>'Settings saved successfully.','status'=>bntm_weimop_check_connection()]);
 }
 
 function bntm_ajax_weimop_get_market_snapshot() {
@@ -2389,10 +2267,10 @@ function bntm_weimop_read_snapshot(){
     if(is_array($r)){$o['last_interval']=(string)($r['TIME_INTERVAL']??'--');$o['rtd_schedule']=isset($r['SCHEDULE'])?number_format((float)$r['SCHEDULE'],2):'--';$o['lmp_price']=isset($r['LMP'])?number_format((float)$r['LMP'],2):'--';}
     $r=$db->get_row("SELECT OFFERED_CAP FROM ".bntm_weimop_table_name('OCCResourcesComplianceDetail')." ORDER BY TIME_INTERVAL DESC LIMIT 1", ARRAY_A);
     if(is_array($r)&&isset($r['OFFERED_CAP']))$o['offered_cap']=number_format((float)$r['OFFERED_CAP'],2);
-    $r=$db->get_row("SELECT PRICE FROM ".bntm_weimop_table_name('HAPResults')." ORDER BY TIME_INTERVAL DESC LIMIT 1", ARRAY_A);
-    if(is_array($r)&&isset($r['PRICE']))$o['hap_price']=number_format((float)$r['PRICE'],2);
-    $r=$db->get_row("SELECT PRICE FROM ".bntm_weimop_table_name('DAPResults')." ORDER BY TIME_INTERVAL DESC LIMIT 1", ARRAY_A);
-    if(is_array($r)&&isset($r['PRICE']))$o['dap_price']=number_format((float)$r['PRICE'],2);
+    $r=$db->get_row("SELECT LMP FROM ".bntm_weimop_table_name('HAPSchedules')." ORDER BY TIME_INTERVAL DESC LIMIT 1", ARRAY_A);
+    if(is_array($r)&&isset($r['LMP']))$o['hap_price']=number_format((float)$r['LMP'],2);
+    $r=$db->get_row("SELECT LMP FROM ".bntm_weimop_table_name('HAPSchedules')." ORDER BY TIME_INTERVAL DESC LIMIT 1", ARRAY_A);
+    if(is_array($r)&&isset($r['LMP']))$o['dap_price']=number_format((float)$r['LMP'],2);
     return $o;
 }
 function bntm_weimop_read_rtd_series(){
@@ -2403,20 +2281,20 @@ function bntm_weimop_read_rtd_series(){
 }
 function bntm_weimop_read_hap_series(){
     $o=['hap'=>[]];$db=bntm_weimop_open_db(true);if(!$db)return $o;
-    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,PRICE FROM ".bntm_weimop_table_name('HAPResults')." ORDER BY TIME_INTERVAL DESC LIMIT 48"));
-    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['hap'][]=['time'=>$ts,'value'=>(float)($r['PRICE']??0)];}
+    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,LMP FROM ".bntm_weimop_table_name('HAPSchedules')." ORDER BY TIME_INTERVAL DESC LIMIT 48"));
+    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['hap'][]=['time'=>$ts,'value'=>(float)($r['LMP']??0)];}
     return $o;
 }
 function bntm_weimop_read_dap_series(){
     $o=['dap'=>[]];$db=bntm_weimop_open_db(true);if(!$db)return $o;
-    $rows=bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,PRICE FROM ".bntm_weimop_table_name('DAPResults')." ORDER BY TIME_INTERVAL ASC LIMIT 288");
-    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['dap'][]=['time'=>$ts,'value'=>(float)($r['PRICE']??0)];}
+    $rows=bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,LMP FROM ".bntm_weimop_table_name('HAPSchedules')." ORDER BY TIME_INTERVAL ASC LIMIT 288");
+    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['dap'][]=['time'=>$ts,'value'=>(float)($r['LMP']??0)];}
     return $o;
 }
 function bntm_weimop_read_occ_series(){
     $o=['offered'=>[],'scheduled'=>[]];$db=bntm_weimop_open_db(true);if(!$db)return $o;
-    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,OFFERED_CAP,SCHEDULED_CAP FROM ".bntm_weimop_table_name('OCCResourcesComplianceDetail')." ORDER BY TIME_INTERVAL DESC LIMIT 288"));
-    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['offered'][]=['time'=>$ts,'value'=>(float)($r['OFFERED_CAP']??0)];$o['scheduled'][]=['time'=>$ts,'value'=>(float)($r['SCHEDULED_CAP']??0)];}
+    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,OFFERED_CAP,REGISTERED_CAP FROM ".bntm_weimop_table_name('OCCResourcesComplianceDetail')." ORDER BY TIME_INTERVAL DESC LIMIT 288"));
+    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['offered'][]=['time'=>$ts,'value'=>(float)($r['OFFERED_CAP']??0)];$o['scheduled'][]=['time'=>$ts,'value'=>(float)($r['REGISTERED_CAP']??0)];}
     return $o;
 }
 
