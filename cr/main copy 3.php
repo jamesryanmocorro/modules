@@ -67,7 +67,6 @@ function bntm_cr_get_tables() {
             business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             city VARCHAR(50) NOT NULL,
             vehicle_type VARCHAR(50) NOT NULL,
-            car_id BIGINT UNSIGNED DEFAULT NULL,
             duration_hours DECIMAL(10,2) NOT NULL,
             flat_rate DECIMAL(10,2) NOT NULL,
             airport_surcharge DECIMAL(10,2) DEFAULT 0,
@@ -76,8 +75,7 @@ function bntm_cr_get_tables() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_business (business_id),
             INDEX idx_city (city),
-            INDEX idx_vehicle_type (vehicle_type),
-            INDEX idx_car (car_id)
+            INDEX idx_vehicle_type (vehicle_type)
         ) {$charset};",
         
         // Self-Drive Rates - 24-hour duration based rates
@@ -109,7 +107,6 @@ function bntm_cr_get_tables() {
             location_name VARCHAR(255) NOT NULL,
             km_distance DECIMAL(10,2) NOT NULL,
             vehicle_type VARCHAR(50) NOT NULL,
-            car_id BIGINT UNSIGNED DEFAULT NULL,
             rate_per_trip DECIMAL(10,2) NOT NULL,
             exceeding_rate_per_hour DECIMAL(10,2) NOT NULL,
             status VARCHAR(20) DEFAULT 'active',
@@ -117,8 +114,7 @@ function bntm_cr_get_tables() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_business (business_id),
             INDEX idx_city (city),
-            INDEX idx_vehicle_type (vehicle_type),
-            INDEX idx_car (car_id)
+            INDEX idx_vehicle_type (vehicle_type)
         ) {$charset};",
         
         'cr_packages' => "CREATE TABLE {$prefix}cr_packages (
@@ -389,23 +385,9 @@ function bntm_cr_get_car_details($car_id) {
     ));
 }
 
-function bntm_cr_get_commercial_rate($city, $vehicle_type, $duration_hours = null, $car_id = null) {
+function bntm_cr_get_commercial_rate($city, $vehicle_type, $duration_hours = null) {
     global $wpdb;
     $prefix = $wpdb->prefix;
-
-    if ($car_id !== null && intval($car_id) > 0) {
-        $rate = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$prefix}cr_commercial_rates WHERE city = %s AND vehicle_type = %s AND car_id = %d AND duration_hours = %s AND status = 'active' LIMIT 1",
-            $city,
-            $vehicle_type,
-            intval($car_id),
-            $duration_hours
-        ));
-
-        if ($rate) {
-            return $rate;
-        }
-    }
 
     if ($duration_hours !== null && $duration_hours !== '') {
         return $wpdb->get_row($wpdb->prepare(
@@ -467,24 +449,10 @@ function bntm_cr_get_self_drive_rate_by_car($car_id) {
     ));
 }
 
-function bntm_cr_get_out_of_town_rate($city, $location, $vehicle_type, $car_id = null) {
+function bntm_cr_get_out_of_town_rate($city, $location, $vehicle_type) {
     global $wpdb;
     $prefix = $wpdb->prefix;
-
-    if ($car_id !== null && intval($car_id) > 0) {
-        $rate = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$prefix}cr_out_of_town_rates WHERE city = %s AND location_name = %s AND vehicle_type = %s AND car_id = %d AND status = 'active' LIMIT 1",
-            $city,
-            $location,
-            $vehicle_type,
-            intval($car_id)
-        ));
-
-        if ($rate) {
-            return $rate;
-        }
-    }
-
+    
     return $wpdb->get_row($wpdb->prepare(
         "SELECT * FROM {$prefix}cr_out_of_town_rates WHERE city = %s AND location_name = %s AND vehicle_type = %s AND status = 'active'",
         $city,
@@ -505,9 +473,9 @@ function bntm_cr_get_out_of_town_locations($city) {
     return $results ?: [];
 }
 
-function bntm_cr_calculate_commercial_price($hours, $city, $vehicle_type, $from_airport = false, $car_id = null) {
+function bntm_cr_calculate_commercial_price($hours, $city, $vehicle_type, $from_airport = false) {
     $duration_hours = max(0, floatval($hours));
-    $rate = bntm_cr_get_commercial_rate($city, $vehicle_type, $duration_hours, $car_id);
+    $rate = bntm_cr_get_commercial_rate($city, $vehicle_type, $duration_hours);
     
     if (!$rate) {
         return null;
@@ -550,8 +518,8 @@ function bntm_cr_calculate_self_drive_price($num_days, $city, $vehicle_type, $ad
     ];
 }
 
-function bntm_cr_calculate_out_of_town_price($location, $city, $vehicle_type, $hours_used, $car_id = null) {
-    $rate = bntm_cr_get_out_of_town_rate($city, $location, $vehicle_type, $car_id);
+function bntm_cr_calculate_out_of_town_price($location, $city, $vehicle_type, $hours_used) {
+    $rate = bntm_cr_get_out_of_town_rate($city, $location, $vehicle_type);
     
     if (!$rate) {
         return null;
@@ -908,10 +876,7 @@ function cr_fleet_tab($business_id) {
         $business_id
     ));
     $commercial_rates = $wpdb->get_results($wpdb->prepare(
-        "SELECT r.*, CONCAT(c.car_make, ' ', c.car_model) AS car_name, c.plate_number AS car_plate
-         FROM {$commercial_table} r
-         LEFT JOIN {$inventory_table} c ON r.car_id = c.id
-         WHERE r.business_id = %d ORDER BY r.city, r.vehicle_type, car_name",
+        "SELECT * FROM {$commercial_table} WHERE business_id = %d ORDER BY city, vehicle_type",
         $business_id
     ));
     $self_drive_rates = $wpdb->get_results($wpdb->prepare(
@@ -922,10 +887,7 @@ function cr_fleet_tab($business_id) {
         $business_id
     ));
     $out_of_town_rates = $wpdb->get_results($wpdb->prepare(
-        "SELECT r.*, CONCAT(c.car_make, ' ', c.car_model) AS car_name, c.plate_number AS car_plate
-         FROM {$out_of_town_table} r
-         LEFT JOIN {$inventory_table} c ON r.car_id = c.id
-         WHERE r.business_id = %d ORDER BY r.city, r.location_name, r.vehicle_type, car_name",
+        "SELECT * FROM {$out_of_town_table} WHERE business_id = %d ORDER BY city, location_name, vehicle_type",
         $business_id
     ));
 
@@ -1119,21 +1081,6 @@ function cr_fleet_tab($business_id) {
                         <div class="bntm-form-group"><label>Duration (Hours) *</label><input type="number" name="duration_hours" min="1" step="0.5" required placeholder="e.g., 3"></div>
                         <div class="bntm-form-group"><label>Flat Rate *</label><input type="number" name="flat_rate" min="0" step="0.01" required placeholder="e.g., 1500"></div>
                     </div>
-                    <div class="bntm-form-group">
-                        <label>Assigned Vehicle *</label>
-                        <select name="car_id" required>
-                            <option value="">Select inventory vehicle</option>
-                            <?php foreach ($inventory as $car): ?>
-                                <option
-                                    value="<?php echo esc_attr($car->id); ?>"
-                                    data-city="<?php echo esc_attr($car->city ?? 'cebu'); ?>"
-                                    data-vehicle-type="<?php echo esc_attr($car->vehicle_type ?? 'sedan'); ?>">
-                                    <?php echo esc_html(trim($car->car_make . ' ' . $car->car_model)); ?> — <?php echo esc_html($car->plate_number); ?> (<?php echo esc_html($city_choices[bntm_cr_normalize_city($car->city ?? 'cebu')] ?? 'Cebu'); ?>)
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <small class="cr-spec-note">This car will be tied to the commercial rate and used in the booking flow.</small>
-                    </div>
                     <div class="bntm-form-group"><label>Airport Surcharge</label><input type="number" name="airport_surcharge" min="0" step="0.01" value="0"></div>
                 <?php elseif ($panel_key === 'self_drive'): ?>
                     <div class="bntm-form-row">
@@ -1161,21 +1108,6 @@ function cr_fleet_tab($business_id) {
                         <div class="bntm-form-group"><label>Location Name *</label><input type="text" name="location_name" required></div>
                         <div class="bntm-form-group"><label>KM Distance *</label><input type="number" name="km_distance" min="0" step="0.01" required></div>
                     </div>
-                    <div class="bntm-form-group">
-                        <label>Assigned Vehicle *</label>
-                        <select name="car_id" required>
-                            <option value="">Select inventory vehicle</option>
-                            <?php foreach ($inventory as $car): ?>
-                                <option
-                                    value="<?php echo esc_attr($car->id); ?>"
-                                    data-city="<?php echo esc_attr($car->city ?? 'cebu'); ?>"
-                                    data-vehicle-type="<?php echo esc_attr($car->vehicle_type ?? 'sedan'); ?>">
-                                    <?php echo esc_html(trim($car->car_make . ' ' . $car->car_model)); ?> — <?php echo esc_html($car->plate_number); ?> (<?php echo esc_html($city_choices[bntm_cr_normalize_city($car->city ?? 'cebu')] ?? 'Cebu'); ?>)
-                                </option>
-                            <?php endforeach; ?>
-                        </select>
-                        <small class="cr-spec-note">This car will be tied to the out-of-town rate and booking flow.</small>
-                    </div>
                     <div class="bntm-form-row">
                         <div class="bntm-form-group"><label>Trip Rate *</label><input type="number" name="rate_per_trip" min="0" step="0.01" required></div>
                         <div class="bntm-form-group"><label>Exceeding Rate / Hour *</label><input type="number" name="exceeding_rate_per_hour" min="0" step="0.01" required></div>
@@ -1198,11 +1130,11 @@ function cr_fleet_tab($business_id) {
                         <th>City</th>
                         <th>Vehicle</th>
                         <?php if ($panel_key === 'commercial'): ?>
-                            <th>Duration</th><th>Flat</th><th>Airport</th><th>Assigned Car</th>
+                            <th>Duration</th><th>Flat</th><th>Airport</th>
                         <?php elseif ($panel_key === 'self_drive'): ?>
                             <th>Vehicle</th><th>24 Hours</th><th>Exceeding</th><th>Deposit</th>
                         <?php else: ?>
-                            <th>Location</th><th>KM</th><th>Trip</th><th>Exceeding</th><th>Assigned Car</th>
+                            <th>Location</th><th>KM</th><th>Trip</th><th>Exceeding</th>
                         <?php endif; ?>
                         <th>Status</th>
                         <th>Action</th>
@@ -1210,7 +1142,7 @@ function cr_fleet_tab($business_id) {
                 </thead>
                 <tbody>
                     <?php if (empty($section['table'])): ?>
-                        <tr><td colspan="<?php echo $panel_key === 'commercial' ? 8 : ($panel_key === 'self_drive' ? 8 : 9); ?>" style="text-align:center;">No rates saved yet.</td></tr>
+                        <tr><td colspan="<?php echo $panel_key === 'commercial' ? 7 : 8; ?>" style="text-align:center;">No rates saved yet.</td></tr>
                     <?php else: foreach ($section['table'] as $rate): ?>
                         <tr>
                             <td><?php echo esc_html($city_choices[bntm_cr_normalize_city($rate->city ?? 'cebu')] ?? 'Cebu'); ?></td>
@@ -1219,10 +1151,6 @@ function cr_fleet_tab($business_id) {
                                 <td><?php echo esc_html($rate->duration_hours); ?> hrs</td>
                                 <td>₱<?php echo number_format($rate->flat_rate, 2); ?></td>
                                 <td>₱<?php echo number_format($rate->airport_surcharge, 2); ?></td>
-                                <td>
-                                    <?php echo esc_html($rate->car_name ?: 'Any vehicle'); ?><br>
-                                    <small style="color:#6b7280;"><?php echo esc_html($rate->car_plate ?: 'No assigned car'); ?></small>
-                                </td>
                             <?php elseif ($panel_key === 'self_drive'): ?>
                                 <td>
                                     <?php echo esc_html($rate->car_name ?: 'Any vehicle'); ?><br>
@@ -1236,10 +1164,6 @@ function cr_fleet_tab($business_id) {
                                 <td><?php echo number_format($rate->km_distance, 2); ?></td>
                                 <td>₱<?php echo number_format($rate->rate_per_trip, 2); ?></td>
                                 <td>₱<?php echo number_format($rate->exceeding_rate_per_hour, 2); ?></td>
-                                <td>
-                                    <?php echo esc_html($rate->car_name ?: 'Any vehicle'); ?><br>
-                                    <small style="color:#6b7280;"><?php echo esc_html($rate->car_plate ?: 'No assigned car'); ?></small>
-                                </td>
                             <?php endif; ?>
                             <td><?php echo esc_html(ucfirst($rate->status)); ?></td>
                             <td>
@@ -3781,16 +3705,6 @@ function bntm_shortcode_cr_form() {
                         </select>
                         <small class="cr-spec-note">Loaded from the cars saved for the selected city.</small>
                     </div>
-                    <div id="commercial-selected-car-info" class="price-display hidden" style="margin-top:-5px;">
-                        <div class="price-row">
-                            <span>Selected Car:</span>
-                            <strong id="commercial-car-name">None</strong>
-                        </div>
-                        <div class="price-row">
-                            <span>City / Type:</span>
-                            <span id="commercial-car-meta">-</span>
-                        </div>
-                    </div>
                     
                     <div class="bntm-form-row">
                         <div class="bntm-form-group">
@@ -3941,16 +3855,6 @@ function bntm_shortcode_cr_form() {
                         </select>
                         <small class="cr-spec-note">Loaded from the cars saved for the selected city.</small>
                     </div>
-                    <div id="oot-selected-car-info" class="price-display hidden" style="margin-top:-5px;">
-                        <div class="price-row">
-                            <span>Selected Car:</span>
-                            <strong id="oot-car-name">None</strong>
-                        </div>
-                        <div class="price-row">
-                            <span>City / Type:</span>
-                            <span id="oot-car-meta">-</span>
-                        </div>
-                    </div>
                     
                     <div class="bntm-form-row">
                         <div class="bntm-form-group">
@@ -3994,8 +3898,7 @@ function bntm_shortcode_cr_form() {
             
             <!-- Customer Details (shown after rental type selection) -->
             <div id="customer-details" class="customer-details">
-                <h3>Step 4: Contact Details</h3>
-                <p style="color: #6b7280; margin-bottom: 20px;">Fill in your contact information after choosing a car.</p>
+                <h3>Your Details</h3>
                 
                 <div class="bntm-form-row">
                     <div class="bntm-form-group">
@@ -4054,7 +3957,6 @@ function bntm_shortcode_cr_form() {
         // Load out of town locations for this city
         loadOutOfTownLocations(city);
         crRefreshActiveCarLists();
-        updateCustomerDetailsVisibility();
     }
     
     function selectRentalType(type, event) {
@@ -4084,7 +3986,8 @@ function bntm_shortcode_cr_form() {
         document.getElementById('next-step2').disabled = false;
         document.getElementById('next-step2').style.opacity = '1';
         document.getElementById('next-step2').style.cursor = 'pointer';
-        updateCustomerDetailsVisibility();
+        
+        document.getElementById('customer-details').classList.add('show');
     }
     
     function goToStep(step) {
@@ -4178,17 +4081,18 @@ function bntm_shortcode_cr_form() {
                     if (prefix === 'sd') {
                         renderSelectedInventoryCar('sd');
                     }
-                    if (prefix === 'commercial' || prefix === 'oot') {
-                        renderSelectedInventoryCar(prefix);
-                    }
                 } else {
                     select.innerHTML = '<option value="">No cars available</option>';
-                    renderSelectedInventoryCar(prefix);
+                    if (prefix === 'sd') {
+                        renderSelectedInventoryCar('sd');
+                    }
                 }
             })
             .catch(() => {
                 select.innerHTML = '<option value="">Error loading cars</option>';
-                renderSelectedInventoryCar(prefix);
+                if (prefix === 'sd') {
+                    renderSelectedInventoryCar('sd');
+                }
             });
     }
 
@@ -4205,7 +4109,6 @@ function bntm_shortcode_cr_form() {
             infoWrap.classList.add('hidden');
             if (nameEl) nameEl.textContent = 'None';
             if (metaEl) metaEl.textContent = '-';
-            updateCustomerDetailsVisibility();
             return;
         }
 
@@ -4217,7 +4120,6 @@ function bntm_shortcode_cr_form() {
             const seats = opt.dataset.seats ? `, ${opt.dataset.seats} seats` : '';
             metaEl.textContent = `${cityLabel} / ${vehicleLabel}${seats}`;
         }
-        updateCustomerDetailsVisibility();
     }
 
     function crRefreshActiveCarLists() {
@@ -4236,54 +4138,13 @@ function bntm_shortcode_cr_form() {
             renderSelectedInventoryCar('sd');
         });
     }
-    const commercialCarSelect = document.getElementById('commercial-car');
-    if (commercialCarSelect) {
-        commercialCarSelect.addEventListener('change', function() {
-            renderSelectedInventoryCar('commercial');
-        });
-    }
-    const ootCarSelect = document.getElementById('oot-car');
-    if (ootCarSelect) {
-        ootCarSelect.addEventListener('change', function() {
-            renderSelectedInventoryCar('oot');
-        });
-    }
-
-    function updateCustomerDetailsVisibility() {
-        const details = document.getElementById('customer-details');
-        if (!details) return;
-
-        let currentPrefix = '';
-        if (selectedRentalType === 'commercial') {
-            currentPrefix = 'commercial';
-        } else if (selectedRentalType === 'self_drive') {
-            currentPrefix = 'sd';
-        } else if (selectedRentalType === 'out_of_town') {
-            currentPrefix = 'oot';
-        }
-
-        if (!selectedCity || !selectedRentalType || !currentPrefix) {
-            details.classList.remove('show');
-            return;
-        }
-
-        const carSelect = document.getElementById(currentPrefix + '-car');
-        const hasCar = !!(carSelect && carSelect.value);
-
-        if (hasCar) {
-            details.classList.add('show');
-        } else {
-            details.classList.remove('show');
-        }
-    }
     
     function updateCommercialRate() {
         const hours = parseFloat(document.getElementById('commercial-hours').value) || 0;
         const vehicleType = document.getElementById('commercial-vehicle').value;
-        const carId = document.getElementById('commercial-car').value || 0;
         const airport = document.getElementById('airport-pickup').value === 'yes';
         
-        if (!hours || !vehicleType || !carId) {
+        if (!hours || !vehicleType) {
             document.getElementById('commercial-price-display').classList.add('hidden');
             return;
         }
@@ -4292,7 +4153,6 @@ function bntm_shortcode_cr_form() {
         fd.append('action', 'cr_calculate_commercial');
         fd.append('city', selectedCity);
         fd.append('vehicle_type', vehicleType);
-        fd.append('car_id', carId);
         fd.append('hours', hours);
         fd.append('airport', airport ? 'yes' : 'no');
         
@@ -4314,7 +4174,6 @@ function bntm_shortcode_cr_form() {
                     document.getElementById('commercial-total').textContent = '₱' + parseFloat(pricing.total).toLocaleString('en-US', {minimumFractionDigits: 2});
                     document.getElementById('total_price').value = pricing.total;
                     document.getElementById('commercial-price-display').classList.remove('hidden');
-                    renderSelectedInventoryCar('commercial');
                 }
             });
     }
@@ -4364,7 +4223,6 @@ function bntm_shortcode_cr_form() {
                     document.getElementById('sd-total').textContent = '₱' + parseFloat(pricing.total).toLocaleString('en-US', {minimumFractionDigits: 2});
                     document.getElementById('total_price').value = pricing.total;
                     document.getElementById('sd-price-display').classList.remove('hidden');
-                    renderSelectedInventoryCar('sd');
                 }
             });
     }
@@ -4372,10 +4230,9 @@ function bntm_shortcode_cr_form() {
     function updateOutOfTownRate() {
         const location = document.getElementById('oot-location').value;
         const vehicleType = document.getElementById('oot-vehicle').value;
-        const carId = document.getElementById('oot-car').value || 0;
         const hours = parseFloat(document.getElementById('oot-hours').value) || 0;
         
-        if (!location || !vehicleType || !hours || !carId) {
+        if (!location || !vehicleType || !hours) {
             document.getElementById('oot-price-display').classList.add('hidden');
             return;
         }
@@ -4385,7 +4242,6 @@ function bntm_shortcode_cr_form() {
         fd.append('city', selectedCity);
         fd.append('location', location);
         fd.append('vehicle_type', vehicleType);
-        fd.append('car_id', carId);
         fd.append('hours', hours);
         
         fetch(ajaxurl, { method: 'POST', body: fd })
@@ -4410,7 +4266,6 @@ function bntm_shortcode_cr_form() {
                     document.getElementById('oot-total').textContent = '₱' + parseFloat(pricing.total).toLocaleString('en-US', {minimumFractionDigits: 2});
                     document.getElementById('total_price').value = pricing.total;
                     document.getElementById('oot-price-display').classList.remove('hidden');
-                    renderSelectedInventoryCar('oot');
                 }
             });
     }
@@ -5690,22 +5545,14 @@ function bntm_ajax_cr_submit_booking() {
         $hours = max(0, floatval($_POST['commercial_hours'] ?? $_POST['total_hours'] ?? 0));
         $airport = sanitize_text_field($_POST['airport_pickup'] ?? 'no') === 'yes';
         $vehicle_type = sanitize_text_field($_POST['commercial_vehicle_type'] ?? $vehicle_type);
-        $car_id = intval($_POST['car_id'] ?? $car_id);
-        $car = $car_id > 0 ? $wpdb->get_row($wpdb->prepare("SELECT * FROM {$inventory_table} WHERE id = %d", $car_id)) : $car;
         if (!$car && $car_id <= 0) {
             wp_send_json_error(['message' => 'Please select a car from the inventory.']);
-        }
-        if ($car && bntm_cr_normalize_city($car->city ?? 'cebu') !== $city) {
-            wp_send_json_error(['message' => 'Selected car does not belong to the chosen city.']);
-        }
-        if ($car && !empty($car->vehicle_type) && sanitize_text_field($car->vehicle_type) !== $vehicle_type) {
-            wp_send_json_error(['message' => 'Selected vehicle type does not match the inventory car.']);
         }
         if ($car_capacity > 0 && $number_of_pax > $car_capacity) {
             wp_send_json_error(['message' => 'Passengers exceed the selected car capacity.']);
         }
 
-        $calc = bntm_cr_calculate_commercial_price($hours, $city, $vehicle_type, $airport, $car_id > 0 ? $car_id : null);
+        $calc = bntm_cr_calculate_commercial_price($hours, $city, $vehicle_type, $airport);
         if (!$calc) {
             wp_send_json_error(['message' => 'Commercial rate not available for this exact duration, city, and vehicle type.']);
         }
@@ -5758,22 +5605,14 @@ function bntm_ajax_cr_submit_booking() {
         $location_name = sanitize_text_field($_POST['oot_location'] ?? '');
         $hours = max(0, floatval($_POST['oot_hours'] ?? 0));
         $vehicle_type = sanitize_text_field($_POST['oot_vehicle_type'] ?? $vehicle_type);
-        $car_id = intval($_POST['car_id'] ?? $car_id);
-        $car = $car_id > 0 ? $wpdb->get_row($wpdb->prepare("SELECT * FROM {$inventory_table} WHERE id = %d", $car_id)) : $car;
         if (!$car && $car_id <= 0) {
             wp_send_json_error(['message' => 'Please select a car from the inventory.']);
-        }
-        if ($car && bntm_cr_normalize_city($car->city ?? 'cebu') !== $city) {
-            wp_send_json_error(['message' => 'Selected car does not belong to the chosen city.']);
-        }
-        if ($car && !empty($car->vehicle_type) && sanitize_text_field($car->vehicle_type) !== $vehicle_type) {
-            wp_send_json_error(['message' => 'Selected vehicle type does not match the inventory car.']);
         }
         if ($car_capacity > 0 && $number_of_pax > $car_capacity) {
             wp_send_json_error(['message' => 'Passengers exceed the selected car capacity.']);
         }
 
-        $calc = bntm_cr_calculate_out_of_town_price($location_name, $city, $vehicle_type, $hours, $car_id > 0 ? $car_id : null);
+        $calc = bntm_cr_calculate_out_of_town_price($location_name, $city, $vehicle_type, $hours);
         if (!$calc) {
             wp_send_json_error(['message' => 'Out-of-town rate not available for this selection.']);
         }
@@ -5966,41 +5805,17 @@ function bntm_ajax_cr_save_commercial_rate() {
     $table = $wpdb->prefix . 'cr_commercial_rates';
     $rate_id = intval($_POST['id'] ?? 0);
     $rand_id = $rate_id > 0 ? $wpdb->get_var($wpdb->prepare("SELECT rand_id FROM {$table} WHERE id = %d", $rate_id)) : bntm_rand_id();
-    $car_id = intval($_POST['car_id'] ?? 0);
-    if ($car_id <= 0) {
-        wp_send_json_error(['message' => 'Please select an assigned vehicle for this commercial rate.']);
-    }
-
-    $car = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}cr_car_inventory WHERE id = %d",
-        $car_id
-    ));
-    if (!$car) {
-        wp_send_json_error(['message' => 'Selected vehicle was not found in inventory.']);
-    }
-
-    $selected_city = bntm_cr_normalize_city($_POST['city'] ?? 'cebu');
-    if (bntm_cr_normalize_city($car->city ?? 'cebu') !== $selected_city) {
-        wp_send_json_error(['message' => 'Selected vehicle must belong to the chosen city.']);
-    }
-
-    $vehicle_type = sanitize_text_field($_POST['vehicle_type'] ?? 'sedan');
-    if (!empty($car->vehicle_type) && sanitize_text_field($car->vehicle_type) !== $vehicle_type) {
-        wp_send_json_error(['message' => 'Selected vehicle type does not match the inventory car.']);
-    }
-
     $data = [
         'rand_id' => $rand_id,
         'business_id' => get_current_user_id(),
-        'city' => $selected_city,
-        'vehicle_type' => $vehicle_type,
-        'car_id' => $car_id,
+        'city' => bntm_cr_normalize_city($_POST['city'] ?? 'cebu'),
+        'vehicle_type' => sanitize_text_field($_POST['vehicle_type'] ?? 'sedan'),
         'duration_hours' => floatval($_POST['duration_hours'] ?? 0),
         'flat_rate' => floatval($_POST['flat_rate'] ?? 0),
         'airport_surcharge' => floatval($_POST['airport_surcharge'] ?? 0),
         'status' => sanitize_text_field($_POST['status'] ?? 'active'),
     ];
-    $result = bntm_cr_upsert_row($table, $data, ['%s','%d','%s','%s','%d','%f','%f','%f','%s'], $rate_id);
+    $result = bntm_cr_upsert_row($table, $data, ['%s','%d','%s','%s','%f','%f','%f','%s'], $rate_id);
     $result !== false ? wp_send_json_success(['message' => 'Commercial rate saved']) : wp_send_json_error(['message' => 'Failed to save rate']);
 }
 
@@ -6082,42 +5897,18 @@ function bntm_ajax_cr_save_out_of_town_rate() {
     $table = $wpdb->prefix . 'cr_out_of_town_rates';
     $rate_id = intval($_POST['id'] ?? 0);
     $rand_id = $rate_id > 0 ? $wpdb->get_var($wpdb->prepare("SELECT rand_id FROM {$table} WHERE id = %d", $rate_id)) : bntm_rand_id();
-    $car_id = intval($_POST['car_id'] ?? 0);
-    if ($car_id <= 0) {
-        wp_send_json_error(['message' => 'Please select an assigned vehicle for this out-of-town rate.']);
-    }
-
-    $car = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}cr_car_inventory WHERE id = %d",
-        $car_id
-    ));
-    if (!$car) {
-        wp_send_json_error(['message' => 'Selected vehicle was not found in inventory.']);
-    }
-
-    $selected_city = bntm_cr_normalize_city($_POST['city'] ?? 'cebu');
-    if (bntm_cr_normalize_city($car->city ?? 'cebu') !== $selected_city) {
-        wp_send_json_error(['message' => 'Selected vehicle must belong to the chosen city.']);
-    }
-
-    $vehicle_type = sanitize_text_field($_POST['vehicle_type'] ?? 'sedan');
-    if (!empty($car->vehicle_type) && sanitize_text_field($car->vehicle_type) !== $vehicle_type) {
-        wp_send_json_error(['message' => 'Selected vehicle type does not match the inventory car.']);
-    }
-
     $data = [
         'rand_id' => $rand_id,
         'business_id' => get_current_user_id(),
-        'city' => $selected_city,
+        'city' => bntm_cr_normalize_city($_POST['city'] ?? 'cebu'),
         'location_name' => sanitize_text_field($_POST['location_name'] ?? ''),
         'km_distance' => floatval($_POST['km_distance'] ?? 0),
-        'vehicle_type' => $vehicle_type,
-        'car_id' => $car_id,
+        'vehicle_type' => sanitize_text_field($_POST['vehicle_type'] ?? 'sedan'),
         'rate_per_trip' => floatval($_POST['rate_per_trip'] ?? 0),
         'exceeding_rate_per_hour' => floatval($_POST['exceeding_rate_per_hour'] ?? 0),
         'status' => sanitize_text_field($_POST['status'] ?? 'active'),
     ];
-    $result = bntm_cr_upsert_row($table, $data, ['%s','%d','%s','%s','%f','%s','%d','%f','%f','%s'], $rate_id);
+    $result = bntm_cr_upsert_row($table, $data, ['%s','%d','%s','%s','%f','%s','%f','%f','%s'], $rate_id);
     $result !== false ? wp_send_json_success(['message' => 'Out-of-town rate saved']) : wp_send_json_error(['message' => 'Failed to save rate']);
 }
 
@@ -6260,11 +6051,10 @@ function bntm_ajax_cr_get_out_of_town_locations() {
 function bntm_ajax_cr_calculate_commercial() {
     $city = sanitize_text_field($_POST['city'] ?? 'cebu');
     $vehicle_type = sanitize_text_field($_POST['vehicle_type'] ?? '');
-    $car_id = intval($_POST['car_id'] ?? 0);
     $hours = floatval($_POST['hours'] ?? 0);
     $airport = sanitize_text_field($_POST['airport'] ?? 'no') === 'yes';
     
-    $pricing = bntm_cr_calculate_commercial_price($hours, $city, $vehicle_type, $airport, $car_id > 0 ? $car_id : null);
+    $pricing = bntm_cr_calculate_commercial_price($hours, $city, $vehicle_type, $airport);
     
     if ($pricing) {
         wp_send_json_success($pricing);
@@ -6293,10 +6083,9 @@ function bntm_ajax_cr_calculate_out_of_town() {
     $city = sanitize_text_field($_POST['city'] ?? 'cebu');
     $location = sanitize_text_field($_POST['location'] ?? '');
     $vehicle_type = sanitize_text_field($_POST['vehicle_type'] ?? '');
-    $car_id = intval($_POST['car_id'] ?? 0);
     $hours = floatval($_POST['hours'] ?? 0);
     
-    $pricing = bntm_cr_calculate_out_of_town_price($location, $city, $vehicle_type, $hours, $car_id > 0 ? $car_id : null);
+    $pricing = bntm_cr_calculate_out_of_town_price($location, $city, $vehicle_type, $hours);
     
     if ($pricing) {
         wp_send_json_success($pricing);
