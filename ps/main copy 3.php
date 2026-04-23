@@ -88,7 +88,6 @@ function bntm_ps_get_tables() {
             ticket_number VARCHAR(30) UNIQUE NOT NULL,
             ticket_tag VARCHAR(100) NOT NULL DEFAULT '',
             or_number VARCHAR(50) NOT NULL DEFAULT '',
-            old_or_number VARCHAR(50) NULL DEFAULT NULL,
             parent_loan_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             customer_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             collateral_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -273,38 +272,6 @@ function ps_ensure_ticket_tag_column(): void {
         $wpdb->query("ALTER TABLE {$table} ADD ticket_tag VARCHAR(100) NOT NULL DEFAULT '' AFTER ticket_number");
     }
     $done = true;
-}
-
-function ps_ensure_or_history_column(): void {
-    global $wpdb;
-    static $done = false;
-    if ($done) return;
-    $table = $wpdb->prefix . 'ps_loans';
-    $exists = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", 'old_or_number'));
-    if (!$exists) {
-        $wpdb->query("ALTER TABLE {$table} ADD old_or_number VARCHAR(50) NULL DEFAULT NULL AFTER or_number");
-    }
-    $done = true;
-}
-
-function ps_or_number_exists(string $or_number, int $exclude_loan_id = 0): bool {
-    global $wpdb;
-    $or_number = strtoupper(trim($or_number));
-    if ($or_number === '') return false;
-
-    if ($exclude_loan_id > 0) {
-        return (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans
-             WHERE (or_number=%s OR old_or_number=%s) AND id<>%d",
-            $or_number, $or_number, $exclude_loan_id
-        )) > 0;
-    }
-
-    return (int)$wpdb->get_var($wpdb->prepare(
-        "SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans
-         WHERE or_number=%s OR old_or_number=%s",
-        $or_number, $or_number
-    )) > 0;
 }
 
 function ps_auto_mark_overdue($business_id) {
@@ -927,8 +894,8 @@ function ps_render_modals() {
                             </select>
                         </div>
                         <div class="bntm-form-group">
-                            <label>Official Receipt (OR) Number <span style="color:#ef4444;">*</span></label>
-                            <input type="text" name="or_number" placeholder="OR NUMBER" required style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
+                            <label>OR Number</label>
+                            <input type="text" name="or_number" placeholder="OR NUMBER" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
                         </div>
                         <div class="bntm-form-group">
                             <label>Interest Rate (%/month)</label>
@@ -1073,8 +1040,8 @@ function ps_render_modals() {
                         <select name="payment_method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank_transfer">Bank Transfer</option></select>
                     </div>
                     <div class="bntm-form-group">
-                        <label>Official Receipt (OR) Number <span style="color:#ef4444;">*</span></label>
-                        <input type="text" name="or_number" placeholder="OR NUMBER" required style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
+                        <label>Reference / OR No.</label>
+                        <input type="text" name="reference_number" placeholder="Optional reference number" Required >
                     </div>
                     <div class="bntm-form-group">
                         <label>Notes</label>
@@ -6049,8 +6016,6 @@ function ps_doc_pawn_ticket( $loan, $bd, array $b ): string {
     $customer_name = preg_replace('/\s+/', ' ', trim($loan->customer_name));
     $address = preg_replace('/\s+/', ' ', trim($loan->address));
     $id_presented = trim($loan->id_type . ': ' . $loan->id_number);
-    $current_or_number = trim((string)($loan->or_number ?? ''));
-    $old_or_number = trim((string)($loan->old_or_number ?? ''));
     $x_offset = 2.0;
     $y_offset = 3.0;
     $pos = function(float $top, float $left, string $extra = '') use ($x_offset, $y_offset): string {
@@ -6104,25 +6069,9 @@ body { font-family:'Courier New',Courier,monospace; font-size:10px; }
     white-space: normal;
     
 }
-.tk-or-block {
-    position: absolute;
-    top: 5mm;
-    left: 9mm;
-    font-size: 8px;
-    line-height: 1.2;
-    font-weight: 700;
-    letter-spacing: .3px;
-    white-space: nowrap;
-}
 </style>
 </head><body>
 <div class="tk-dot-sheet">
-    <?php if ($current_or_number !== ''): ?>
-    <div class="tk-or-block">
-        OR: <?php echo esc_html($current_or_number); ?>
-        <?php if ($old_or_number !== ''): ?><br>Previous OR: <?php echo esc_html($old_or_number); ?><?php endif; ?>
-    </div>
-    <?php endif; ?>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(20, 20)); ?>"><?php echo esc_html(number_format($loan->principal)); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(28, 40)); ?>"><?php echo esc_html($loan_date_fmt); ?></div>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(25, 135)); ?>"><?php echo esc_html($due_date_fmt); ?></div>
@@ -6793,7 +6742,6 @@ function bntm_ajax_ps_create_loan() {
     check_ajax_referer('ps_create_nonce', 'nonce');
     if (!is_user_logged_in()) { wp_send_json_error(['message'=>'Unauthorized']); }
     ps_ensure_ticket_tag_column();
-    ps_ensure_or_history_column();
     global $wpdb;
     $business_id = bntm_ps_get_business_id();
     $processed_by = get_current_user_id();
@@ -6816,9 +6764,6 @@ function bntm_ajax_ps_create_loan() {
     if (!$customer_id || $principal <= 0 || !$due_date) {
         wp_send_json_error(['message' => 'Required fields missing.']); return;
     }
-    if ($or_number === '') {
-        wp_send_json_error(['message' => 'Official Receipt (OR) number is required.']); return;
-    }
 
     $flag = $wpdb->get_var($wpdb->prepare(
         "SELECT customer_flag FROM {$wpdb->prefix}ps_customers WHERE id=%d AND business_id=%d",
@@ -6826,9 +6771,6 @@ function bntm_ajax_ps_create_loan() {
     ));
     if ($flag === 'blacklisted') {
         wp_send_json_error(['message' => 'Blacklisted customer cannot create new loans.']); return;
-    }
-    if (ps_or_number_exists($or_number)) {
-        wp_send_json_error(['message' => 'Official Receipt number already exists.']); return;
     }
 
     if ($ticket_override !== '') {
@@ -6881,7 +6823,6 @@ function bntm_ajax_ps_create_loan() {
         'ticket_number'    => $ticket_number,
         'ticket_tag'       => $ticket_tag,
         'parent_loan_id'   => 0,
-        'old_or_number'    => null,
         'customer_id'      => $customer_id,
         'collateral_id'    => $collateral_id,
         'branch'           => '',
@@ -6966,7 +6907,6 @@ function bntm_ajax_ps_renew_loan() {
     check_ajax_referer('ps_renew_nonce', 'nonce');
     if (!is_user_logged_in()) { wp_send_json_error(['message'=>'Unauthorized']); }
     global $wpdb;
-    ps_ensure_or_history_column();
     $business_id      = bntm_ps_get_business_id();
     $processed_by     = get_current_user_id();
     $loan_id          = intval($_POST['loan_id'] ?? 0);
@@ -6975,7 +6915,7 @@ function bntm_ajax_ps_renew_loan() {
     $renewal_fee      = floatval($_POST['renewal_fee'] ?? 0);
     $principal_adj    = floatval($_POST['principal_adjustment'] ?? 0);
     $payment_method   = sanitize_text_field($_POST['payment_method'] ?? 'cash');
-    $or_number        = strtoupper(trim(sanitize_text_field($_POST['or_number'] ?? $_POST['reference_number'] ?? '')));
+    $reference_number = sanitize_text_field($_POST['reference_number'] ?? '');
     $notes            = sanitize_textarea_field($_POST['notes'] ?? '');
     $is_lost_ticket   = !empty($_POST['is_lost_ticket']);
     $extra_fees_raw   = sanitize_text_field($_POST['extra_fees'] ?? '[]');
@@ -7002,18 +6942,6 @@ function bntm_ajax_ps_renew_loan() {
         $loan_id, $business_id
     ));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found or cannot be processed.']); return; }
-    if ($or_number === '') {
-        wp_send_json_error(['message'=>'Official Receipt (OR) number is required.']);
-        return;
-    }
-    if ($or_number === strtoupper(trim((string)($loan->or_number ?? '')))) {
-        wp_send_json_error(['message'=>'New OR number must be different from the current OR number.']);
-        return;
-    }
-    if (ps_or_number_exists($or_number, $loan_id)) {
-        wp_send_json_error(['message'=>'Official Receipt number already exists.']);
-        return;
-    }
 
     $breakdown  = ps_compute_interest_breakdown($loan);
     $interest_due = (float)$breakdown['total_interest'];
@@ -7065,7 +6993,6 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
     if ($is_lost_ticket) {
         $payment_notes = trim($payment_notes . ' [LOST TICKET]');
     }
-    $previous_or_number = trim((string)($loan->or_number ?? ''));
 
     $old_updated = $wpdb->update($wpdb->prefix.'ps_loans', [
         'status'=>'renewed',
@@ -7086,7 +7013,6 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'ticket_number'=>$new_ticket_number,
         'ticket_tag'=>(string)($loan->ticket_tag ?? ''),
         'parent_loan_id'=>$loan_id,
-        'previous_serial_number'=>trim((string)($loan->previous_serial_number ?? '')),
         'customer_id'=>$loan->customer_id,
         'collateral_id'=>$loan->collateral_id,
         'principal'=>round($new_principal,2),
@@ -7103,8 +7029,6 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'accrued_interest_carried'=>0,
         'status'=>$new_status,
         'payment_method'=>$payment_method,
-        'old_or_number'=>$previous_or_number !== '' ? $previous_or_number : null,
-        'or_number'=>$or_number,
         'notes'=>$payment_notes,
     ]);
 
@@ -7129,7 +7053,7 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'payment_type'=>$pay_type,'amount'=>$total_paid,'interest_amount'=>round($interest_component,2),
         'penalty_amount'=>round($penalty_due,2),'principal_amount'=>round($reduce_principal,2),
         'service_fee'=>round($renewal_fee,2),'days_accrued'=>$breakdown['days_elapsed'],
-        'payment_method'=>$payment_method,'reference_number'=>$or_number,'processed_by'=>$processed_by,
+        'payment_method'=>$payment_method,'reference_number'=>$reference_number,'processed_by'=>$processed_by,
         'notes'=>trim($payment_notes . ' Previous ticket: ' . $loan->ticket_number),
     ]);
 
