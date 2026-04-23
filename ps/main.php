@@ -1166,6 +1166,8 @@ function ps_render_modals() {
                                 <div class="bntm-form-group"><label>Last Name <span style="color:#ef4444;">*</span></label><input type="text" name="last_name" required placeholder="Last name"></div>
                                 <div class="bntm-form-group" style="grid-column:1/-1;"><label>Middle Name</label><input type="text" name="middle_name" placeholder="Middle name"></div>
                                 <div class="bntm-form-group" style="grid-column:1/-1;"><label>Address <span style="color:#ef4444;">*</span></label><textarea name="address" rows="2" required placeholder="Complete address"></textarea></div>
+                                <div class="bntm-form-group"><label>City <span style="color:#ef4444;">*</span></label><input type="text" name="city" required placeholder="City"></div>
+                                <div class="bntm-form-group"><label>ZIP Code <span style="color:#ef4444;">*</span></label><input type="text" name="zip_code" required placeholder="ZIP code"></div>
                                 <div class="bntm-form-group"><label>Contact <span style="color:#ef4444;">*</span></label><input type="text" name="contact_number" required placeholder="09XX XXX XXXX"></div>
                                 <div class="bntm-form-group"><label>Email</label><input type="email" name="email" placeholder="email@example.com"></div>
                                 <div class="bntm-form-group">
@@ -2102,12 +2104,12 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         });
     };
 
-    window.psEditCustomer = function(id, fn, ln, mn, addr, con, email, idt, idn, flag, notes, photo) {
+    window.psEditCustomer = function(id, fn, ln, mn, addr, city, zip, con, email, idt, idn, flag, notes, photo) {
         psOpenCustomerModal(id, '', photo || '');
         // Populate form fields immediately
         const f = document.getElementById('ps-customer-form');
         f.first_name.value = fn; f.last_name.value = ln; f.middle_name.value = mn;
-        f.address.value = addr; f.contact_number.value = con; f.email.value = email;
+        f.address.value = addr; f.city.value = city || ''; f.zip_code.value = zip || ''; f.contact_number.value = con; f.email.value = email;
         f.id_type.value = idt; f.id_number.value = idn; f.customer_flag.value = flag; f.notes.value = notes;
     };
 
@@ -2913,7 +2915,7 @@ function ps_customers_tab($business_id) {
         <td><span class="ps-status-badge <?php echo $fm; ?>"><?php echo ucfirst($c->customer_flag); ?></span></td>
         <td><div style="display:flex;gap:4px;">
             <button class="ps-action-btn ps-btn-view" onclick="psViewCustomerProfile(<?php echo $c->id; ?>)">Profile</button>
-            <button class="ps-action-btn" style="background:#f3f4f6;color:#374151;" onclick="psEditCustomer(<?php echo $c->id; ?>,'<?php echo esc_js($c->first_name); ?>','<?php echo esc_js($c->last_name); ?>','<?php echo esc_js($c->middle_name); ?>','<?php echo esc_js($c->address); ?>','<?php echo esc_js($c->contact_number); ?>','<?php echo esc_js($c->email); ?>','<?php echo esc_js($c->id_type); ?>','<?php echo esc_js($c->id_number); ?>','<?php echo $c->customer_flag; ?>','<?php echo esc_js($c->notes); ?>','<?php echo esc_js($c->photo_path); ?>')">Edit</button>
+            <button class="ps-action-btn" style="background:#f3f4f6;color:#374151;" onclick="psEditCustomer(<?php echo $c->id; ?>,'<?php echo esc_js($c->first_name); ?>','<?php echo esc_js($c->last_name); ?>','<?php echo esc_js($c->middle_name); ?>','<?php echo esc_js($c->address); ?>','<?php echo esc_js($c->city); ?>','<?php echo esc_js($c->zip_code); ?>','<?php echo esc_js($c->contact_number); ?>','<?php echo esc_js($c->email); ?>','<?php echo esc_js($c->id_type); ?>','<?php echo esc_js($c->id_number); ?>','<?php echo $c->customer_flag; ?>','<?php echo esc_js($c->notes); ?>','<?php echo esc_js($c->photo_path); ?>')">Edit</button>
             <?php if ($c->active_loans == 0): ?><button class="ps-action-btn ps-btn-forfeit" onclick="if(confirm('Delete customer?')){const fd=new FormData();fd.append('action','ps_delete_customer');fd.append('customer_id',<?php echo $c->id; ?>);fd.append('nonce','<?php echo wp_create_nonce('ps_customer_nonce'); ?>');fetch(ajaxurl,{method:'POST',body:fd}).then(r=>r.json()).then(j=>{if(j.success)location.reload();else alert(j.data.message);});}">Del</button><?php endif; ?>
         </div></td>
     </tr>
@@ -5375,6 +5377,8 @@ function bntm_ajax_ps_add_customer() {
     $ln   = sanitize_text_field($_POST['last_name'] ?? '');
     $mn   = sanitize_text_field($_POST['middle_name'] ?? '');
     $addr = sanitize_textarea_field($_POST['address'] ?? '');
+    $city = sanitize_text_field($_POST['city'] ?? '');
+    $zip  = sanitize_text_field($_POST['zip_code'] ?? '');
     $con  = sanitize_text_field($_POST['contact_number'] ?? '');
     $email= sanitize_email($_POST['email'] ?? '');
     $idt  = sanitize_text_field($_POST['id_type'] ?? '');
@@ -5398,6 +5402,8 @@ function bntm_ajax_ps_add_customer() {
         'last_name'     => $ln,
         'middle_name'   => $mn,
         'address'       => $addr,
+        'city'          => $city,
+        'zip_code'      => $zip,
         'contact_number'=> $con,
         'email'         => $email,
         'id_type'       => $idt,
@@ -5445,6 +5451,8 @@ function bntm_ajax_ps_edit_customer() {
         'last_name'     => sanitize_text_field($_POST['last_name'] ?? ''),
         'middle_name'   => sanitize_text_field($_POST['middle_name'] ?? ''),
         'address'       => sanitize_textarea_field($_POST['address'] ?? ''),
+        'city'          => sanitize_text_field($_POST['city'] ?? ''),
+        'zip_code'      => sanitize_text_field($_POST['zip_code'] ?? ''),
         'contact_number'=> sanitize_text_field($_POST['contact_number'] ?? ''),
         'email'         => sanitize_email($_POST['email'] ?? ''),
         'id_type'       => sanitize_text_field($_POST['id_type'] ?? ''),
@@ -5543,7 +5551,7 @@ function bntm_ajax_ps_get_customer_profile() {
         </div>
         <div>
             <button class="bntm-btn-secondary" style="font-size:12px;padding:6px 12px;"
-                onclick="psEditCustomer(<?php echo $c->id; ?>,'<?php echo esc_js($c->first_name); ?>','<?php echo esc_js($c->last_name); ?>','<?php echo esc_js($c->middle_name); ?>','<?php echo esc_js($c->address); ?>','<?php echo esc_js($c->contact_number); ?>','<?php echo esc_js($c->email); ?>','<?php echo esc_js($c->id_type); ?>','<?php echo esc_js($c->id_number); ?>','<?php echo $c->customer_flag; ?>','<?php echo esc_js($c->notes); ?>','<?php echo esc_js($c->photo_path); ?>')">✏️ Edit</button>
+                onclick="psEditCustomer(<?php echo $c->id; ?>,'<?php echo esc_js($c->first_name); ?>','<?php echo esc_js($c->last_name); ?>','<?php echo esc_js($c->middle_name); ?>','<?php echo esc_js($c->address); ?>','<?php echo esc_js($c->city); ?>','<?php echo esc_js($c->zip_code); ?>','<?php echo esc_js($c->contact_number); ?>','<?php echo esc_js($c->email); ?>','<?php echo esc_js($c->id_type); ?>','<?php echo esc_js($c->id_number); ?>','<?php echo $c->customer_flag; ?>','<?php echo esc_js($c->notes); ?>','<?php echo esc_js($c->photo_path); ?>')">✏️ Edit</button>
         </div>
     </div>
 
