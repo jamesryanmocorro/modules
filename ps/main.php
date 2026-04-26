@@ -87,8 +87,6 @@ function bntm_ps_get_tables() {
             root_ticket VARCHAR(30) NOT NULL DEFAULT '',
             ticket_number VARCHAR(30) UNIQUE NOT NULL,
             ticket_tag VARCHAR(100) NOT NULL DEFAULT '',
-            or_number VARCHAR(50) NOT NULL DEFAULT '',
-            old_or_number VARCHAR(50) NULL DEFAULT NULL,
             parent_loan_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             customer_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             collateral_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -275,38 +273,6 @@ function ps_ensure_ticket_tag_column(): void {
     $done = true;
 }
 
-function ps_ensure_or_history_column(): void {
-    global $wpdb;
-    static $done = false;
-    if ($done) return;
-    $table = $wpdb->prefix . 'ps_loans';
-    $exists = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", 'old_or_number'));
-    if (!$exists) {
-        $wpdb->query("ALTER TABLE {$table} ADD old_or_number VARCHAR(50) NULL DEFAULT NULL AFTER or_number");
-    }
-    $done = true;
-}
-
-function ps_or_number_exists(string $or_number, int $exclude_loan_id = 0): bool {
-    global $wpdb;
-    $or_number = strtoupper(trim($or_number));
-    if ($or_number === '') return false;
-
-    if ($exclude_loan_id > 0) {
-        return (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans
-             WHERE (or_number=%s OR old_or_number=%s) AND id<>%d",
-            $or_number, $or_number, $exclude_loan_id
-        )) > 0;
-    }
-
-    return (int)$wpdb->get_var($wpdb->prepare(
-        "SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans
-         WHERE or_number=%s OR old_or_number=%s",
-        $or_number, $or_number
-    )) > 0;
-}
-
 function ps_auto_mark_overdue($business_id) {
     global $wpdb;
     $grace = (int)bntm_get_setting('ps_grace_period', '0');
@@ -321,10 +287,10 @@ function ps_auto_mark_overdue($business_id) {
 /**
  * Compute daily accrued interest with grace period.
  * Interest accrues DAILY from day 1 of loan.
- * Grace period: first N days, interest = ₱0 (no charge).
+ * Grace period: first N days, interest = ?0 (no charge).
  * After grace period ends: ALL accumulated interest (including grace days) is charged.
  * Example: 3% monthly = 0.1% daily. Days 1-3 grace (no charge).
- *          Day 4: charge 0.1% × 4 days = 0.4%.
+ *          Day 4: charge 0.1% - 4 days = 0.4%.
  */
 function ps_compute_interest_breakdown($loan) {
     $today      = time();
@@ -345,7 +311,7 @@ function ps_compute_interest_breakdown($loan) {
     $daily_rate   = $monthly_rate / 30;  // Daily rate
 
     // --- Regular Interest: accrues DAILY, but only charged after grace period ---
-    // Interest is calculated for ALL days, but ₱0 if still in grace period
+    // Interest is calculated for ALL days, but ?0 if still in grace period
     // Once grace period ends, charge for all accumulated days including grace days
     if ($days_elapsed <= $grace_days) {
         // Still in grace period: no charge yet
@@ -356,7 +322,7 @@ function ps_compute_interest_breakdown($loan) {
     }
 
     // --- Overdue Interest: accrues DAILY after due date, charged after grace ---
-    // Same logic: accumulated from due date, but ₱0 until grace period ends
+    // Same logic: accumulated from due date, but ?0 until grace period ends
     if ($days_past_due <= $grace_days) {
         // Still in grace period after due: no charge yet
         $overdue_interest = 0;
@@ -439,6 +405,23 @@ function ps_generate_ticket_number($business_id, $root_ticket = '') {
         return sprintf('%s-%s-%04d', $prefix, $ym, $next);
     }
 }
+
+function ps_generate_ticket_number_by_date($business_id, $date = '') {
+    global $wpdb;
+    $prefix = strtoupper(trim(bntm_get_setting('ps_ticket_prefix', 'PT'))) ?: 'PT';
+    $date = $date ?: current_time('Y-m-d');
+    $stamp = date('Ymd', strtotime($date));
+    $like = $wpdb->esc_like($prefix . '-' . $stamp . '-') . '%';
+
+    $last = (int)$wpdb->get_var($wpdb->prepare(
+        "SELECT MAX(CAST(SUBSTRING_INDEX(ticket_number,'-',-1) AS UNSIGNED))
+         FROM {$wpdb->prefix}ps_loans
+         WHERE business_id=%d AND ticket_number LIKE %s",
+        $business_id, $like
+    ));
+    $next = max(1, $last + 1);
+    return sprintf('%s-%s-%04d', $prefix, $stamp, $next);
+}
 function ps_log_ticket_event($data) {
     global $wpdb;
     $result = $wpdb->insert($wpdb->prefix . 'ps_ticket_history', array_merge(
@@ -503,6 +486,26 @@ function ps_parse_cash_breakdown($raw): array {
 function ps_is_cash_method($method): bool {
     $method = strtolower(trim((string) $method));
     return $method === '' || $method === 'cash';
+}
+
+function ps_normalize_ui_output(string $content): string {
+    if ($content === '') return '';
+
+    $content = strtr($content, [
+        'ï¿½'    => '-',
+        'âœ•'    => '&times;',
+        '&#8369;' => '₱',
+    ]);
+
+    // Fix close buttons accidentally rendered as '?'
+    $content = preg_replace('/>(\s*)\?(\s*)<\/button>/u', '>$1&times;$2</button>', $content);
+    // Currency prefixes that were damaged as '?123.45'
+    $content = preg_replace('/\?(?=\d[\d,]*\.\d{2})/u', '₱', $content);
+    // Normalize "PHP 123.45" and template "PHP ${...}" to peso sign.
+    $content = preg_replace('/PHP (?=\d)/u', '₱ ', $content);
+    $content = preg_replace('/PHP (?=\$\{)/u', '₱ ', $content);
+
+    return $content;
 }
 
 function ps_render_cash_breakdown_panel(array $cash_data, array $metrics, bool $force_render = false): string {
@@ -718,14 +721,33 @@ function bntm_shortcode_ps() {
     .bntm-stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:20px;}
     .bntm-stat-card{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08);}
     .stat-icon{width:50px;height:50px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+    .bntm-ps-container .bntm-tab svg,
+    .bntm-ps-container .ps-action-btn svg{
+        display:inline-block !important;
+        width:14px;
+        height:14px;
+        min-width:14px;
+        min-height:14px;
+        stroke:currentColor;
+        fill:none;
+        flex-shrink:0;
+    }
+    .bntm-ps-container .stat-icon svg{
+        display:inline-block !important;
+        width:24px;
+        height:24px;
+        stroke:#fff;
+        fill:none;
+        flex-shrink:0;
+    }
     .stat-content{flex:1;}
     .stat-content h3{margin:0;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;}
     .stat-number{margin:6px 0 0;font-size:18px;font-weight:800;color:#111827;word-break: break-word;display:flex;align-items:center;flex-wrap:wrap;width:100%;}
     .stat-label{display:block;margin:4px 0 0;font-size:11px;color:#9ca3af;}
     </style>
     <?php
-    $content = ob_get_clean();
-    return bntm_universal_container('Pawnshop Management', $content);
+    $content = ps_normalize_ui_output(ob_get_clean());
+    return ps_normalize_ui_output(bntm_universal_container('Pawnshop Management', $content));
 }
 
 // ============================================================
@@ -733,7 +755,6 @@ function bntm_shortcode_ps() {
 // ============================================================
 function ps_render_modals() {
     $ticket_tags = ps_get_ticket_tags();
-    $next_ticket_number = ps_generate_ticket_number(bntm_ps_get_business_id());
     ob_start();
     ?>
 
@@ -765,7 +786,7 @@ function ps_render_modals() {
         <div style="background:#fff;border-radius:12px;width:780px;max-width:95vw;max-height:92vh;overflow-y:auto;box-shadow:0 25px 60px rgba(0,0,0,.35);">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #e5e7eb;position:sticky;top:0;background:#fff;z-index:1;">
                 <h3 style="margin:0;font-size:16px;font-weight:700;">Loan Details</h3>
-                <button onclick="document.getElementById('ps-loan-detail-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">✕</button>
+                <button onclick="document.getElementById('ps-loan-detail-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">&times;</button>
             </div>
             <div id="ps-loan-detail-body" style="padding:24px;"><div style="text-align:center;padding:40px;color:#9ca3af;">Loading...</div></div>
         </div>
@@ -776,7 +797,7 @@ function ps_render_modals() {
         <div style="background:#fff;border-radius:12px;width:760px;max-width:95vw;box-shadow:0 25px 60px rgba(0,0,0,.35);margin:auto;">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #e5e7eb;background:#f8fafc;">
                 <h3 style="margin:0;font-size:16px;font-weight:700;">Edit Pawn Ticket</h3>
-                <button onclick="document.getElementById('ps-edit-ticket-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">âœ•</button>
+                <button onclick="document.getElementById('ps-edit-ticket-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">X</button>
             </div>
             <form id="ps-edit-ticket-form" style="padding:24px;">
                 <input type="hidden" name="nonce" value="<?php echo wp_create_nonce('ps_loan_nonce'); ?>">
@@ -834,12 +855,12 @@ function ps_render_modals() {
         <div style="background:#fff;border-radius:12px;width:820px;max-width:95vw;box-shadow:0 25px 60px rgba(0,0,0,.35);margin:auto;">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #e5e7eb;background:#f8fafc;">
                 <h3 style="margin:0;font-size:16px;font-weight:700;">New Pawn Transaction</h3>
-                <button onclick="document.getElementById('ps-create-loan-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">✕</button>
+                <button onclick="document.getElementById('ps-create-loan-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">&times;</button>
             </div>
 
             <!-- STEP 1: Customer Selection -->
             <div id="cl-step-1" style="padding:24px;">
-                <div style="font-size:13px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px;">Step 1 — Select or Add Customer</div>
+                <div style="font-size:13px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px;">Step 1 - Select or Add Customer</div>
                 <div style="display:flex;gap:8px;margin-bottom:12px;">
                     <input type="text" id="cl-customer-search" placeholder="Search by name, ID number, contact..." style="flex:1;padding:9px 12px;border:1px solid #d1d5db;border-radius:8px;font-size:13px;">
                     <button onclick="psOpenCustomerModal(null,'create-loan')" style="background:#1e40af;color:#fff;border:none;border-radius:8px;padding:0 16px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;">+ New Customer</button>
@@ -851,14 +872,14 @@ function ps_render_modals() {
                         <img id="cl-cust-photo" src="" style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:3px solid #3b82f6;display:none;" />
                         <div id="cl-cust-avatar" style="width:64px;height:64px;border-radius:50%;background:#1e40af;display:flex;align-items:center;justify-content:center;color:#fff;font-size:22px;font-weight:800;flex-shrink:0;">?</div>
                         <div style="flex:1;">
-                            <div style="font-size:16px;font-weight:800;" id="cl-cust-name">—</div>
-                            <div style="font-size:12px;color:#3b82f6;" id="cl-cust-contact">—</div>
-                            <div style="font-size:12px;color:#6b7280;" id="cl-cust-id">—</div>
+                            <div style="font-size:16px;font-weight:800;" id="cl-cust-name">-</div>
+                            <div style="font-size:12px;color:#3b82f6;" id="cl-cust-contact">-</div>
+                            <div style="font-size:12px;color:#6b7280;" id="cl-cust-id">-</div>
                             <div id="cl-cust-flag-badge"></div>
                         </div>
                         <div style="text-align:right;">
                             <div style="font-size:11px;color:#6b7280;">Active Loans</div>
-                            <div style="font-size:20px;font-weight:800;color:#1e40af;" id="cl-cust-active-loans">—</div>
+                            <div style="font-size:20px;font-weight:800;color:#1e40af;" id="cl-cust-active-loans">-</div>
                             <button onclick="psClearCustomerSelection()" style="font-size:11px;color:#dc2626;background:none;border:none;cursor:pointer;margin-top:4px;">Change</button>
                         </div>
                     </div>
@@ -866,13 +887,13 @@ function ps_render_modals() {
                 </div>
                 <input type="hidden" id="cl-customer-id-val" value="">
                 <div style="display:flex;justify-content:flex-end;margin-top:16px;">
-                    <button onclick="psCreateLoanStep2()" id="cl-next-btn" disabled style="background:#1e40af;color:#fff;border:none;border-radius:8px;padding:9px 24px;font-size:13px;font-weight:600;cursor:pointer;opacity:.4;">Next: Collateral Details →</button>
+                    <button onclick="psCreateLoanStep2()" id="cl-next-btn" disabled style="background:#1e40af;color:#fff;border:none;border-radius:8px;padding:9px 24px;font-size:13px;font-weight:600;cursor:pointer;opacity:.4;">Next: Collateral Details ?</button>
                 </div>
             </div>
 
             <!-- STEP 2: Collateral + Loan Terms -->
             <div id="cl-step-2" style="display:none;padding:24px;">
-                <div style="font-size:13px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px;">Step 2 — Collateral &amp; Loan Terms</div>
+                <div style="font-size:13px;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.5px;margin-bottom:14px;">Step 2 - Collateral &amp; Loan Terms</div>
                 <form id="ps-create-loan-form">
                     <input type="hidden" name="nonce" value="<?php echo wp_create_nonce('ps_create_nonce'); ?>">
                     <input type="hidden" name="customer_id" id="cl-form-customer-id">
@@ -913,9 +934,9 @@ function ps_render_modals() {
     <input type="number" name="collateral_appraised_value" step=".01" placeholder="0.00" id="appraised-val-input" readonly style="background:#f9fafb;">
 </div>
                         <div class="bntm-form-group">
-                            <label>Ticket Number Override</label>
-                            <input type="text" name="ticket_number_override" id="loan-ticket-override-input" value="<?php echo esc_attr($next_ticket_number); ?>" data-default-ticket="<?php echo esc_attr($next_ticket_number); ?>" placeholder="Leave blank to auto-generate" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
-                            <div style="font-size:11px;color:#6b7280;margin-top:4px;">Optional. The system will reject an existing ticket number.</div>
+                            <label>Pawn Ticket Number <span style="color:#ef4444;">*</span></label>
+                            <input type="text" name="ticket_number_override" id="loan-ticket-override-input" required placeholder="Enter pawn ticket number" style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
+                            <div style="font-size:11px;color:#6b7280;margin-top:4px;">Manual entry required for every transaction. Existing ticket numbers are not allowed.</div>
                         </div>
                         <div class="bntm-form-group">
                             <label>Ticket Tag</label>
@@ -925,10 +946,6 @@ function ps_render_modals() {
                                     <option value="<?php echo esc_attr($tag); ?>"><?php echo esc_html($tag); ?></option>
                                 <?php endforeach; ?>
                             </select>
-                        </div>
-                        <div class="bntm-form-group">
-                            <label>Official Receipt (OR) Number <span style="color:#ef4444;">*</span></label>
-                            <input type="text" name="or_number" placeholder="OR NUMBER" required style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
                         </div>
                         <div class="bntm-form-group">
                             <label>Interest Rate (%/month)</label>
@@ -941,7 +958,7 @@ function ps_render_modals() {
                             </select>
                         </div>
                         <div class="bntm-form-group">
-                            <label>Service Fee (₱)</label>
+                            <label>Service Fee (?)</label>
                             <input type="number" name="service_fee" step=".01" placeholder="0.00" value="<?php echo esc_attr(bntm_get_setting('ps_service_fee','0.00')); ?>" id="loan-fee-input">
                         </div>
                         <div class="bntm-form-group">
@@ -965,15 +982,15 @@ function ps_render_modals() {
                         <div style="grid-column:1/-1;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;">
                             <div style="font-size:11px;font-weight:700;color:#166534;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Loan Summary</div>
                             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;text-align:center;">
-                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Principal</div><div style="font-size:16px;font-weight:800;color:#111;" id="sum-principal">₱0.00</div></div>
-                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Total Interest</div><div style="font-size:16px;font-weight:800;color:#dc2626;" id="sum-interest">₱0.00</div></div>
-                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Service Fee</div><div style="font-size:16px;font-weight:800;color:#f59e0b;" id="sum-fee">₱0.00</div></div>
-                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Total to Redeem</div><div style="font-size:16px;font-weight:800;color:#059669;" id="sum-total">₱0.00</div></div>
+                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Principal</div><div style="font-size:16px;font-weight:800;color:#111;" id="sum-principal">&#8369;0.00</div></div>
+                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Total Interest</div><div style="font-size:16px;font-weight:800;color:#dc2626;" id="sum-interest">&#8369;0.00</div></div>
+                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Service Fee</div><div style="font-size:16px;font-weight:800;color:#f59e0b;" id="sum-fee">&#8369;0.00</div></div>
+                                <div><div style="font-size:10px;color:#6b7280;text-transform:uppercase;">Total to Redeem</div><div style="font-size:16px;font-weight:800;color:#059669;" id="sum-total">&#8369;0.00</div></div>
                             </div>
                         </div>
                     </div>
                     <div style="display:flex;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid #f3f4f6;">
-                        <button type="button" onclick="psCreateLoanBack()" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:9px 18px;font-size:13px;cursor:pointer;">← Back</button>
+                        <button type="button" onclick="psCreateLoanBack()" style="background:#f3f4f6;color:#374151;border:none;border-radius:8px;padding:9px 18px;font-size:13px;cursor:pointer;">? Back</button>
                         <button type="submit" id="create-loan-submit-btn" style="flex:1;background:var(--bntm-primary,#1e40af);color:#fff;border:none;border-radius:6px;padding:9px;font-size:14px;font-weight:700;cursor:pointer;">Create Pawn Ticket &amp; Print</button>
                     </div>
                     <div id="create-loan-message" style="margin-top:10px;"></div>
@@ -987,7 +1004,7 @@ function ps_render_modals() {
         <div style="background:#fff;border-radius:12px;width:580px;max-width:95vw;max-height:92vh;overflow-y:auto;box-shadow:0 25px 60px rgba(0,0,0,.35);">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #e5e7eb;background:#f8fafc;">
                 <h3 style="margin:0;font-size:16px;font-weight:700;">Renewal / Payment</h3>
-                <button onclick="document.getElementById('ps-renew-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">✕</button>
+                <button onclick="document.getElementById('ps-renew-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">&times;</button>
             </div>
             <div style="padding:24px;">
                 <div id="renew-loan-info" style="background:#f9fafb;border-radius:8px;padding:12px;margin-bottom:14px;font-size:13px;"></div>
@@ -1022,7 +1039,7 @@ function ps_render_modals() {
                             </select>
                         </div>
                         <div class="bntm-form-group">
-                            <label>Renewal Fee (₱)</label>
+                            <label>Renewal Fee (?)</label>
                             <input type="number" name="renewal_fee" step=".01" placeholder="0.00" value="0">
                         </div>
                     </div>
@@ -1030,7 +1047,7 @@ function ps_render_modals() {
                     <!-- Principal adjustment (shown for add/reduce types) -->
                     <div id="renew-principal-section" style="display:none;">
                         <div class="bntm-form-group">
-                            <label id="renew-principal-label">Amount to Add/Reduce (₱)</label>
+                            <label id="renew-principal-label">Amount to Add/Reduce (?)</label>
                             <input type="number" name="principal_adjustment" step=".01" placeholder="0.00" id="renew-principal-adj">
                         </div>
                         <div id="renew-new-principal-preview" style="font-size:13px;color:#6b7280;margin-top:-8px;margin-bottom:10px;"></div>
@@ -1059,22 +1076,30 @@ function ps_render_modals() {
                     <div id="renew-payment-summary" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:14px;">
                         <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#166534;margin-bottom:8px;">Payment Summary</div>
                         <table style="width:100%;font-size:13px;" id="renew-summary-table">
-                            <tr><td style="color:#6b7280;padding:2px 0;">Accrued Interest</td><td style="text-align:right;font-weight:600;" id="rsum-interest">₱0.00</td></tr>
-                            <tr><td style="color:#6b7280;padding:2px 0;">Penalty</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rsum-penalty">₱0.00</td></tr>
-                            <tr><td style="color:#6b7280;padding:2px 0;">Renewal Fee</td><td style="text-align:right;font-weight:600;" id="rsum-fee">₱0.00</td></tr>
-                            <tr id="rsum-lost-row" style="display:none;"><td style="color:#dc2626;padding:2px 0;">Affidavit of Loss Fee</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rsum-lost">₱0.00</td></tr>
+                            <tr><td style="color:#6b7280;padding:2px 0;">Accrued Interest</td><td style="text-align:right;font-weight:600;" id="rsum-interest">&#8369;0.00</td></tr>
+                            <tr><td style="color:#6b7280;padding:2px 0;">Penalty</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rsum-penalty">&#8369;0.00</td></tr>
+                            <tr><td style="color:#6b7280;padding:2px 0;">Renewal Fee</td><td style="text-align:right;font-weight:600;" id="rsum-fee">&#8369;0.00</td></tr>
+                            <tr id="rsum-lost-row" style="display:none;"><td style="color:#dc2626;padding:2px 0;">Affidavit of Loss Fee</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rsum-lost">&#8369;0.00</td></tr>
                             <tbody id="rsum-extra-rows"></tbody>
-                            <tr style="border-top:1px solid #bbf7d0;"><td style="font-weight:700;padding-top:6px;">Total Due Today</td><td style="text-align:right;font-weight:800;font-size:15px;padding-top:6px;" id="rsum-total">₱0.00</td></tr>
+                            <tr style="border-top:1px solid #bbf7d0;"><td style="font-weight:700;padding-top:6px;">Total Due Today</td><td style="text-align:right;font-weight:800;font-size:15px;padding-top:6px;" id="rsum-total">&#8369;0.00</td></tr>
                         </table>
                     </div>
 
+                    <div class="bntm-form-group">
+                        <label>Pawn Ticket Number <span style="color:#ef4444;">*</span></label>
+                        <input type="text" name="ticket_number" id="renew-ticket-number" placeholder="Enter pawn ticket number" required style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
+                    </div>
+                    <div class="bntm-form-group">
+                        <label>Previous Ticket Number</label>
+                        <input type="text" name="previous_ticket_number" id="renew-previous-ticket-number" readonly style="background:#f9fafb;">
+                    </div>
                     <div class="bntm-form-group">
                         <label>Payment Method</label>
                         <select name="payment_method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank_transfer">Bank Transfer</option></select>
                     </div>
                     <div class="bntm-form-group">
-                        <label>Official Receipt (OR) Number <span style="color:#ef4444;">*</span></label>
-                        <input type="text" name="or_number" placeholder="OR NUMBER" required style="text-transform:uppercase;" oninput="this.value=this.value.toUpperCase();">
+                        <label>Reference Number</label>
+                        <input type="text" name="reference_number" placeholder="Enter reference number">
                     </div>
                     <div class="bntm-form-group">
                         <label>Notes</label>
@@ -1096,7 +1121,7 @@ function ps_render_modals() {
         <div style="background:#fff;border-radius:12px;width:500px;max-width:95vw;box-shadow:0 25px 60px rgba(0,0,0,.35);">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #e5e7eb;background:#f0fdf4;">
                 <h3 style="margin:0;font-size:16px;font-weight:700;color:#059669;">Redeem Collateral</h3>
-                <button onclick="document.getElementById('ps-redeem-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">✕</button>
+                <button onclick="document.getElementById('ps-redeem-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">&times;</button>
             </div>
             <div style="padding:24px;">
                 <div id="redeem-loan-info" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:14px;margin-bottom:14px;font-size:13px;"></div>
@@ -1127,17 +1152,17 @@ function ps_render_modals() {
                     <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;margin-bottom:14px;">
                         <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#166534;margin-bottom:8px;">Redemption Summary</div>
                         <table style="width:100%;font-size:13px;">
-                            <tr><td style="color:#6b7280;padding:2px 0;">Principal</td><td style="text-align:right;font-weight:600;" id="rdsum-principal">₱0.00</td></tr>
-                            <tr><td style="color:#6b7280;padding:2px 0;">Accrued Interest</td><td style="text-align:right;font-weight:600;" id="rdsum-interest">₱0.00</td></tr>
-                            <tr><td style="color:#6b7280;padding:2px 0;">Penalty</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rdsum-penalty">₱0.00</td></tr>
-                            <tr id="rdsum-lost-row" style="display:none;"><td style="color:#dc2626;padding:2px 0;">Affidavit of Loss Fee</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rdsum-lost">₱0.00</td></tr>
+                            <tr><td style="color:#6b7280;padding:2px 0;">Principal</td><td style="text-align:right;font-weight:600;" id="rdsum-principal">&#8369;0.00</td></tr>
+                            <tr><td style="color:#6b7280;padding:2px 0;">Accrued Interest</td><td style="text-align:right;font-weight:600;" id="rdsum-interest">&#8369;0.00</td></tr>
+                            <tr><td style="color:#6b7280;padding:2px 0;">Penalty</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rdsum-penalty">&#8369;0.00</td></tr>
+                            <tr id="rdsum-lost-row" style="display:none;"><td style="color:#dc2626;padding:2px 0;">Affidavit of Loss Fee</td><td style="text-align:right;font-weight:600;color:#dc2626;" id="rdsum-lost">&#8369;0.00</td></tr>
                             <tbody id="rdsum-extra-rows"></tbody>
-                            <tr style="border-top:1px solid #bbf7d0;"><td style="font-weight:700;padding-top:6px;">Total Due</td><td style="text-align:right;font-weight:800;font-size:15px;padding-top:6px;" id="rdsum-total">₱0.00</td></tr>
+                            <tr style="border-top:1px solid #bbf7d0;"><td style="font-weight:700;padding-top:6px;">Total Due</td><td style="text-align:right;font-weight:800;font-size:15px;padding-top:6px;" id="rdsum-total">&#8369;0.00</td></tr>
                         </table>
                     </div>
 
                     <div class="bntm-form-group">
-                        <label>Amount Tendered (₱)</label>
+                        <label>Amount Tendered (?)</label>
                         <input type="number" name="amount_tendered" step=".01" placeholder="0.00" id="redeem-tendered" style="font-size:18px;font-weight:700;" oninput="psUpdateRedeemChange()">
                     </div>
                     <div id="redeem-change" style="font-size:14px;font-weight:700;margin-bottom:12px;min-height:20px;"></div>
@@ -1146,8 +1171,8 @@ function ps_render_modals() {
                         <select name="payment_method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank_transfer">Bank Transfer</option></select>
                     </div>
                     <div class="bntm-form-group">
-                        <label>OR Number</label>
-                        <input type="text" name="reference_number" placeholder="Enter OR number">
+                        <label>Reference Number</label>
+                        <input type="text" name="reference_number" placeholder="Enter reference number">
                     </div>
                     <div class="bntm-form-group"><label>Notes</label><textarea name="notes" rows="2" placeholder="Optional notes..."></textarea></div>
                     <div style="display:flex;gap:10px;">
@@ -1166,7 +1191,7 @@ function ps_render_modals() {
         <div style="background:#fff;border-radius:12px;width:680px;max-width:95vw;box-shadow:0 25px 60px rgba(0,0,0,.35);margin:auto;">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #e5e7eb;background:#f8fafc;">
                 <h3 id="customer-modal-title" style="margin:0;font-size:16px;font-weight:700;">Add Customer</h3>
-                <button onclick="document.getElementById('ps-customer-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">✕</button>
+                <button onclick="document.getElementById('ps-customer-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">&times;</button>
             </div>
             <div style="padding:24px;">
                 <!-- Photo capture section -->
@@ -1178,11 +1203,11 @@ function ps_render_modals() {
                             <img id="ps-captured-preview" style="width:100%;display:none;border-radius:10px;" />
                         </div>
                         <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
-                            <button type="button" id="ps-camera-start-btn" onclick="psCameraStart()" style="flex:1;background:#1e40af;color:#fff;border:none;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;">📷 Camera</button>
-                            <button type="button" id="ps-camera-capture-btn" onclick="psCameraCapture()" style="display:none;flex:1;background:#059669;color:#fff;border:none;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;">📸 Capture</button>
-                            <button type="button" id="ps-camera-retake-btn" onclick="psCameraRetake()" style="display:none;flex:1;background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;">🔄 Retake</button>
+                            <button type="button" id="ps-camera-start-btn" onclick="psCameraStart()" style="flex:1;background:#1e40af;color:#fff;border:none;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;">Start Camera</button>
+                            <button type="button" id="ps-camera-capture-btn" onclick="psCameraCapture()" style="display:none;flex:1;background:#059669;color:#fff;border:none;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;">Capture Photo</button>
+                            <button type="button" id="ps-camera-retake-btn" onclick="psCameraRetake()" style="display:none;flex:1;background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;">Retake</button>
                             <label style="flex:1;background:#6b7280;color:#fff;border:none;border-radius:6px;padding:6px 8px;font-size:11px;cursor:pointer;text-align:center;display:flex;align-items:center;justify-content:center;gap:4px;">
-                                📁 Upload<input type="file" id="ps-photo-file" accept="image/*" style="display:none;" onchange="psLoadPhotoFile(this)">
+                                Upload<input type="file" id="ps-photo-file" accept="image/*" style="display:none;" onchange="psLoadPhotoFile(this)">
                             </label>
                         </div>
                         <canvas id="ps-camera-canvas" style="display:none;"></canvas>
@@ -1216,7 +1241,7 @@ function ps_render_modals() {
                                 <div class="bntm-form-group">
                                     <label>Customer Flag</label>
                                     <select name="customer_flag">
-                                        <option value="normal">Normal</option><option value="vip">VIP ⭐</option>
+                                        <option value="normal">Normal</option><option value="vip">VIP ?</option>
                                         <option value="delinquent">Delinquent</option><option value="blacklisted">Blacklisted</option>
                                     </select>
                                 </div>
@@ -1239,7 +1264,7 @@ function ps_render_modals() {
         <div style="background:#fff;border-radius:12px;width:780px;max-width:95vw;box-shadow:0 25px 60px rgba(0,0,0,.35);margin:auto;">
             <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 24px;border-bottom:1px solid #e5e7eb;position:sticky;top:0;background:#fff;z-index:1;">
                 <h3 style="margin:0;font-size:16px;font-weight:700;">Customer Profile</h3>
-                <button onclick="document.getElementById('ps-profile-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">✕</button>
+                <button onclick="document.getElementById('ps-profile-modal').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:20px;">&times;</button>
             </div>
             <div id="ps-profile-body" style="padding:24px;"><div style="text-align:center;padding:40px;color:#9ca3af;">Loading...</div></div>
         </div>
@@ -1263,7 +1288,7 @@ function ps_render_js() {
     // ---- Camera ----
     let cameraStream = null;
     window.psCameraStart = function() {
-        if (!navigator.mediaDevices) { alert('Camera not supported.'); return; }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { alert('Camera is not supported by this browser.'); return; }
         navigator.mediaDevices.getUserMedia({ video: { width:640, height:480, facingMode:'user' } })
             .then(stream => {
                 cameraStream = stream;
@@ -1274,9 +1299,17 @@ function ps_render_js() {
                 document.getElementById('ps-camera-start-btn').style.display = 'none';
                 document.getElementById('ps-camera-capture-btn').style.display = 'flex';
                 document.getElementById('ps-camera-retake-btn').style.display = 'none';
-                document.getElementById('ps-photo-status').textContent = 'Camera ready — position face and capture.';
+                document.getElementById('ps-photo-status').textContent = 'Camera ready - position face and capture.';
             })
-            .catch(() => alert('Cannot access camera. Please allow camera permissions.'));
+            .catch((err) => {
+                let msg = 'Cannot access camera.';
+                if (err && err.name === 'NotAllowedError') msg = 'Camera permission denied. Please allow camera access in your browser.';
+                else if (err && err.name === 'NotFoundError') msg = 'No camera device was found.';
+                else if (err && err.name === 'NotReadableError') msg = 'Camera is already in use by another app.';
+                else if (err && err.name === 'SecurityError') msg = 'Camera access blocked by browser security settings.';
+                else if (!window.isSecureContext) msg = 'Browser blocked camera on non-secure origin. Use HTTPS or localhost.';
+                alert(msg);
+            });
     };
     window.psCameraCapture = function() {
         const vid = document.getElementById('ps-camera-preview');
@@ -1291,7 +1324,7 @@ function ps_render_js() {
         canvas.width = w; canvas.height = h;
         canvas.getContext('2d').drawImage(vid, 0, 0, w, h);
         // Compress: target ~300KB (base64 is ~4/3 of binary, so 300KB binary = ~400KB base64)
-        const targetB64 = 400000; // 400KB base64 string ≈ 300KB file
+        const targetB64 = 400000; // 400KB base64 string - 300KB file
         let quality = 0.82;
         let dataURL = canvas.toDataURL('image/jpeg', quality);
         while (dataURL.length > targetB64 && quality > 0.25) {
@@ -1305,7 +1338,7 @@ function ps_render_js() {
         vid.style.display = 'none';
         document.getElementById('ps-camera-capture-btn').style.display = 'none';
         document.getElementById('ps-camera-retake-btn').style.display = 'flex';
-        document.getElementById('ps-photo-status').textContent = 'Photo captured (~' + kb + ' KB) — ready to save';
+        document.getElementById('ps-photo-status').textContent = 'Photo captured (~' + kb + ' KB) - ready to save';
         if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
     };
     window.psCameraRetake = function() {
@@ -1354,7 +1387,7 @@ function ps_render_js() {
                 document.getElementById('ps-camera-start-btn').style.display = 'none';
                 document.getElementById('ps-camera-capture-btn').style.display = 'none';
                 document.getElementById('ps-camera-retake-btn').style.display = 'flex';
-                document.getElementById('ps-photo-status').textContent = 'Photo loaded (~' + kb + ' KB) — ready to save';
+                document.getElementById('ps-photo-status').textContent = 'Photo loaded (~' + kb + ' KB) - ready to save';
                 stopCamera();
             };
             img.src = ev.target.result;
@@ -1396,7 +1429,7 @@ function ps_render_js() {
                 document.getElementById('ps-camera-start-btn').style.display = 'none';
                 document.getElementById('ps-camera-capture-btn').style.display = 'none';
                 document.getElementById('ps-camera-retake-btn').style.display = 'flex';
-                document.getElementById('ps-photo-status').textContent = 'Current photo — retake to update';
+                document.getElementById('ps-photo-status').textContent = 'Current photo - retake to update';
             } else {
                 document.getElementById('ps-captured-preview').style.display = 'none';
                 document.getElementById('ps-captured-preview').src = '';
@@ -1404,7 +1437,7 @@ function ps_render_js() {
                 document.getElementById('ps-camera-start-btn').style.display = 'flex';
                 document.getElementById('ps-camera-capture-btn').style.display = 'none';
                 document.getElementById('ps-camera-retake-btn').style.display = 'none';
-                document.getElementById('ps-photo-status').textContent = 'No photo on file — capture new';
+                document.getElementById('ps-photo-status').textContent = 'No photo on file - capture new';
             }
         }
         modal.style.display = 'flex';
@@ -1425,7 +1458,7 @@ function ps_render_js() {
         document.getElementById('cl-step-1').style.display = 'block';
         document.getElementById('cl-step-2').style.display = 'none';
         const ticketOverride = document.getElementById('loan-ticket-override-input');
-        if (ticketOverride) ticketOverride.value = ticketOverride.dataset.defaultTicket || ticketOverride.value || '';
+        if (ticketOverride) ticketOverride.value = '';
         document.getElementById('ps-create-loan-modal').style.display = 'flex';
         psUpdateLoanSummary();
     };
@@ -1497,7 +1530,7 @@ function ps_render_js() {
         const nextBtn = document.getElementById('cl-next-btn');
         if (c.customer_flag === 'blacklisted') {
             warn.style.display = 'block';
-            warn.textContent = 'BLACKLISTED customer — new loans cannot be processed.';
+            warn.textContent = 'BLACKLISTED customer - new loans cannot be processed.';
             nextBtn.disabled = true;
             nextBtn.style.opacity = '.4';
         } else {
@@ -1564,7 +1597,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
             const chg = tend - due;
             const el = document.getElementById('redeem-change');
             if (el && tend > 0) {
-                el.textContent = chg >= 0 ? 'Change: ₱' + Math.abs(chg).toLocaleString('en-PH',{minimumFractionDigits:2}) : 'Short by: ₱' + Math.abs(chg).toLocaleString('en-PH',{minimumFractionDigits:2});
+                el.textContent = chg >= 0 ? 'Change: ?' + Math.abs(chg).toLocaleString('en-PH',{minimumFractionDigits:2}) : 'Short by: ?' + Math.abs(chg).toLocaleString('en-PH',{minimumFractionDigits:2});
                 el.style.color = chg >= 0 ? '#059669' : '#dc2626';
             } else if (el) { el.textContent = ''; }
         }
@@ -1582,8 +1615,8 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         document.getElementById('renew-transaction-type').value = type;
         document.getElementById('renew-extend-section').style.display = type === 'renewal' ? 'block' : 'none';
         document.getElementById('renew-principal-section').style.display = ['add_principal','reduce_principal'].includes(type) ? 'block' : 'none';
-        if (type === 'add_principal') document.getElementById('renew-principal-label').textContent = 'Amount to Add to Principal (₱)';
-        if (type === 'reduce_principal') document.getElementById('renew-principal-label').textContent = 'Amount to Reduce from Principal (₱)';
+        if (type === 'add_principal') document.getElementById('renew-principal-label').textContent = 'Amount to Add to Principal (?)';
+        if (type === 'reduce_principal') document.getElementById('renew-principal-label').textContent = 'Amount to Reduce from Principal (?)';
         psUpdateRenewSummary();
     };
 
@@ -1594,12 +1627,12 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         const fee = parseFloat(document.querySelector('[name="renewal_fee"]')?.value) || 0;
         const adj = parseFloat(document.getElementById('renew-principal-adj')?.value) || 0;
         const lostFee = document.getElementById('renew-lost-ticket')?.checked ? (psLostTicketFee||0) : 0;
-        document.getElementById('rsum-interest').textContent = '₱' + (d.interest || 0).toLocaleString('en-PH', {minimumFractionDigits:2});
-        document.getElementById('rsum-penalty').textContent = '₱' + (d.penalty || 0).toLocaleString('en-PH', {minimumFractionDigits:2});
-        document.getElementById('rsum-fee').textContent = '₱' + fee.toLocaleString('en-PH', {minimumFractionDigits:2});
+        document.getElementById('rsum-interest').textContent = '?' + (d.interest || 0).toLocaleString('en-PH', {minimumFractionDigits:2});
+        document.getElementById('rsum-penalty').textContent = '?' + (d.penalty || 0).toLocaleString('en-PH', {minimumFractionDigits:2});
+        document.getElementById('rsum-fee').textContent = '?' + fee.toLocaleString('en-PH', {minimumFractionDigits:2});
         // Lost ticket row
         const lostRow = document.getElementById('rsum-lost-row');
-        if (lostFee > 0) { lostRow.style.display=''; document.getElementById('rsum-lost').textContent='₱'+lostFee.toLocaleString('en-PH',{minimumFractionDigits:2}); }
+        if (lostFee > 0) { lostRow.style.display=''; document.getElementById('rsum-lost').textContent='₱ '+lostFee.toLocaleString('en-PH',{minimumFractionDigits:2}); }
         else { lostRow.style.display='none'; }
         // Extra fees rows
         const extraEl = document.getElementById('rsum-extra-rows');
@@ -1609,28 +1642,28 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
             const desc = row.querySelector('.ef-desc')?.value || 'Extra Fee';
             const amt = parseFloat(row.querySelector('.ef-amt')?.value) || 0;
             extraTotal += amt;
-            if (amt > 0) extraEl.innerHTML += `<tr><td style="color:#6b7280;padding:2px 0;">${desc}</td><td style="text-align:right;font-weight:600;">₱${amt.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>`;
+            if (amt > 0) extraEl.innerHTML += `<tr><td style="color:#6b7280;padding:2px 0;">${desc}</td><td style="text-align:right;font-weight:600;">₱ ${amt.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>`;
         });
         const principalPayment = type === 'reduce_principal' ? Math.min(adj, d.principal || 0) : 0;
         let principalRow = document.getElementById('rsum-principal-row');
         if (!principalRow) {
             principalRow = document.createElement('tr');
             principalRow.id = 'rsum-principal-row';
-            principalRow.innerHTML = '<td style="color:#6b7280;padding:2px 0;">Principal Reduction</td><td style="text-align:right;font-weight:600;" id="rsum-principal-pay">PHP 0.00</td>';
+            principalRow.innerHTML = '<td style="color:#6b7280;padding:2px 0;">Principal Reduction</td><td style="text-align:right;font-weight:600;" id="rsum-principal-pay">₱ 0.00</td>';
             document.getElementById('rsum-lost-row')?.before(principalRow);
         }
         if (principalRow) {
             principalRow.style.display = principalPayment > 0 ? '' : 'none';
-            document.getElementById('rsum-principal-pay').textContent = 'PHP ' + principalPayment.toLocaleString('en-PH', {minimumFractionDigits:2});
+            document.getElementById('rsum-principal-pay').textContent = '₱ ' + principalPayment.toLocaleString('en-PH', {minimumFractionDigits:2});
         }
         const total = (d.interest || 0) + (d.penalty || 0) + fee + principalPayment + lostFee + extraTotal;
         document.getElementById('rsum-total').textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits:2});
         if (type === 'add_principal' && adj > 0) {
             const np = d.principal + adj;
-            document.getElementById('renew-new-principal-preview').textContent = `New principal will be: ₱${np.toLocaleString('en-PH',{minimumFractionDigits:2})}`;
+            document.getElementById('renew-new-principal-preview').textContent = `New principal will be: ₱ ${np.toLocaleString('en-PH',{minimumFractionDigits:2})}`;
         } else if (type === 'reduce_principal' && adj > 0) {
             const np = Math.max(0, d.principal - adj);
-            document.getElementById('renew-new-principal-preview').textContent = `New principal will be: ₱${np.toLocaleString('en-PH',{minimumFractionDigits:2})}`;
+            document.getElementById('renew-new-principal-preview').textContent = `New principal will be: ₱ ${np.toLocaleString('en-PH',{minimumFractionDigits:2})}`;
         } else {
             document.getElementById('renew-new-principal-preview').textContent = '';
         }
@@ -1644,7 +1677,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         if (tendered > 0 && total > 0) {
             const chg = tendered - total;
             changeEl.style.color = chg >= 0 ? '#059669' : '#dc2626';
-            changeEl.textContent = chg >= 0 ? `Change: ₱${chg.toLocaleString('en-PH',{minimumFractionDigits:2})}` : `Short by: ₱${Math.abs(chg).toLocaleString('en-PH',{minimumFractionDigits:2})}`;
+            changeEl.textContent = chg >= 0 ? `Change: ₱ ${chg.toLocaleString('en-PH',{minimumFractionDigits:2})}` : `Short by: ₱ ${Math.abs(chg).toLocaleString('en-PH',{minimumFractionDigits:2})}`;
         } else { changeEl.textContent = ''; }
     };
 
@@ -1656,7 +1689,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         document.getElementById('rdsum-interest').textContent = '₱' + (d.interest||0).toLocaleString('en-PH',{minimumFractionDigits:2});
         document.getElementById('rdsum-penalty').textContent = '₱' + (d.penalty||0).toLocaleString('en-PH',{minimumFractionDigits:2});
         const lostRow = document.getElementById('rdsum-lost-row');
-        if (lostFee > 0) { lostRow.style.display=''; document.getElementById('rdsum-lost').textContent='₱'+lostFee.toLocaleString('en-PH',{minimumFractionDigits:2}); }
+        if (lostFee > 0) { lostRow.style.display=''; document.getElementById('rdsum-lost').textContent='₱ '+lostFee.toLocaleString('en-PH',{minimumFractionDigits:2}); }
         else { lostRow.style.display='none'; }
         const extraEl = document.getElementById('rdsum-extra-rows');
         let extraTotal = 0;
@@ -1665,10 +1698,10 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
             const desc = row.querySelector('.ef-desc')?.value || 'Extra Fee';
             const amt = parseFloat(row.querySelector('.ef-amt')?.value) || 0;
             extraTotal += amt;
-            if (amt > 0) extraEl.innerHTML += `<tr><td style="color:#6b7280;padding:2px 0;">${desc}</td><td style="text-align:right;font-weight:600;">₱${amt.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>`;
+            if (amt > 0) extraEl.innerHTML += `<tr><td style="color:#6b7280;padding:2px 0;">${desc}</td><td style="text-align:right;font-weight:600;">₱ ${amt.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>`;
         });
         const total = (d.principal||0) + (d.interest||0) + (d.penalty||0) + lostFee + extraTotal;
-        document.getElementById('rdsum-total').textContent = '₱' + total.toLocaleString('en-PH',{minimumFractionDigits:2});
+        document.getElementById('rdsum-total').textContent = '₱ ' + total.toLocaleString('en-PH',{minimumFractionDigits:2});
         psUpdateRedeemChange();
     };
 
@@ -1681,14 +1714,14 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         div.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;';
         div.innerHTML = `<input type="text" class="ef-desc" placeholder="Fee description" style="flex:2;padding:6px 8px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;" oninput="${modal==='renew'?'psUpdateRenewSummary':'psUpdateRedeemSummary'}()">
             <input type="number" class="ef-amt" placeholder="0.00" step="0.01" min="0" style="flex:1;padding:6px 8px;border:1px solid #d1d5db;border-radius:5px;font-size:12px;" oninput="${modal==='renew'?'psUpdateRenewSummary':'psUpdateRedeemSummary'}()">
-            <button type="button" onclick="this.parentElement.remove();${modal==='renew'?'psUpdateRenewSummary':'psUpdateRedeemSummary'}()" style="background:#fee2e2;border:1px solid #fca5a5;color:#dc2626;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:12px;font-weight:700;">✕</button>`;
+            <button type="button" onclick="this.parentElement.remove();${modal==='renew'?'psUpdateRenewSummary':'psUpdateRedeemSummary'}()" style="background:#fee2e2;border:1px solid #fca5a5;color:#dc2626;border-radius:4px;padding:4px 8px;cursor:pointer;font-size:12px;font-weight:700;">&times;</button>`;
         container.appendChild(div);
     };
 
     window.psToggleLostTicket = function(modal) {
         const checked = document.getElementById(modal+'-lost-ticket').checked;
         const label = document.getElementById(modal+'-lost-fee-label');
-        if (checked) { label.style.display='inline'; label.textContent=`+ ₱${(psLostTicketFee||0).toLocaleString('en-PH',{minimumFractionDigits:2})} affidavit fee`; }
+        if (checked) { label.style.display='inline'; label.textContent=`+ ₱ ${(psLostTicketFee||0).toLocaleString('en-PH',{minimumFractionDigits:2})} affidavit fee`; }
         else { label.style.display='none'; }
         if (modal==='renew') psUpdateRenewSummary(); else psUpdateRedeemSummary();
     };
@@ -1703,6 +1736,12 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         document.getElementById('renew-loan-id').value = loanId;
         document.getElementById('renew-interest-detail').textContent = 'Computing...';
         document.getElementById('renew-message').innerHTML = '';
+        const renewTicketInput = document.getElementById('renew-ticket-number');
+        if (renewTicketInput) renewTicketInput.value = '';
+        const renewPrevTicketInput = document.getElementById('renew-previous-ticket-number');
+        if (renewPrevTicketInput) renewPrevTicketInput.value = '';
+        const renewRefInput = document.querySelector('#ps-renew-form [name="reference_number"]');
+        if (renewRefInput) renewRefInput.value = '';
         document.getElementById('renew-lost-ticket').checked = false;
         document.getElementById('renew-lost-fee-label').style.display = 'none';
         document.getElementById('renew-extra-fees').innerHTML = '';
@@ -1719,9 +1758,11 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
             if (json.success) {
                 const d = json.data;
                 renewCurrentData = d;
+                if (renewTicketInput) renewTicketInput.value = d.suggested_ticket_number || '';
+                if (renewPrevTicketInput) renewPrevTicketInput.value = d.previous_ticket_number || d.ticket_number || '';
                 document.getElementById('renew-loan-info').innerHTML = `
-                    <strong>Ticket #${d.ticket_number}</strong> — ${d.customer_name}<br>
-                    Principal: <strong>₱${d.principal.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> |
+                    <strong>Ticket #${d.ticket_number}</strong> - ${d.customer_name}<br>
+                    Principal: <strong>₱ ${d.principal.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> |
                     Rate: ${d.interest_rate}%/mo |
                     Due: <strong style="color:${d.is_overdue?'#dc2626':'#059669'}">${d.due_date}</strong>
                     ${d.is_overdue ? `<span style="color:#dc2626;font-weight:700;margin-left:8px;">[!] ${d.days_past_due}d overdue (${d.effective_overdue}d after grace)</span>` : ''}
@@ -1736,12 +1777,12 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
                         <tr><td style="color:#6b7280;">Days Elapsed</td><td style="text-align:right;">${d.days_elapsed}d</td></tr>
                         <tr><td style="color:#6b7280;">Grace Period</td><td style="text-align:right;color:#059669;">${d.grace_days}d (no charge)</td></tr>
                         <tr><td style="color:#6b7280;">Daily Rate</td><td style="text-align:right;">${d.daily_rate}%/day</td></tr>
-                        <tr><td style="color:#6b7280;">Accrued Regular Interest</td><td style="text-align:right;font-weight:600;">₱${d.regular_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>
+                        <tr><td style="color:#6b7280;">Accrued Regular Interest</td><td style="text-align:right;font-weight:600;">₱ ${d.regular_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>
                         ${d.days_past_due > 0 ? `<tr><td style="color:#f59e0b;">Days Overdue</td><td style="text-align:right;">${d.days_past_due}d</td></tr>` : ''}
-                        ${d.overdue_interest > 0 ? `<tr><td style="color:#f59e0b;">Overdue Interest</td><td style="text-align:right;font-weight:600;color:#f59e0b;">₱${d.overdue_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>` : ''}
-                        ${d.carried_interest > 0 ? `<tr><td style="color:#6b7280;">Carried Interest</td><td style="text-align:right;color:#7c3aed;">₱${d.carried_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>` : ''}
-                        ${d.penalty_interest > 0 ? `<tr><td style="color:#dc2626;">Penalty Interest</td><td style="text-align:right;font-weight:600;color:#dc2626;">₱${d.penalty_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>` : ''}
-                        <tr style="border-top:1px solid #bfdbfe;"><td style="font-weight:700;padding-top:5px;">Total Interest Due</td><td style="text-align:right;font-weight:800;font-size:14px;padding-top:5px;">₱${d.total_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>
+                        ${d.overdue_interest > 0 ? `<tr><td style="color:#f59e0b;">Overdue Interest</td><td style="text-align:right;font-weight:600;color:#f59e0b;">₱ ${d.overdue_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>` : ''}
+                        ${d.carried_interest > 0 ? `<tr><td style="color:#6b7280;">Carried Interest</td><td style="text-align:right;color:#7c3aed;">₱ ${d.carried_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>` : ''}
+                        ${d.penalty_interest > 0 ? `<tr><td style="color:#dc2626;">Penalty Interest</td><td style="text-align:right;font-weight:600;color:#dc2626;">₱ ${d.penalty_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>` : ''}
+                        <tr style="border-top:1px solid #bfdbfe;"><td style="font-weight:700;padding-top:5px;">Total Interest Due</td><td style="text-align:right;font-weight:800;font-size:14px;padding-top:5px;">₱ ${d.total_interest.toLocaleString('en-PH',{minimumFractionDigits:2})}</td></tr>
                     </table>
                 `;
                 psUpdateRenewSummary();
@@ -1770,8 +1811,8 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
                 const d = json.data;
                 redeemCurrentData = { principal: d.principal, interest: d.total_interest, penalty: d.penalty_interest };
                 document.getElementById('redeem-loan-info').innerHTML = `
-                    <strong>Ticket #${d.ticket_number}</strong> — ${d.customer_name}<br>
-                    <span style="font-size:12px;color:#6b7280;">${d.days_elapsed} days accrued · Due: ${d.due_date}</span>
+                    <strong>Ticket #${d.ticket_number}</strong> - ${d.customer_name}<br>
+                    <span style="font-size:12px;color:#6b7280;">${d.days_elapsed} days accrued - Due: ${d.due_date}</span>
                 `;
                 document.getElementById('redeem-modal-due').dataset.due = d.total_due;
                 psUpdateRedeemSummary();
@@ -1920,7 +1961,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         if (photoVal && photoVal.startsWith('data:image')) {
             fd.set('photo_data', photoVal);
         } else {
-            fd.delete('photo_data'); // no new photo — don't overwrite existing
+            fd.delete('photo_data'); // no new photo - don't overwrite existing
         }
         fetch(ajaxurl, {method:'POST', body:fd}).then(r=>r.json()).then(json => {
             const msg = document.getElementById('customer-message');
@@ -1950,7 +1991,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         const preview = document.getElementById('ps-print-preview');
         const titles = { pawn_ticket:'Pawn Ticket', renewal_notice:'Renewal Notice', redemption_receipt:'Redemption Receipt', forfeiture_notice:'Forfeiture Notice', customer_statement:'Customer Statement', payment_receipt:'Payment Receipt', daily_summary:'Daily Summary', cash_flow_summary:'Cash Flow Summary' };
         document.getElementById('print-modal-title').textContent = titles[docType] || 'Document';
-        document.getElementById('print-modal-subtitle').textContent = 'Loan ID: ' + loanId + ' — Review before printing';
+        document.getElementById('print-modal-subtitle').textContent = 'Loan ID: ' + loanId + ' - Review before printing';
         document.getElementById('print-modal-subtitle').textContent = autoPrint
             ? 'Loan ID: ' + loanId + ' - Preparing print...'
             : 'Loan ID: ' + loanId + ' - Review before printing';
@@ -2091,8 +2132,8 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
                     return `<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:6px;background:#fff;">
                         <div style="flex:1;min-width:0;">
                             <div style="font-family:monospace;font-weight:700;font-size:13px;">${l.ticket_number}</div>
-                            <div style="font-size:12px;color:#374151;margin-top:1px;">${l.customer_name} &mdash; ${l.collateral_desc||'—'}</div>
-                            <div style="font-size:11px;color:#6b7280;">Principal: ₱${parseFloat(l.principal).toLocaleString('en-PH',{minimumFractionDigits:2})} &nbsp;|&nbsp; Due: ${l.due_date}</div>
+                            <div style="font-size:12px;color:#374151;margin-top:1px;">${l.customer_name} &mdash; ${l.collateral_desc||'-'}</div>
+                            <div style="font-size:11px;color:#6b7280;">Principal: ₱ ${parseFloat(l.principal).toLocaleString('en-PH',{minimumFractionDigits:2})} &nbsp;|&nbsp; Due: ${l.due_date}</div>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0;">
                             <span style="font-size:11px;font-weight:700;color:${col};text-transform:uppercase;padding:2px 7px;background:${col}18;border-radius:4px;">${l.status}</span>
@@ -2162,7 +2203,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
 
     // ---- Finance Export ----
     window.psFnExport = function(pid, amount) {
-        if (!confirm('Export ₱' + parseFloat(amount).toLocaleString('en-PH',{minimumFractionDigits:2}) + ' to Finance module?')) return;
+        if (!confirm('Export ?' + parseFloat(amount).toLocaleString('en-PH',{minimumFractionDigits:2}) + ' to Finance module?')) return;
         const fd = new FormData();
         fd.append('action','ps_fn_export_transaction');
         fd.append('payment_id', pid);
@@ -2232,7 +2273,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
             <style>body{font-family:Arial,sans-serif;margin:0;padding:0;}@media print{.no-print{display:none!important;}}</style>
             </head><body>
             <div class="no-print" style="padding:12px;background:#1e40af;color:#fff;display:flex;gap:10px;align-items:center;">
-                <strong>Auction Notice — Ready to Print</strong>
+                <strong>Auction Notice - Ready to Print</strong>
                 <button onclick="window.print()" style="background:#fff;color:#1e40af;border:none;border-radius:6px;padding:6px 16px;font-weight:700;cursor:pointer;">Print</button>
                 <button onclick="window.close()" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.4);border-radius:6px;padding:6px 12px;cursor:pointer;">Close</button>
             </div>
@@ -2276,9 +2317,9 @@ function ps_modal_focus_js() { ob_start(); ?>
 (function(){
 'use strict';
  
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 //  KEYBOARD SHORTCUTS  (Alt + key)
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 document.addEventListener('keydown', function(e) {
     if (!e.altKey || e.ctrlKey || e.metaKey) return;
  
@@ -2316,9 +2357,9 @@ document.addEventListener('keydown', function(e) {
     }
 });
  
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 //  TAB DROPDOWN TOGGLE
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 window.psToggleTabNav = function(e) {
     if (e) e.stopPropagation();
     var trigger = document.getElementById('ps-tab-nav-trigger');
@@ -2353,9 +2394,9 @@ document.addEventListener('keydown', function(e) {
     }
 });
  
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 //  MODAL FIRST-FIELD FOCUS
-// ─────────────────────────────────────────────
+// ---------------------------------------------
 var PS_MODAL_IDS = [
     'ps-create-loan-modal',
     'ps-renew-modal',
@@ -2387,14 +2428,14 @@ function psFocusFirstField(modalId) {
         if (el) {
             el.focus();
             // Trigger the existing :focus style by momentarily
-            // dispatching a focus event — the browser handles the ring.
+            // dispatching a focus event - the browser handles the ring.
         }
     });
 }
  
 /**
  * Watch each modal for display changes.
- * When it becomes visible → focus first field.
+ * When it becomes visible ? focus first field.
  */
 function psWatchModalVisibility(modalId) {
     var modal = document.getElementById(modalId);
@@ -2493,7 +2534,7 @@ function ps_overview_tab($business_id) {
 
     ob_start();
     ?>
-  <!-- Quick Action Bar with keyboard shortcuts — original colors preserved -->
+  <!-- Quick Action Bar with keyboard shortcuts - original colors preserved -->
     <div class="ps-quick-bar" role="toolbar" aria-label="Quick Actions" style="gap:10px;padding:12px 16px;">
  
         <button class="ps-qbtn primary"
@@ -2556,14 +2597,14 @@ function ps_overview_tab($business_id) {
         </button>
     </div>
  
-    <!-- Shortcut hint strip — sits below the quick bar -->
+    <!-- Shortcut hint strip - sits below the quick bar -->
 
    
     <!-- Ticket Search Bar (hidden by default) -->
     <div id="ps-ticket-search-bar" style="display:none;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:14px;margin-bottom:12px;">
         <div style="display:flex;gap:8px;align-items:center;">
             <input type="text" id="ps-qsearch-input" placeholder="Enter ticket number or customer name..." style="flex:1;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;" oninput="psQuickSearchTicket(this.value)">
-            <button onclick="document.getElementById('ps-ticket-search-bar').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;">✕</button>
+            <button onclick="document.getElementById('ps-ticket-search-bar').style.display='none'" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:18px;padding:4px 8px;">&times;</button>
         </div>
         <div id="ps-qsearch-results" style="margin-top:10px;"></div>
     </div>
@@ -2667,14 +2708,7 @@ function ps_loans_tab($business_id) {
     $loans = $wpdb->get_results(
         "SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS customer_name,c.contact_number,c.photo_path,
                 col.description AS collateral_desc,col.category AS collateral_cat,
-                DATEDIFF(CURDATE(),l.due_date) AS days_past_due,
-                (
-                    SELECT p.reference_number
-                    FROM {$wpdb->prefix}ps_payments p
-                    WHERE p.loan_id = l.id AND p.reference_number <> ''
-                    ORDER BY p.created_at DESC, p.id DESC
-                    LIMIT 1
-                ) AS or_number
+                DATEDIFF(CURDATE(),l.due_date) AS days_past_due
          FROM {$lt} l
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
          JOIN {$wpdb->prefix}ps_collaterals col ON col.id=l.collateral_id
@@ -2687,7 +2721,7 @@ function ps_loans_tab($business_id) {
     <!-- Quick Bar -->
     <div class="ps-search-bar"><form method="GET" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <input type="hidden" name="tab" value="loans">
-        <input type="text" name="lq" value="<?php echo esc_attr($fq); ?>" placeholder="Search by Ticket #, OR, or customer...">
+        <input type="text" name="lq" value="<?php echo esc_attr($fq); ?>" placeholder="Search by Ticket # or customer...">
         <select name="ls">
             <option value="">All Statuses</option>
             <?php foreach (['active','renewed','overdue','redeemed','forfeited'] as $st): ?>
@@ -2699,9 +2733,9 @@ function ps_loans_tab($business_id) {
     </form></div>
 
     <div class="bntm-table-wrapper"><table class="bntm-table">
-    <thead><tr><th>Ticket #</th><th>OR</th><th>Customer</th><th>Collateral</th><th>Principal</th><th>Rate</th><th>Loan Date</th><th>Due Date</th><th>Status</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Ticket #</th><th>Customer</th><th>Collateral</th><th>Principal</th><th>Rate</th><th>Loan Date</th><th>Due Date</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>
-    <?php if (empty($loans)): ?><tr><td colspan="10" style="text-align:center;color:#9ca3af;padding:40px;">No pawn tickets found</td></tr>
+    <?php if (empty($loans)): ?><tr><td colspan="9" style="text-align:center;color:#9ca3af;padding:40px;">No pawn tickets found</td></tr>
     <?php else: foreach ($loans as $loan):
         $is_od = in_array($loan->status, ['active','renewed']) && strtotime($loan->due_date) < strtotime('today');
         $grace = (int)bntm_get_setting('ps_grace_period', '0');
@@ -2713,13 +2747,6 @@ function ps_loans_tab($business_id) {
             <?php if (!empty($loan->ticket_tag)): ?><div style="font-size:10px;color:#047857;margin-top:2px;"><?php echo esc_html($loan->ticket_tag); ?></div><?php endif; ?>
             <?php if (!$is_new_ticket): ?>
             <div style="font-size:10px;color:#7c3aed;margin-top:2px;">renewal ticket</div>
-            <?php endif; ?>
-        </td>
-        <td>
-            <?php if (!empty($loan->or_number)): ?>
-            <span class="ps-ticket-chain"><?php echo esc_html($loan->or_number); ?></span>
-            <?php else: ?>
-            <span style="color:#9ca3af;font-size:11px;">—</span>
             <?php endif; ?>
         </td>
         <td>
@@ -2737,7 +2764,7 @@ function ps_loans_tab($business_id) {
         </td>
         <td><span class="ps-collateral-cat"><?php echo ucfirst($loan->collateral_cat); ?></span><div style="font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><?php echo esc_html($loan->collateral_desc); ?></div></td>
         <td style="font-weight:700;">&#8369;<?php echo number_format($loan->principal,2); ?>
-            <?php if ($loan->accrued_interest_carried > 0): ?><div style="font-size:10px;color:#7c3aed;">+₱<?php echo number_format($loan->accrued_interest_carried,2); ?> carried</div><?php endif; ?>
+            <?php if ($loan->accrued_interest_carried > 0): ?><div style="font-size:10px;color:#7c3aed;">+&#8369;<?php echo number_format($loan->accrued_interest_carried,2); ?> carried</div><?php endif; ?>
         </td>
         <td><?php echo $loan->interest_rate; ?>%/mo</td>
         <td style="font-size:12px;"><?php echo date('M d, Y',strtotime($loan->loan_date)); ?></td>
@@ -2853,14 +2880,14 @@ function ps_collaterals_tab($business_id) {
         <td><div style="font-weight:600;font-size:13px;max-width:180px;"><?php echo esc_html($col->description); ?></div>
             <?php if ($col->karat||$col->weight_grams>0): ?><div style="font-size:11px;color:#9ca3af;"><?php echo $col->karat; ?> <?php echo $col->weight_grams>0?$col->weight_grams.'g':''; ?></div><?php endif; ?>
         </td>
-        <td><?php echo $col->brand ? esc_html($col->brand) : '<span style="color:#d1d5db;">—</span>'; ?><?php if ($col->model): ?><div style="font-size:11px;color:#9ca3af;"><?php echo esc_html($col->model); ?></div><?php endif; ?></td>
+        <td><?php echo $col->brand ? esc_html($col->brand) : '<span style="color:#d1d5db;">-</span>'; ?><?php if ($col->model): ?><div style="font-size:11px;color:#9ca3af;"><?php echo esc_html($col->model); ?></div><?php endif; ?></td>
         <td><span style="color:<?php echo $cc; ?>;font-weight:600;font-size:12px;text-transform:capitalize;"><?php echo $col->item_condition; ?></span></td>
         <td style="font-weight:700;">&#8369;<?php echo number_format($col->appraised_value,2); ?></td>
         <td><?php if ($col->ticket_number): ?>
             <div style="font-family:monospace;font-size:12px;font-weight:600;"><?php echo esc_html($col->ticket_number); ?></div>
             <?php if ($col->root_ticket && $col->root_ticket !== $col->ticket_number): ?><span class="ps-ticket-chain"><?php echo esc_html($col->root_ticket); ?></span><?php endif; ?>
-        <?php else: ?><span style="color:#d1d5db;">—</span><?php endif; ?></td>
-        <td style="font-size:12px;"><?php echo esc_html($col->customer_name ?? '—'); ?></td>
+        <?php else: ?><span style="color:#d1d5db;">-</span><?php endif; ?></td>
+        <td style="font-size:12px;"><?php echo esc_html($col->customer_name ?? '-'); ?></td>
         <?php
             $badge_style = '';
             if ($col->status === 'for_auction') $badge_style = 'background:#d97706;color:#fff;border-color:#d97706;';
@@ -3103,14 +3130,14 @@ function ps_documents_tab( $business_id ) {
             <div class="bntm-form-group">
                 <label>Search Ticket / Customer</label>
                 <div style="position:relative;">
-                    <input type="text" id="doc-loan-search" placeholder="Type ticket # or customer name…" autocomplete="off"
+                    <input type="text" id="doc-loan-search" placeholder="Type ticket # or customer name-" autocomplete="off"
                         style="width:100%;box-sizing:border-box;padding:8px 12px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;"
                         oninput="psDocSearchTicket(this.value)">
                     <div id="doc-loan-results" style="display:none;position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid #d1d5db;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.12);max-height:220px;overflow-y:auto;z-index:999;margin-top:2px;"></div>
                 </div>
                 <div id="doc-selected-loan" style="display:none;margin-top:8px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:8px 12px;font-size:12px;">
                     <span id="doc-selected-label"></span>
-                    <button type="button" onclick="psClearDocLoan()" style="background:none;border:none;color:#6b7280;cursor:pointer;float:right;font-size:14px;line-height:1;">✕</button>
+                    <button type="button" onclick="psClearDocLoan()" style="background:none;border:none;color:#6b7280;cursor:pointer;float:right;font-size:14px;line-height:1;">&times;</button>
                 </div>
                 <input type="hidden" id="doc-loan-id-val">
             </div>
@@ -3170,7 +3197,7 @@ function ps_documents_tab( $business_id ) {
         const res = document.getElementById('doc-loan-results');
         if (val.length < 2) { res.style.display='none'; return; }
         res.style.display='block';
-        res.innerHTML='<div style="padding:10px;color:#9ca3af;font-size:13px;">Searching…</div>';
+        res.innerHTML='<div style="padding:10px;color:#9ca3af;font-size:13px;">Searching-</div>';
         docSearchTimer = setTimeout(() => {
             const fd = new FormData();
             fd.append('action','ps_search_loans');
@@ -3187,8 +3214,8 @@ function ps_documents_tab( $business_id ) {
                          onmouseenter="this.style.background='#f0f9ff'" onmouseleave="this.style.background=''">
                         <div>
                             <span style="font-family:monospace;font-weight:700;">${l.ticket_number}</span>
-                            <span style="color:#6b7280;"> — ${l.customer_name}</span>
-                            <div style="font-size:11px;color:#9ca3af;">Principal: ₱${parseFloat(l.principal).toLocaleString('en-PH',{minimumFractionDigits:2})} &nbsp; Due: ${l.due_date}</div>
+                            <span style="color:#6b7280;"> - ${l.customer_name}</span>
+                            <div style="font-size:11px;color:#9ca3af;">Principal: ₱ ${parseFloat(l.principal).toLocaleString('en-PH',{minimumFractionDigits:2})} &nbsp; Due: ${l.due_date}</div>
                         </div>
                         <span style="font-size:11px;font-weight:700;color:${sc[l.status]||'#374151'};text-transform:uppercase;padding:2px 7px;background:${sc[l.status]||'#374151'}18;border-radius:4px;">${l.status}</span>
                     </div>`).join('');
@@ -3202,7 +3229,7 @@ function ps_documents_tab( $business_id ) {
         const sel=document.getElementById('doc-selected-loan');
         sel.style.display='block';
         document.getElementById('doc-selected-label').innerHTML=
-            `<strong style="font-family:monospace;">${ticket}</strong> — ${customer} <span style="text-transform:uppercase;font-size:11px;color:#6b7280;">(${status})</span>`;
+            `<strong style="font-family:monospace;">${ticket}</strong> - ${customer} <span style="text-transform:uppercase;font-size:11px;color:#6b7280;">(${status})</span>`;
     };
     window.psClearDocLoan = function() {
         document.getElementById('doc-loan-id-val').value='';
@@ -3245,8 +3272,10 @@ function ps_reports_tab( $business_id ) {
     $rto     = isset($_GET['rto'])    ? sanitize_text_field($_GET['rto'])    : date('Y-m-d');
     $rdate   = isset($_GET['rdate'])  ? sanitize_text_field($_GET['rdate'])  : date('Y-m-d');
     $rstatus = isset($_GET['rstatus'])? sanitize_text_field($_GET['rstatus']): 'all';
+    $rtag    = isset($_GET['rtag']) ? sanitize_text_field($_GET['rtag']) : 'all';
     $denomination_data = sanitize_text_field($_GET['denomination_data'] ?? '');
     $cash_breakdown = ps_parse_cash_breakdown($denomination_data);
+    $ticket_tags = ps_get_ticket_tags();
  
     $reports = [
         'summary'           => ['label' => 'Summary (All Statuses)', 'date' => 'range'],
@@ -3287,6 +3316,15 @@ function ps_reports_tab( $business_id ) {
         <select name="rstatus" style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;">
             <?php foreach (['all'=>'All Statuses','active'=>'Active','renewed'=>'Renewed','overdue'=>'Overdue','redeemed'=>'Redeemed','forfeited'=>'Forfeited'] as $sv => $sl): ?>
             <option value="<?php echo $sv; ?>" <?php selected($rstatus,$sv); ?>><?php echo $sl; ?></option>
+            <?php endforeach; ?>
+        </select>
+        <?php endif; ?>
+
+        <?php if (in_array($rtype, ['daily_summary','cash_flow_summary'], true)): ?>
+        <select name="rtag" style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;">
+            <option value="all" <?php selected($rtag,'all'); ?>>All Tags</option>
+            <?php foreach ($ticket_tags as $tag): ?>
+            <option value="<?php echo esc_attr($tag); ?>" <?php selected($rtag,$tag); ?>><?php echo esc_html($tag); ?></option>
             <?php endforeach; ?>
         </select>
         <?php endif; ?>
@@ -3343,8 +3381,8 @@ function ps_reports_tab( $business_id ) {
         case 'summary':           echo ps_analytics_summary($business_id, $rfrom, $rto);                      break;
         case 'list_loans':        echo ps_analytics_loans($business_id, $rfrom, $rto);                        break;
         case 'list_payments':     echo ps_analytics_payments($business_id, $rfrom, $rto);                     break;
-        case 'daily_summary':     echo ps_analytics_daily_summary($business_id, $rdate, $cash_breakdown);     break;
-        case 'cash_flow_summary': echo ps_analytics_cash_flow_summary($business_id, $rfrom, $rto, $cash_breakdown); break;
+        case 'daily_summary':     echo ps_analytics_daily_summary($business_id, $rdate, $cash_breakdown, $rtag);     break;
+        case 'cash_flow_summary': echo ps_analytics_cash_flow_summary($business_id, $rfrom, $rto, $cash_breakdown, $rtag); break;
         case 'tickets_by_status': echo ps_analytics_tickets_by_status($business_id, $rfrom, $rto, $rstatus); break;
         default:                  echo ps_analytics_summary($business_id, $rfrom, $rto);
     }
@@ -3358,6 +3396,7 @@ function ps_reports_tab( $business_id ) {
         rto    : <?php echo json_encode($rto);     ?>,
         rdate  : <?php echo json_encode($rdate);   ?>,
         rstatus: <?php echo json_encode($rstatus); ?>,
+        rtag   : <?php echo json_encode($rtag);    ?>,
         denominationData: <?php echo json_encode($denomination_data); ?>
     };
     var psDenominationModalAction = 'generate';
@@ -3416,11 +3455,13 @@ function ps_reports_tab( $business_id ) {
         }
     };
     window.psGenerateDailySummaryPDF = function() {
+        psSyncReportParamsFromForm();
         // For cash-count reports, always open denomination modal first, then generate PDF
         psDenominationModalAction = 'print_direct';
         psOpenDenominationModal('print_direct');
     };
     window.psReportPrepareGenerate = function() {
+        psSyncReportParamsFromForm();
         if (['daily_summary','cash_flow_summary'].includes(psReportParams.rtype) && !document.getElementById('ps-denomination-data').value) {
             psOpenDenominationModal('generate');
             return;
@@ -3428,6 +3469,7 @@ function ps_reports_tab( $business_id ) {
         document.getElementById('ps-report-form').submit();
     };
     window.psReportOpenModal = function(skipPrompt) {
+        psSyncReportParamsFromForm();
         var p = psReportParams;
         if (!skipPrompt && ['daily_summary','cash_flow_summary'].includes(p.rtype) && !document.getElementById('ps-denomination-data').value) {
             psOpenDenominationModal('print');
@@ -3437,7 +3479,7 @@ function ps_reports_tab( $business_id ) {
         var preview = document.getElementById('ps-print-preview');
         document.getElementById('print-modal-title').textContent    = 'Report Print Preview';
         document.getElementById('print-modal-subtitle').textContent = p.rtype.replace(/_/g,' ');
-        preview.innerHTML = '<div style="padding:40px;text-align:center;color:#9ca3af;">Generating…</div>';
+        preview.innerHTML = '<div style="padding:40px;text-align:center;color:#9ca3af;">Generating-</div>';
         modal.style.display = 'flex';
         var fd = new FormData();
         fd.append('action',      'ps_generate_document');
@@ -3447,6 +3489,7 @@ function ps_reports_tab( $business_id ) {
         fd.append('rfrom',       p.rfrom);
         fd.append('rto',         p.rto);
         fd.append('rstatus',     p.rstatus);
+        fd.append('rtag',        p.rtag);
         fd.append('denomination_data', document.getElementById('ps-denomination-data').value);
         fd.append('nonce',       PS_NONCES.doc);
         fetch(ajaxurl, {method:'POST', body:fd})
@@ -3461,6 +3504,23 @@ function ps_reports_tab( $business_id ) {
                         + (json.data?.message || 'Error generating report') + '</div>';
                 }
             });
+    };
+    window.psSyncReportParamsFromForm = function() {
+        var form = document.getElementById('ps-report-form');
+        if (!form) return;
+        var reportEl = form.querySelector('[name="report"]');
+        var rfromEl = form.querySelector('[name="rfrom"]');
+        var rtoEl = form.querySelector('[name="rto"]');
+        var rdateEl = form.querySelector('[name="rdate"]');
+        var rstatusEl = form.querySelector('[name="rstatus"]');
+        var rtagEl = form.querySelector('[name="rtag"]');
+
+        if (reportEl) psReportParams.rtype = reportEl.value || psReportParams.rtype;
+        if (rfromEl) psReportParams.rfrom = rfromEl.value || psReportParams.rfrom;
+        if (rtoEl) psReportParams.rto = rtoEl.value || psReportParams.rto;
+        if (rdateEl) psReportParams.rdate = rdateEl.value || psReportParams.rdate;
+        if (rstatusEl) psReportParams.rstatus = rstatusEl.value || psReportParams.rstatus;
+        psReportParams.rtag = rtagEl ? (rtagEl.value || 'all') : 'all';
     };
     document.addEventListener('DOMContentLoaded', function() {
         document.querySelectorAll('[data-denom]').forEach(function(input){
@@ -3700,20 +3760,26 @@ function ps_analytics_loans($business_id, $from, $to): string {
     return ob_get_clean();
 }
 
-function ps_cash_flow_data(int $business_id, string $from, string $to): array {
+function ps_cash_flow_data(int $business_id, string $from, string $to, string $tag_filter = 'all'): array {
     global $wpdb;
     $lt = $wpdb->prefix . 'ps_loans';
     $pt = $wpdb->prefix . 'ps_payments';
     $ct = $wpdb->prefix . 'ps_customers';
+    $tag_filter = trim($tag_filter);
+    $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
+    $tag_filter_sql = strtolower($tag_filter);
 
     $payments_before = $wpdb->get_results($wpdb->prepare(
-        "SELECT amount,payment_method FROM {$pt} WHERE business_id=%d AND DATE(created_at)<%s",
-        $business_id, $from
+        "SELECT p.amount,p.payment_method
+         FROM {$pt} p
+         JOIN {$lt} l ON l.id=p.loan_id
+         WHERE p.business_id=%d AND DATE(p.created_at)<%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : ""),
+        ...($has_tag_filter ? [$business_id, $from, $tag_filter_sql] : [$business_id, $from])
     ));
     $loans_before = $wpdb->get_results($wpdb->prepare(
         "SELECT principal,service_fee,additional_to_principal,transaction_type,payment_method
-         FROM {$lt} WHERE business_id=%d AND DATE(loan_date)<%s",
-        $business_id, $from
+         FROM {$lt} WHERE business_id=%d AND DATE(loan_date)<%s" . ($has_tag_filter ? " AND LOWER(TRIM(ticket_tag))=%s" : ""),
+        ...($has_tag_filter ? [$business_id, $from, $tag_filter_sql] : [$business_id, $from])
     ));
 
     $payments = $wpdb->get_results($wpdb->prepare(
@@ -3721,17 +3787,17 @@ function ps_cash_flow_data(int $business_id, string $from, string $to): array {
          FROM {$pt} p
          JOIN {$lt} l ON l.id=p.loan_id
          JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND DATE(p.created_at) BETWEEN %s AND %s
+         WHERE p.business_id=%d AND DATE(p.created_at) BETWEEN %s AND %s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY p.created_at ASC, p.id ASC",
-        $business_id, $from, $to
+        ...($has_tag_filter ? [$business_id, $from, $to, $tag_filter_sql] : [$business_id, $from, $to])
     ));
     $loans = $wpdb->get_results($wpdb->prepare(
         "SELECT l.*, CONCAT(c.last_name, ', ', c.first_name) AS customer_name
          FROM {$lt} l
          JOIN {$ct} c ON c.id=l.customer_id
-         WHERE l.business_id=%d AND DATE(l.loan_date) BETWEEN %s AND %s
+         WHERE l.business_id=%d AND DATE(l.loan_date) BETWEEN %s AND %s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY l.loan_date ASC, l.id ASC",
-        $business_id, $from, $to
+        ...($has_tag_filter ? [$business_id, $from, $to, $tag_filter_sql] : [$business_id, $from, $to])
     ));
 
     $cash_in_before = 0;
@@ -3779,8 +3845,10 @@ function ps_cash_flow_data(int $business_id, string $from, string $to): array {
     ];
 }
 
-function ps_analytics_cash_flow_summary($business_id, $from, $to, array $cash_breakdown = []): string {
-    $data = ps_cash_flow_data((int)$business_id, $from, $to);
+function ps_analytics_cash_flow_summary($business_id, $from, $to, array $cash_breakdown = [], string $tag_filter = 'all'): string {
+    $data = ps_cash_flow_data((int)$business_id, $from, $to, $tag_filter);
+    $tag_filter = trim($tag_filter);
+    $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
     $counted = (float)($cash_breakdown['total_counted'] ?? 0);
     $over_short = round($counted - $data['cash_ending'], 2);
 
@@ -3883,24 +3951,29 @@ function ps_analytics_payments($business_id, $from, $to): string {
     return ob_get_clean();
 }
 
-function ps_analytics_daily_summary($business_id, $report_date, array $cash_breakdown = []): string {
+function ps_analytics_daily_summary($business_id, $report_date, array $cash_breakdown = [], string $tag_filter = 'all'): string {
     global $wpdb;
     $lt = $wpdb->prefix . 'ps_loans';
     $pt = $wpdb->prefix . 'ps_payments';
     $ct = $wpdb->prefix . 'ps_customers';
+    $tag_filter = trim($tag_filter);
+    $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
+    $tag_filter_sql = strtolower($tag_filter);
+    $tag_filter_sql = strtolower($tag_filter);
+
     $rows_loans = $wpdb->get_results($wpdb->prepare(
         "SELECT l.ticket_number,l.ticket_tag,l.principal,l.service_fee,l.payment_method,CONCAT(c.last_name, ', ', c.first_name) AS customer_name
          FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id
-         WHERE l.business_id=%d AND DATE(l.loan_date)=%s AND l.transaction_type='new'
+         WHERE l.business_id=%d AND DATE(l.loan_date)=%s AND l.transaction_type='new'" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY l.id DESC",
-        $business_id, $report_date
+        ...($has_tag_filter ? [$business_id, $report_date, $tag_filter_sql] : [$business_id, $report_date])
     ));
     $rows_payments = $wpdb->get_results($wpdb->prepare(
         "SELECT p.amount,p.payment_method,p.interest_amount,p.principal_amount,p.penalty_amount,l.ticket_number,l.ticket_tag,CONCAT(c.last_name, ', ', c.first_name) AS customer_name
          FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND DATE(p.created_at)=%s
+         WHERE p.business_id=%d AND DATE(p.created_at)=%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY p.id DESC",
-        $business_id, $report_date
+        ...($has_tag_filter ? [$business_id, $report_date, $tag_filter_sql] : [$business_id, $report_date])
     ));
     $loan_out = 0;
     foreach ($rows_loans as $row) $loan_out += (float)$row->principal - (float)$row->service_fee;
@@ -3937,6 +4010,12 @@ function ps_analytics_daily_summary($business_id, $report_date, array $cash_brea
         <div class="ps-analytics-card"><div class="ps-analytics-label">Expected Cash</div><div class="ps-analytics-value">P <?php echo number_format($expected_cash,2); ?></div><div class="ps-analytics-meta">Cash in less cash out</div></div>
         <div class="ps-analytics-card"><div class="ps-analytics-label">Over / Short</div><div class="ps-analytics-value"><?php echo ($over_short >= 0 ? 'P ' : '-P ') . number_format(abs($over_short),2); ?></div><div class="ps-analytics-meta">Compared with counted cash</div></div>
     </div>
+    <?php if ($has_tag_filter): ?>
+    <div style="margin:-2px 0 12px;font-size:12px;color:#475569;">Tag Filter: <strong><?php echo esc_html($tag_filter); ?></strong></div>
+    <?php endif; ?>
+    <?php if ($has_tag_filter): ?>
+    <div style="margin:-2px 0 12px;font-size:12px;color:#475569;">Tag Filter: <strong><?php echo esc_html($tag_filter); ?></strong></div>
+    <?php endif; ?>
     <div class="ps-analytics-layout">
         <div class="ps-analytics-panel">
             <h4>Daily Activity</h4>
@@ -4036,7 +4115,7 @@ function ps_analytics_tickets_by_status($business_id, $from, $to, $filter_status
 }
  
 /**
- * ① SUMMARY — all tickets grouped by status (overview counts + table).
+ * ? SUMMARY - all tickets grouped by status (overview counts + table).
  */
 function ps_rpt_summary( int $business_id, string $from, string $to, array $b ): string {
     global $wpdb;
@@ -4062,11 +4141,11 @@ function ps_rpt_summary( int $business_id, string $from, string $to, array $b ):
  
     $order  = ['active','renewed','overdue','redeemed','forfeited'];
     $labels = ['active'=>'Active','renewed'=>'Renewed','overdue'=>'Overdue','redeemed'=>'Redeemed','forfeited'=>'Forfeited'];
-    $dlabel = date('M d, Y', strtotime($from)) . ' — ' . date('M d, Y', strtotime($to));
+    $dlabel = date('M d, Y', strtotime($from)) . ' - ' . date('M d, Y', strtotime($to));
  
     ob_start();
     echo ps_corp_header( $b );
-    echo ps_doc_title( 'SUMMARY REPORT — TICKETS BY STATUS', "Date Covered: {$dlabel}" );
+    echo ps_doc_title( 'SUMMARY REPORT - TICKETS BY STATUS', "Date Covered: {$dlabel}" );
     echo ps_divider();
     echo ps_reg_table_style();
  
@@ -4087,7 +4166,7 @@ function ps_rpt_summary( int $business_id, string $from, string $to, array $b ):
         ?>
         <div style="margin-bottom:10px;">
         <div style="background:#000;color:#fff;padding:3px 6px;font-size:9px;font-weight:700;display:flex;justify-content:space-between;">
-            <span><?php echo strtoupper($labels[$st]); ?> — <?php echo count($grp); ?> ticket(s)</span>
+            <span><?php echo strtoupper($labels[$st]); ?> - <?php echo count($grp); ?> ticket(s)</span>
             <span>P <?php echo number_format($grp_total,2); ?></span>
         </div>
         <table class="reg">
@@ -4109,8 +4188,8 @@ function ps_rpt_summary( int $business_id, string $from, string $to, array $b ):
                 <td class="r" style="font-weight:700;"><?php echo number_format($ln->principal,2); ?></td>
                 <td class="r"><?php echo $ln->interest_rate; ?></td>
                 <?php if ($st==='overdue'):   echo '<td class="r" style="font-weight:700;">' . max(0,(int)$ln->days_past) . 'd</td>'; endif; ?>
-                <?php if ($st==='redeemed'):  echo '<td>' . ($ln->redeemed_at  ? date('M d, Y',strtotime($ln->redeemed_at))  : '—') . '</td>'; endif; ?>
-                <?php if ($st==='forfeited'): echo '<td>' . ($ln->forfeited_at ? date('M d, Y',strtotime($ln->forfeited_at)) : '—') . '</td>'; endif; ?>
+                <?php if ($st==='redeemed'):  echo '<td>' . ($ln->redeemed_at  ? date('M d, Y',strtotime($ln->redeemed_at))  : '-') . '</td>'; endif; ?>
+                <?php if ($st==='forfeited'): echo '<td>' . ($ln->forfeited_at ? date('M d, Y',strtotime($ln->forfeited_at)) : '-') . '</td>'; endif; ?>
             </tr>
             <?php endforeach; ?>
             </tbody>
@@ -4126,7 +4205,7 @@ function ps_rpt_summary( int $business_id, string $from, string $to, array $b ):
     $grand = array_sum(array_column($loans,'principal'));
     echo '<div style="font-size:10px;font-weight:700;border-top:2px solid #000;border-bottom:2px solid #000;'
        . 'padding:3px 6px;display:flex;justify-content:space-between;">'
-       . '<span>GRAND TOTAL — ' . count($loans) . ' ticket(s)</span>'
+       . '<span>GRAND TOTAL - ' . count($loans) . ' ticket(s)</span>'
        . '<span>P ' . number_format($grand,2) . '</span></div>';
  
     echo ps_sig_footer(['Prepared by','Checked by','Noted by','Approved by']);
@@ -4137,7 +4216,7 @@ function ps_rpt_summary( int $business_id, string $from, string $to, array $b ):
  
  
 /**
- * ② LIST OF LOANS GRANTED
+ * ? LIST OF LOANS GRANTED
  */
 function ps_rpt_list_loans( int $business_id, string $from, string $to, array $b ): string {
     global $wpdb;
@@ -4162,7 +4241,7 @@ function ps_rpt_list_loans( int $business_id, string $from, string $to, array $b
     $sum_appraised = 0;
     foreach ($loans as $l) $sum_appraised += (float)$l->col_appraised;
  
-    $dlabel = date('M d, Y',strtotime($from)) . ' — ' . date('M d, Y',strtotime($to));
+    $dlabel = date('M d, Y',strtotime($from)) . ' - ' . date('M d, Y',strtotime($to));
  
     ob_start();
     echo ps_corp_header($b);
@@ -4213,7 +4292,7 @@ function ps_rpt_list_loans( int $business_id, string $from, string $to, array $b
  
  
 /**
- * ③ LIST OF PAYMENTS RECEIVED
+ * ? LIST OF PAYMENTS RECEIVED
  */
 function ps_rpt_list_payments( int $business_id, string $from, string $to, array $b ): string {
     global $wpdb;
@@ -4235,17 +4314,17 @@ function ps_rpt_list_payments( int $business_id, string $from, string $to, array
     $s_pen  = array_sum(array_column($rows,'penalty_amount'));
     $s_prin = array_sum(array_column($rows,'principal_amount'));
  
-    $dlabel = date('M d, Y',strtotime($from)) . ' — ' . date('M d, Y',strtotime($to));
+    $dlabel = date('M d, Y',strtotime($from)) . ' - ' . date('M d, Y',strtotime($to));
  
     ob_start();
     echo ps_corp_header($b);
-    echo ps_doc_title('LIST OF PAYMENTS (O.R.) RECEIVED', "Date Covered: {$dlabel}");
+    echo ps_doc_title('LIST OF PAYMENTS RECEIVED', "Date Covered: {$dlabel}");
     echo ps_divider();
     echo ps_reg_table_style();
     ?>
     <table class="reg">
         <thead><tr>
-            <th>DATE</th><th>TICKET NO.</th><th>NAME OF CUSTOMER</th><th>OR NO.</th><th>TYPE</th>
+            <th>DATE</th><th>TICKET NO.</th><th>NAME OF CUSTOMER</th><th>REFERENCE NO.</th><th>TYPE</th>
             <th class="r">CASH</th><th class="r">PRINCIPAL</th><th class="r">INTEREST</th>
             <th class="r">ADDT'L INT.</th><th>METHOD</th>
         </tr></thead>
@@ -4255,10 +4334,10 @@ function ps_rpt_list_payments( int $business_id, string $from, string $to, array
             <td style="white-space:nowrap;"><?php echo date('M d, Y',strtotime($p->created_at)); ?></td>
             <td style="font-weight:700;"><?php echo esc_html($p->ticket_number); ?></td>
             <td style="text-transform:uppercase;"><?php echo esc_html($p->cname); ?></td>
-            <td><?php echo esc_html($p->reference_number ?: '—'); ?></td>
+            <td><?php echo esc_html($p->reference_number ?: '-'); ?></td>
             <td style="text-transform:capitalize;"><?php echo str_replace('_',' ',$p->payment_type); ?></td>
             <td class="r"><?php echo number_format($p->amount,2); ?> /</td>
-            <td class="r"><?php echo $p->principal_amount > 0 ? number_format($p->principal_amount,2) : '—'; ?></td>
+            <td class="r"><?php echo $p->principal_amount > 0 ? number_format($p->principal_amount,2) : '-'; ?></td>
             <td class="r"><?php echo number_format($p->interest_amount,2); ?></td>
             <td class="r"><?php echo $p->penalty_amount > 0 ? number_format($p->penalty_amount,2) : '0.00'; ?> /</td>
             <td style="text-transform:capitalize;"><?php echo str_replace('_',' ',$p->payment_method); ?></td>
@@ -4282,11 +4361,13 @@ function ps_rpt_list_payments( int $business_id, string $from, string $to, array
  
  
 /**
- * ④ DAILY SUMMARY — loans granted + payments received for one day.
+ * ? DAILY SUMMARY - loans granted + payments received for one day.
  */
-function ps_rpt_cash_flow_summary(int $business_id, string $from, string $to, array $b, array $cash_breakdown = []): string {
-    $data = ps_cash_flow_data($business_id, $from, $to);
-    $dlabel = date('F d, Y', strtotime($from)) . ' to ' . date('F d, Y', strtotime($to));
+function ps_rpt_cash_flow_summary(int $business_id, string $from, string $to, array $b, array $cash_breakdown = [], string $tag_filter = 'all'): string {
+    $data = ps_cash_flow_data($business_id, $from, $to, $tag_filter);
+    $tag_filter = trim($tag_filter);
+    $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
+    $dlabel = date('F d, Y', strtotime($from)) . ' to ' . date('F d, Y', strtotime($to)) . ($has_tag_filter ? ' | Tag: ' . $tag_filter : '');
     $counted_cash = (float)($cash_breakdown['total_counted'] ?? 0);
     $over_short = round($counted_cash - $data['cash_ending'], 2);
     $fmt = static fn($n) => number_format((float)$n, 2);
@@ -4362,29 +4443,31 @@ function ps_rpt_cash_flow_summary(int $business_id, string $from, string $to, ar
     return ob_get_clean();
 }
 
-function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, array $cash_breakdown = [] ): string {
+function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, array $cash_breakdown = [], string $tag_filter = 'all' ): string {
     global $wpdb;
     $lt   = $wpdb->prefix . 'ps_loans';
     $pt   = $wpdb->prefix . 'ps_payments';
     $ct   = $wpdb->prefix . 'ps_customers';
     $colt = $wpdb->prefix . 'ps_collaterals';
     $rd   = $report_date;
+    $tag_filter = trim($tag_filter);
+    $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
     $dlabel = date('F d, Y', strtotime($rd));
  
     $loans_today = $wpdb->get_results( $wpdb->prepare(
         "SELECT l.*, CONCAT(c.last_name,', ',c.first_name) AS cname, c.address,
                 col.description AS col_desc, col.karat, col.weight_grams, col.appraised_value
          FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id JOIN {$colt} col ON col.id=l.collateral_id
-         WHERE l.business_id=%d AND DATE(l.loan_date)=%s AND l.transaction_type='new'
+         WHERE l.business_id=%d AND DATE(l.loan_date)=%s AND l.transaction_type='new'" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY l.ticket_number ASC",
-        $business_id, $rd
+        ...($has_tag_filter ? [$business_id, $rd, $tag_filter_sql] : [$business_id, $rd])
     ) );
  
     $payments_today = $wpdb->get_results( $wpdb->prepare(
         "SELECT p.*, l.ticket_number, l.root_ticket, l.ticket_tag, CONCAT(c.last_name,', ',c.first_name) AS cname
          FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND DATE(p.created_at)=%s ORDER BY l.ticket_number ASC",
-        $business_id, $rd
+         WHERE p.business_id=%d AND DATE(p.created_at)=%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . " ORDER BY l.ticket_number ASC",
+        ...($has_tag_filter ? [$business_id, $rd, $tag_filter_sql] : [$business_id, $rd])
     ) );
  
     $sum_loan = array_sum(array_column($loans_today,    'principal'));
@@ -4438,7 +4521,8 @@ function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, 
     ob_start();
     echo ps_reg_table_style();
     echo ps_corp_header($b);
-    echo ps_doc_title('DAILY SUMMARY', "Date Covered: {$dlabel}");
+    $subtitle = "Date Covered: {$dlabel}" . ($has_tag_filter ? " | Tag: {$tag_filter}" : '');
+    echo ps_doc_title('DAILY SUMMARY', $subtitle);
     echo ps_divider();
     echo ps_render_cash_breakdown_panel($cash_breakdown, [
         'cash_in' => $cash_in,
@@ -4501,7 +4585,7 @@ function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, 
     <div style="font-size:8.5px;font-weight:700;text-transform:uppercase;margin:4px 0 3px;text-decoration:underline;">Payments Received</div>
     <table class="reg">
         <thead><tr>
-            <th>NAME OF CUSTOMER</th><th>TICKET NUMBER</th><th>TAG</th><th>OR NUMBER</th>
+            <th>NAME OF CUSTOMER</th><th>TICKET NUMBER</th><th>TAG</th><th>REFERENCE NUMBER</th>
             <th class="r">CASH</th><th class="r">PRINCIPAL</th><th class="r">INTEREST</th>
             <th class="r">INT. DISC.</th><th class="r">ADDT'L INT.</th><th class="r">AFF. OF LOSS</th>
         </tr></thead>
@@ -4511,9 +4595,9 @@ function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, 
             <td style="text-transform:uppercase;"><?php echo esc_html(strtoupper($p->cname)); ?></td>
             <td style="font-weight:700;"><?php echo esc_html($p->ticket_number); ?> / <?php echo esc_html($p->reference_number ?: ''); ?></td>
             <td><?php echo esc_html($p->ticket_tag ?: ''); ?></td>
-            <td><?php echo esc_html($p->reference_number ?: '—'); ?></td>
+            <td><?php echo esc_html($p->reference_number ?: '-'); ?></td>
             <td class="r"><?php echo number_format($p->amount,2); ?> /</td>
-            <td class="r"><?php echo $p->principal_amount > 0 ? number_format($p->principal_amount,2) : '—'; ?> /</td>
+            <td class="r"><?php echo $p->principal_amount > 0 ? number_format($p->principal_amount,2) : '-'; ?> /</td>
             <td class="r"><?php echo number_format($p->interest_amount,2); ?> /</td>
             <td class="r">0.00</td>
             <td class="r"><?php echo $p->penalty_amount > 0 ? number_format($p->penalty_amount,2) : '0.00'; ?> /</td>
@@ -4552,7 +4636,7 @@ function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, 
  
  
 /**
- * ⑤ TICKETS BY STATUS — filtered by a specific status (or all).
+ * ? TICKETS BY STATUS - filtered by a specific status (or all).
  *    $filter_status = 'active' | 'renewed' | 'overdue' | 'redeemed' | 'forfeited' | 'all'
  */
 function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, string $filter_status, array $b ): string {
@@ -4585,12 +4669,12 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
     $order  = ['active','renewed','overdue','redeemed','forfeited'];
     $labels = ['active'=>'Active','renewed'=>'Renewed','overdue'=>'Overdue','redeemed'=>'Redeemed','forfeited'=>'Forfeited'];
  
-    $dlabel  = date('M d, Y',strtotime($from)) . ' — ' . date('M d, Y',strtotime($to));
+    $dlabel  = date('M d, Y',strtotime($from)) . ' - ' . date('M d, Y',strtotime($to));
     $st_label = $filter_status === 'all' ? 'ALL STATUSES' : strtoupper($filter_status);
  
     ob_start();
     echo ps_corp_header($b);
-    echo ps_doc_title('TICKETS BY STATUS — ' . $st_label, "Loan Date Range: {$dlabel}");
+    echo ps_doc_title('TICKETS BY STATUS - ' . $st_label, "Loan Date Range: {$dlabel}");
     echo ps_divider();
     echo ps_reg_table_style();
  
@@ -4612,7 +4696,7 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
         ?>
         <div style="margin-bottom:10px;">
         <div style="background:#000;color:#fff;padding:3px 6px;font-size:9px;font-weight:700;display:flex;justify-content:space-between;">
-            <span><?php echo strtoupper($labels[$st]); ?> — <?php echo count($grp); ?> ticket(s)</span>
+            <span><?php echo strtoupper($labels[$st]); ?> - <?php echo count($grp); ?> ticket(s)</span>
             <span>P <?php echo number_format($grp_total,2); ?></span>
         </div>
         <table class="reg">
@@ -4627,7 +4711,7 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
             <?php foreach ($grp as $ln): ?>
             <tr>
                 <td style="font-weight:700;"><?php echo esc_html($ln->ticket_number); ?></td>
-                <td style="color:#555;"><?php echo $ln->root_ticket !== $ln->ticket_number ? esc_html($ln->root_ticket) : '—'; ?></td>
+                <td style="color:#555;"><?php echo $ln->root_ticket !== $ln->ticket_number ? esc_html($ln->root_ticket) : '-'; ?></td>
                 <td style="text-transform:uppercase;"><?php echo esc_html($ln->cname); ?></td>
                 <td><?php echo esc_html($ln->contact_number); ?></td>
                 <td style="max-width:80px;"><?php echo esc_html($ln->col_desc); ?></td>
@@ -4636,8 +4720,8 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
                 <td class="r" style="font-weight:700;"><?php echo number_format($ln->principal,2); ?></td>
                 <td class="r"><?php echo $ln->interest_rate; ?></td>
                 <?php if ($st==='overdue'):   echo '<td class="r" style="font-weight:700;">' . max(0,(int)$ln->days_past) . 'd</td>'; endif; ?>
-                <?php if ($st==='redeemed'):  echo '<td>' . ($ln->redeemed_at  ? date('M d, Y',strtotime($ln->redeemed_at))  : '—') . '</td>'; endif; ?>
-                <?php if ($st==='forfeited'): echo '<td>' . ($ln->forfeited_at ? date('M d, Y',strtotime($ln->forfeited_at)) : '—') . '</td>'; endif; ?>
+                <?php if ($st==='redeemed'):  echo '<td>' . ($ln->redeemed_at  ? date('M d, Y',strtotime($ln->redeemed_at))  : '-') . '</td>'; endif; ?>
+                <?php if ($st==='forfeited'): echo '<td>' . ($ln->forfeited_at ? date('M d, Y',strtotime($ln->forfeited_at)) : '-') . '</td>'; endif; ?>
             </tr>
             <?php endforeach; ?>
             </tbody>
@@ -4653,7 +4737,7 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
     $grand = array_sum(array_column($loans,'principal'));
     echo '<div style="font-size:10px;font-weight:700;border-top:2px solid #000;border-bottom:2px solid #000;'
        . 'padding:3px 6px;display:flex;justify-content:space-between;">'
-       . '<span>GRAND TOTAL — ' . count($loans) . ' ticket(s)</span>'
+       . '<span>GRAND TOTAL - ' . count($loans) . ' ticket(s)</span>'
        . '<span>P ' . number_format($grand,2) . '</span></div>';
  
     echo ps_sig_footer(['Prepared by','Checked by','Noted by','Approved by']);
@@ -4805,13 +4889,13 @@ function ps_settings_tab($business_id) {
         <div class="bntm-form-section"><h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Lost Ticket Settings</h4>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
                 <div class="bntm-form-group">
-                    <label>Affidavit of Loss Service Fee (₱)</label>
+                    <label>Affidavit of Loss Service Fee (?)</label>
                     <input type="number" name="ps_lost_ticket_fee" step="0.01" value="<?php echo esc_attr(bntm_get_setting('ps_lost_ticket_fee','100.00')); ?>" placeholder="100.00">
                     <div style="font-size:11px;color:#6b7280;margin-top:3px;">Added to total when a ticket is reported lost</div>
                 </div>
                 <div class="bntm-form-group">
                     <label>Duplicate Ticket Watermark Text</label>
-                    <input type="text" name="ps_lost_ticket_notice" value="<?php echo esc_attr(bntm_get_setting('ps_lost_ticket_notice','DUPLICATE — Original Ticket Reported Lost')); ?>">
+                    <input type="text" name="ps_lost_ticket_notice" value="<?php echo esc_attr(bntm_get_setting('ps_lost_ticket_notice','DUPLICATE - Original Ticket Reported Lost')); ?>">
                 </div>
             </div>
         </div>
@@ -4823,11 +4907,11 @@ function ps_settings_tab($business_id) {
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
                 <div class="bntm-form-group"><label>Default Interest Rate (%/month)</label><input type="number" name="ps_interest_rate" step=".01" value="<?php echo esc_attr(bntm_get_setting('ps_interest_rate','3.00')); ?>"></div>
                 <div class="bntm-form-group"><label>Penalty Rate (%/month)</label><input type="number" name="ps_penalty_rate" step=".01" value="<?php echo esc_attr(bntm_get_setting('ps_penalty_rate','1.00')); ?>"></div>
-                <div class="bntm-form-group"><label>Default Service Fee (₱)</label><input type="number" name="ps_service_fee" step=".01" value="<?php echo esc_attr(bntm_get_setting('ps_service_fee','0.00')); ?>"></div>
+                <div class="bntm-form-group"><label>Default Service Fee (?)</label><input type="number" name="ps_service_fee" step=".01" value="<?php echo esc_attr(bntm_get_setting('ps_service_fee','0.00')); ?>"></div>
                 <div class="bntm-form-group">
                     <label>Grace Period (days after due date)</label>
                     <input type="number" name="ps_grace_period" value="<?php echo esc_attr(bntm_get_setting('ps_grace_period','0')); ?>" placeholder="0">
-                    <div style="font-size:11px;color:#6b7280;margin-top:3px;">Grace period = days with NO charge. Interest accrues daily from day 1 but is only charged after grace period ends. Example: 3-day grace → Day 4 charges 0.1% × 4 days = 0.4%.</div>
+                    <div style="font-size:11px;color:#6b7280;margin-top:3px;">Grace period = days with NO charge. Interest accrues daily from day 1 but is only charged after grace period ends. Example: 3-day grace ? Day 4 charges 0.1% - 4 days = 0.4%.</div>
                 </div>
                 <div class="bntm-form-group"><label>Auto-Forfeiture After (days past due)</label><input type="number" name="ps_auto_forfeit_days" value="<?php echo esc_attr(bntm_get_setting('ps_auto_forfeit_days','30')); ?>"></div>
             </div>
@@ -4840,7 +4924,7 @@ function ps_settings_tab($business_id) {
         <?php if (empty($pm)): ?><p style="color:#9ca3af;font-size:13px;">No payment methods configured.</p>
         <?php else: foreach ($pm as $i => $m): ?>
         <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:8px;">
-            <div><div style="font-weight:600;"><?php echo esc_html($m['name']); ?> <span style="font-size:11px;color:#6b7280;text-transform:capitalize;">(<?php echo $m['type']; ?>)</span></div><?php if ($m['account_name']): ?><div style="font-size:12px;color:#6b7280;"><?php echo esc_html($m['account_name'].' — '.$m['account_number']); ?></div><?php endif; ?></div>
+            <div><div style="font-weight:600;"><?php echo esc_html($m['name']); ?> <span style="font-size:11px;color:#6b7280;text-transform:capitalize;">(<?php echo $m['type']; ?>)</span></div><?php if ($m['account_name']): ?><div style="font-size:12px;color:#6b7280;"><?php echo esc_html($m['account_name'].' - '.$m['account_number']); ?></div><?php endif; ?></div>
             <button class="ps-action-btn ps-btn-forfeit" onclick="psRemovePaymentMethod(<?php echo $i; ?>)">Remove</button>
         </div>
         <?php endforeach; endif; ?>
@@ -5217,12 +5301,12 @@ function bntm_ajax_ps_get_loan_detail() {
             <div style="font-size:12px;color:#6b7280;"><?php echo $loan->karat; ?> <?php echo $loan->weight_grams > 0 ? $loan->weight_grams.'g' : ''; ?></div>
             <?php endif; ?>
             <div style="font-size:12px;margin-top:6px;">Condition: <strong style="text-transform:capitalize;"><?php echo $loan->item_condition; ?></strong></div>
-            <div style="font-size:12px;">Appraised: <strong>₱<?php echo number_format($loan->appraised_value,2); ?></strong></div>
+            <div style="font-size:12px;">Appraised: <strong>&#8369;<?php echo number_format($loan->appraised_value,2); ?></strong></div>
         </div>
         <div class="bntm-form-section" style="margin:0;padding:14px;">
             <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:10px;">Loan Details</div>
             <table style="width:100%;font-size:12px;">
-                <tr><td style="color:#6b7280;">Principal</td><td style="text-align:right;font-weight:700;">₱<?php echo number_format($loan->principal,2); ?></td></tr>
+                <tr><td style="color:#6b7280;">Principal</td><td style="text-align:right;font-weight:700;">&#8369;<?php echo number_format($loan->principal,2); ?></td></tr>
                 <tr><td style="color:#6b7280;">Interest Rate</td><td style="text-align:right;"><?php echo $loan->interest_rate; ?>%/mo</td></tr>
                 <tr><td style="color:#6b7280;">Loan Date</td><td style="text-align:right;"><?php echo date('M d, Y',strtotime($loan->loan_date)); ?></td></tr>
                 <tr><td style="color:#6b7280;">Due Date</td><td style="text-align:right;<?php echo strtotime($loan->due_date)<strtotime('today')&&!in_array($loan->status,['redeemed','forfeited'])?'color:#dc2626;font-weight:700;':''; ?>"><?php echo date('M d, Y',strtotime($loan->due_date)); ?></td></tr>
@@ -5231,8 +5315,8 @@ function bntm_ajax_ps_get_loan_detail() {
                 <tr><td style="color:#dc2626;">Days Overdue</td><td style="text-align:right;color:#dc2626;font-weight:700;"><?php echo $bd['days_past_due']; ?>d <?php echo $bd['effective_overdue']<$bd['days_past_due']?'(grace applies)':''; ?></td></tr>
                 <?php endif; ?>
                 <?php if (!in_array($loan->status,['redeemed','forfeited'])): ?>
-                <tr style="border-top:1px solid #bfdbfe;"><td style="font-weight:700;padding-top:6px;">Interest Due</td><td style="text-align:right;font-weight:800;padding-top:6px;color:#1e40af;">₱<?php echo number_format($bd['total_interest'],2); ?></td></tr>
-                <tr><td style="font-weight:700;padding-bottom:4px;">Total to Redeem</td><td style="text-align:right;font-weight:800;font-size:15px;color:#059669;padding-bottom:4px;">₱<?php echo number_format($bd['total_due'],2); ?></td></tr>
+                <tr style="border-top:1px solid #bfdbfe;"><td style="font-weight:700;padding-top:6px;">Interest Due</td><td style="text-align:right;font-weight:800;padding-top:6px;color:#1e40af;">&#8369;<?php echo number_format($bd['total_interest'],2); ?></td></tr>
+                <tr><td style="font-weight:700;padding-bottom:4px;">Total to Redeem</td><td style="text-align:right;font-weight:800;font-size:15px;color:#059669;padding-bottom:4px;">&#8369;<?php echo number_format($bd['total_due'],2); ?></td></tr>
                 <?php endif; ?>
             </table>
         </div>
@@ -5281,7 +5365,7 @@ function bntm_ajax_ps_get_loan_detail() {
                 <td style="padding:5px 8px;font-family:monospace;"><?php echo esc_html($c_loan->ticket_number); ?></td>
                 <td style="padding:5px 8px;"><span style="font-size:11px;background:#f3f4f6;padding:2px 6px;border-radius:4px;"><?php echo $tx_label; ?></span></td>
                 <td style="padding:5px 8px;"><?php echo date('M d, Y',strtotime($c_loan->loan_date)); ?></td>
-                <td style="padding:5px 8px;text-align:right;">₱<?php echo number_format($c_loan->principal,2); ?></td>
+                <td style="padding:5px 8px;text-align:right;">&#8369;<?php echo number_format($c_loan->principal,2); ?></td>
                 <td style="padding:5px 8px;"><span class="ps-status-badge ps-status-<?php echo $c_loan->status; ?>"><?php echo ucfirst($c_loan->status); ?></span></td>
             </tr>
             <?php endforeach; ?>
@@ -5307,8 +5391,8 @@ function bntm_ajax_ps_get_loan_detail() {
             <tr style="border-bottom:1px solid #f3f4f6;">
                 <td style="padding:4px 8px;"><?php echo date('M d, Y H:i',strtotime($pay->created_at)); ?></td>
                 <td style="padding:4px 8px;text-transform:capitalize;"><?php echo str_replace('_',' ',$pay->payment_type); ?></td>
-                <td style="padding:4px 8px;text-align:right;font-weight:700;">₱<?php echo number_format($pay->amount,2); ?></td>
-                <td style="padding:4px 8px;text-align:right;color:#1e40af;">₱<?php echo number_format($pay->interest_amount,2); ?></td>
+                <td style="padding:4px 8px;text-align:right;font-weight:700;">&#8369;<?php echo number_format($pay->amount,2); ?></td>
+                <td style="padding:4px 8px;text-align:right;color:#1e40af;">&#8369;<?php echo number_format($pay->interest_amount,2); ?></td>
                 <td style="padding:4px 8px;text-transform:capitalize;"><?php echo str_replace('_',' ',$pay->payment_method); ?></td>
             </tr>
             <?php endforeach; ?>
@@ -5339,7 +5423,7 @@ function bntm_ajax_ps_get_ticket_history() {
     ob_start();
     ?>
     <div class="bntm-form-section" style="margin-top:14px;padding:14px;">
-        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:10px;">Event Log — Root: <?php echo esc_html($root_ticket); ?></div>
+        <div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#6b7280;margin-bottom:10px;">Event Log - Root: <?php echo esc_html($root_ticket); ?></div>
         <table style="width:100%;font-size:11px;border-collapse:collapse;">
             <thead><tr style="background:#f3f4f6;">
                 <th style="padding:5px 8px;text-align:left;">Date</th>
@@ -5359,10 +5443,10 @@ function bntm_ajax_ps_get_ticket_history() {
                 <td style="padding:4px 8px;"><?php echo date('M d, Y',strtotime($ev->created_at)); ?></td>
                 <td style="padding:4px 8px;font-family:monospace;"><?php echo esc_html($ev->ticket_number); ?></td>
                 <td style="padding:4px 8px;"><span style="color:<?php echo $ec; ?>;font-weight:700;text-transform:capitalize;"><?php echo str_replace('_',' ',$ev->event_type); ?></span></td>
-                <td style="padding:4px 8px;text-align:right;"><?php echo $ev->principal_before > 0 ? '₱'.number_format($ev->principal_before,2) : '—'; ?></td>
-                <td style="padding:4px 8px;text-align:right;font-weight:700;"><?php echo $ev->principal_after > 0 ? '₱'.number_format($ev->principal_after,2) : '—'; ?></td>
-                <td style="padding:4px 8px;text-align:right;color:#1e40af;"><?php echo $ev->interest_paid > 0 ? '₱'.number_format($ev->interest_paid,2) : '—'; ?></td>
-                <td style="padding:4px 8px;text-align:right;font-weight:700;"><?php echo $ev->amount_paid > 0 ? '₱'.number_format($ev->amount_paid,2) : '—'; ?></td>
+                <td style="padding:4px 8px;text-align:right;"><?php echo $ev->principal_before > 0 ? '&#8369;'.number_format($ev->principal_before,2) : '-'; ?></td>
+                <td style="padding:4px 8px;text-align:right;font-weight:700;"><?php echo $ev->principal_after > 0 ? '&#8369;'.number_format($ev->principal_after,2) : '-'; ?></td>
+                <td style="padding:4px 8px;text-align:right;color:#1e40af;"><?php echo $ev->interest_paid > 0 ? '&#8369;'.number_format($ev->interest_paid,2) : '-'; ?></td>
+                <td style="padding:4px 8px;text-align:right;font-weight:700;"><?php echo $ev->amount_paid > 0 ? '&#8369;'.number_format($ev->amount_paid,2) : '-'; ?></td>
                 <td style="padding:4px 8px;color:#6b7280;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><?php echo esc_html($ev->notes); ?></td>
             </tr>
             <?php endforeach; ?>
@@ -5585,15 +5669,15 @@ function bntm_ajax_ps_get_customer_profile() {
         </div>
         <div>
             <button class="bntm-btn-secondary" style="font-size:12px;padding:6px 12px;"
-                onclick="psEditCustomer(<?php echo $c->id; ?>,'<?php echo esc_js($c->first_name); ?>','<?php echo esc_js($c->last_name); ?>','<?php echo esc_js($c->middle_name); ?>','<?php echo esc_js($c->address); ?>','<?php echo esc_js($c->city); ?>','<?php echo esc_js($c->zip_code); ?>','<?php echo esc_js($c->contact_number); ?>','<?php echo esc_js($c->email); ?>','<?php echo esc_js($c->id_type); ?>','<?php echo esc_js($c->id_number); ?>','<?php echo $c->customer_flag; ?>','<?php echo esc_js($c->notes); ?>','<?php echo esc_js($c->photo_path); ?>')">✏️ Edit</button>
+                onclick="psEditCustomer(<?php echo $c->id; ?>,'<?php echo esc_js($c->first_name); ?>','<?php echo esc_js($c->last_name); ?>','<?php echo esc_js($c->middle_name); ?>','<?php echo esc_js($c->address); ?>','<?php echo esc_js($c->city); ?>','<?php echo esc_js($c->zip_code); ?>','<?php echo esc_js($c->contact_number); ?>','<?php echo esc_js($c->email); ?>','<?php echo esc_js($c->id_type); ?>','<?php echo esc_js($c->id_number); ?>','<?php echo $c->customer_flag; ?>','<?php echo esc_js($c->notes); ?>','<?php echo esc_js($c->photo_path); ?>')">Edit</button>
         </div>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;">
         <div style="background:#eff6ff;border-radius:8px;padding:10px;text-align:center;"><div style="font-size:20px;font-weight:800;color:#1e40af;"><?php echo $total_loans; ?></div><div style="font-size:11px;color:#3b82f6;font-weight:600;">Total Loans</div></div>
         <div style="background:#f0fdf4;border-radius:8px;padding:10px;text-align:center;"><div style="font-size:20px;font-weight:800;color:#059669;"><?php echo $active_loans; ?></div><div style="font-size:11px;color:#10b981;font-weight:600;">Active</div></div>
-        <div style="background:#faf5ff;border-radius:8px;padding:10px;text-align:center;"><div style="font-size:16px;font-weight:800;color:#7c3aed;">₱<?php echo number_format($outstanding,2); ?></div><div style="font-size:11px;color:#8b5cf6;font-weight:600;">Outstanding</div></div>
-        <div style="background:#f3f4f6;border-radius:8px;padding:10px;text-align:center;"><div style="font-size:16px;font-weight:800;color:#374151;">₱<?php echo number_format($total_paid,2); ?></div><div style="font-size:11px;color:#6b7280;font-weight:600;">Total Paid</div></div>
+        <div style="background:#faf5ff;border-radius:8px;padding:10px;text-align:center;"><div style="font-size:16px;font-weight:800;color:#7c3aed;">&#8369;<?php echo number_format($outstanding,2); ?></div><div style="font-size:11px;color:#8b5cf6;font-weight:600;">Outstanding</div></div>
+        <div style="background:#f3f4f6;border-radius:8px;padding:10px;text-align:center;"><div style="font-size:16px;font-weight:800;color:#374151;">&#8369;<?php echo number_format($total_paid,2); ?></div><div style="font-size:11px;color:#6b7280;font-weight:600;">Total Paid</div></div>
     </div>
 
     <?php if ($c->address): ?>
@@ -5608,9 +5692,9 @@ function bntm_ajax_ps_get_customer_profile() {
         <?php foreach ($loans as $l): ?>
         <tr>
             <td style="font-family:monospace;font-size:12px;font-weight:700;"><?php echo esc_html($l->ticket_number); ?></td>
-            <td><?php if ($l->root_ticket !== $l->ticket_number): ?><span class="ps-ticket-chain"><?php echo esc_html($l->root_ticket); ?></span><?php else: ?><span style="color:#9ca3af;font-size:11px;">—</span><?php endif; ?></td>
+            <td><?php if ($l->root_ticket !== $l->ticket_number): ?><span class="ps-ticket-chain"><?php echo esc_html($l->root_ticket); ?></span><?php else: ?><span style="color:#9ca3af;font-size:11px;">-</span><?php endif; ?></td>
             <td style="font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><?php echo esc_html($l->collateral_desc); ?></td>
-            <td style="font-weight:700;">₱<?php echo number_format($l->principal,2); ?></td>
+            <td style="font-weight:700;">&#8369;<?php echo number_format($l->principal,2); ?></td>
             <td style="font-size:12px;"><?php echo date('M d, Y',strtotime($l->loan_date)); ?></td>
             <td style="font-size:12px;"><?php echo date('M d, Y',strtotime($l->due_date)); ?></td>
             <td><span class="ps-status-badge ps-status-<?php echo $l->status; ?>"><?php echo ucfirst($l->status); ?></span></td>
@@ -5647,28 +5731,28 @@ function bntm_ajax_ps_update_collateral_status() {
 // ============================================================
 
 /**
- * DOCUMENT GENERATION — COMPLETE REWRITE v2
+ * DOCUMENT GENERATION - COMPLETE REWRITE v2
  * Matches Agencia Ranaw Pawnshop reference document formats exactly.
  *
  * PAWN TICKET: Renders the blank form as a faithful reproduction,
- *              then overlays dynamic data onto the blank lines —
+ *              then overlays dynamic data onto the blank lines -
  *              giving the appearance of a pre-printed form filled in.
  *
  * ALL OTHER DOCS: Corporate typewriter/register style matching the
  *                 physical printouts from the reference PDF.
  *
  * Paper / orientation map:
- *  pawn_ticket        → Half A4  (148mm × 210mm)  Portrait
- *  payment_receipt    → Half A4  (148mm × 210mm)  Portrait
- *  forfeiture_notice  → Short (8.5in × 11in)      Portrait
- *  redemption_receipt → Short (8.5in × 11in)      Portrait
- *  renewal_notice     → Short (8.5in × 11in)      Portrait
- *  customer_statement → Short (8.5in × 11in)      Portrait
- *  daily_summary      → Short (8.5in × 11in)      Portrait
- *  cash_flow_summary  → Short (8.5in × 11in)      Portrait
- *  loan_list          → Long  (13in × 11in)        Landscape
- *  payments_list      → Long  (13in × 11in)        Landscape
- *  ticket_chain       → Long  (13in × 11in)        Landscape
+ *  pawn_ticket        ? Half A4  (148mm - 210mm)  Portrait
+ *  payment_receipt    ? Half A4  (148mm - 210mm)  Portrait
+ *  forfeiture_notice  ? Short (8.5in - 11in)      Portrait
+ *  redemption_receipt ? Short (8.5in - 11in)      Portrait
+ *  renewal_notice     ? Short (8.5in - 11in)      Portrait
+ *  customer_statement ? Short (8.5in - 11in)      Portrait
+ *  daily_summary      ? Short (8.5in - 11in)      Portrait
+ *  cash_flow_summary  ? Short (8.5in - 11in)      Portrait
+ *  loan_list          ? Long  (13in - 11in)        Landscape
+ *  payments_list      ? Long  (13in - 11in)        Landscape
+ *  ticket_chain       ? Long  (13in - 11in)        Landscape
  */
 
 // ============================================================
@@ -5689,12 +5773,13 @@ function bntm_ajax_ps_generate_document() {
     $rfrom       = sanitize_text_field( $_POST['rfrom']       ?? date('Y-m-01') );
     $rto         = sanitize_text_field( $_POST['rto']         ?? date('Y-m-d') );
     $rstatus     = sanitize_text_field( $_POST['rstatus']     ?? 'all' );
+    $rtag        = sanitize_text_field( $_POST['rtag']        ?? 'all' );
     $cash_breakdown = ps_parse_cash_breakdown($_POST['denomination_data'] ?? '');
  
-    /* ── shared business info ── */
+    /* -- shared business info -- */
     $b = ps_biz();
  
-    /* ── report types (no loan required) ── */
+    /* -- report types (no loan required) -- */
     $report_types = ['summary', 'list_loans', 'list_payments', 'daily_summary', 'cash_flow_summary', 'tickets_by_status'];
  
     if ( in_array( $doc_type, $report_types ) ) {
@@ -5710,10 +5795,10 @@ function bntm_ajax_ps_generate_document() {
                 $html = ps_rpt_list_payments( $business_id, $rfrom, $rto, $b );
                 break;
             case 'daily_summary':
-                $html = ps_rpt_daily_summary( $business_id, $report_date, $b, $cash_breakdown );
+                $html = ps_rpt_daily_summary( $business_id, $report_date, $b, $cash_breakdown, $rtag );
                 break;
             case 'cash_flow_summary':
-                $html = ps_rpt_cash_flow_summary( $business_id, $rfrom, $rto, $b, $cash_breakdown );
+                $html = ps_rpt_cash_flow_summary( $business_id, $rfrom, $rto, $b, $cash_breakdown, $rtag );
                 break;
             case 'tickets_by_status':
                 $html = ps_rpt_tickets_by_status( $business_id, $rfrom, $rto, $rstatus, $b );
@@ -5722,11 +5807,11 @@ function bntm_ajax_ps_generate_document() {
                 wp_send_json_error( ['message' => 'Unknown report type.'] );
                 return;
         }
-        wp_send_json_success( ['html' => ps_wrap_page( $html )] );
+        wp_send_json_success( ['html' => ps_normalize_ui_output(ps_wrap_page( $html ))] );
         return;
     }
  
-    /* ── document types (loan required) ── */
+    /* -- document types (loan required) -- */
     if ( ! $loan_id ) {
         wp_send_json_error( ['message' => 'Loan ID required.'] );
         return;
@@ -5782,7 +5867,7 @@ function bntm_ajax_ps_generate_document() {
             return;
     }
  
-    wp_send_json_success( ['html' => $html] );
+    wp_send_json_success( ['html' => ps_normalize_ui_output($html)] );
 }
 add_action( 'wp_ajax_ps_generate_document',    'bntm_ajax_ps_generate_document' );
 // ============================================================
@@ -5889,7 +5974,7 @@ function ps_wrap_page( string $inner ): string {
          . '</div></body></html>';
 }
  
-/** @page rule — Half A4 portrait for all outputs. */
+/** @page rule - Half A4 portrait for all outputs. */
 function ps_page_style(): string {
     $doc_type = isset($GLOBALS['ps_current_doc_type']) ? (string) $GLOBALS['ps_current_doc_type'] : '';
     $print = ps_get_print_settings($doc_type);
@@ -5903,7 +5988,7 @@ function ps_page_style(): string {
     </style>';
 }
  
-/** Centred corporate header — business name, address, tel, TIN. */
+/** Centred corporate header - business name, address, tel, TIN. */
 function ps_corp_header( array $b, string $sub = '' ): string {
     $h  = "<div style='text-align:center;margin-bottom:6px;'>";
     $h .= "<div style='font-size:14px;font-weight:900;font-family:\"Times New Roman\",serif;"
@@ -5941,7 +6026,7 @@ function ps_footer_line( string $text ): string {
          . "font-size:8px;color:#555;text-align:center;'>" . esc_html( $text ) . "</div>";
 }
  
-/** Register-style table CSS — black/white Courier. */
+/** Register-style table CSS - black/white Courier. */
 function ps_reg_table_style(): string {
     return '<style>
     table.reg { width:100%;border-collapse:collapse;font-size:9px;font-family:"Courier New",monospace; }
@@ -5992,7 +6077,7 @@ function ps_pawner_block( $loan ): string {
     return $h;
 }
  
-/** Single cf-style line: label ⟶ right-aligned value. */
+/** Single cf-style line: label ? right-aligned value. */
 function ps_cf_line( string $label, string $value, bool $bold = false, string $extra_style = '' ): string {
     $bw = $bold ? 'font-weight:700;' : '';
     return "<div style='display:flex;justify-content:space-between;font-size:9.5px;padding:1.5px 0;{$extra_style}'>"
@@ -6034,9 +6119,10 @@ function ps_number_to_words( float $number ): string {
  
  
 // ============================================================
-// ① PAWN TICKET
+// ? PAWN TICKET
 // ============================================================
 function ps_doc_pawn_ticket( $loan, $bd, array $b ): string {
+    global $wpdb;
     $net_proceeds  = $loan->principal - $loan->service_fee;
     $grace_days    = (int) bntm_get_setting('ps_grace_period', '0');
     $expiry_date   = date('m/d/Y', strtotime($loan->due_date . ' +' . $grace_days . ' days'));
@@ -6045,12 +6131,17 @@ function ps_doc_pawn_ticket( $loan, $bd, array $b ): string {
     $rate_pct      = number_format((float)$loan->interest_rate, 0);
     $term_display  = $loan->term_months > 1 ? $loan->term_months . ' mos' : '30 days';
     $effective_rate = number_format((float)$loan->interest_rate * 12, 2);
+    $previous_ticket_number = '';
+    if ((int)($loan->parent_loan_id ?? 0) > 0) {
+        $previous_ticket_number = (string)$wpdb->get_var($wpdb->prepare(
+            "SELECT ticket_number FROM {$wpdb->prefix}ps_loans WHERE id=%d AND business_id=%d",
+            (int)$loan->parent_loan_id, (int)$loan->business_id
+        ));
+    }
 
     $customer_name = preg_replace('/\s+/', ' ', trim($loan->customer_name));
     $address = preg_replace('/\s+/', ' ', trim($loan->address));
     $id_presented = trim($loan->id_type . ': ' . $loan->id_number);
-    $current_or_number = trim((string)($loan->or_number ?? ''));
-    $old_or_number = trim((string)($loan->old_or_number ?? ''));
     $x_offset = 2.0;
     $y_offset = 3.0;
     $pos = function(float $top, float $left, string $extra = '') use ($x_offset, $y_offset): string {
@@ -6104,10 +6195,8 @@ body { font-family:'Courier New',Courier,monospace; font-size:10px; }
     white-space: normal;
     
 }
-.tk-or-block {
+.tk-prev-ticket {
     position: absolute;
-    top: 5mm;
-    left: 9mm;
     font-size: 8px;
     line-height: 1.2;
     font-weight: 700;
@@ -6117,10 +6206,9 @@ body { font-family:'Courier New',Courier,monospace; font-size:10px; }
 </style>
 </head><body>
 <div class="tk-dot-sheet">
-    <?php if ($current_or_number !== ''): ?>
-    <div class="tk-or-block">
-        OR: <?php echo esc_html($current_or_number); ?>
-        <?php if ($old_or_number !== ''): ?><br>Previous OR: <?php echo esc_html($old_or_number); ?><?php endif; ?>
+    <?php if ($previous_ticket_number !== ''): ?>
+    <div class="tk-prev-ticket" style="<?php echo esc_attr($pos(3, 6)); ?>">
+        PREVIOUS TICKET NO.: <?php echo esc_html($previous_ticket_number); ?>
     </div>
     <?php endif; ?>
     <div class="tk-dot-val tk-dot-small" style="<?php echo esc_attr($pos(20, 20)); ?>"><?php echo esc_html(number_format($loan->principal)); ?></div>
@@ -6159,7 +6247,7 @@ body { font-family:'Courier New',Courier,monospace; font-size:10px; }
  
  
 // ============================================================
-// ② RENEWAL NOTICE
+// ? RENEWAL NOTICE
 // ============================================================
 function ps_doc_renewal_notice( $loan, $bd, array $b ): string {
     global $wpdb;
@@ -6195,7 +6283,7 @@ function ps_doc_renewal_notice( $loan, $bd, array $b ): string {
         . ($bd['overdue_interest'] > 0 ? ps_cf_line('Overdue Interest', 'P ' . number_format($bd['overdue_interest'], 2)) : '')
         . ($bd['penalty_interest'] > 0 ? ps_cf_line('Penalty Interest', 'P ' . number_format($bd['penalty_interest'], 2)) : '')
         . ($loan->service_fee > 0      ? ps_cf_line('Service Fee', 'P ' . number_format($loan->service_fee, 2)) : '')
-        . ($pay && $pay->reference_number ? ps_cf_line('OR Number', esc_html($pay->reference_number)) : '')
+        . ($pay && $pay->reference_number ? ps_cf_line('Reference Number', esc_html($pay->reference_number)) : '')
         . ps_divider()
         . ps_cf_line('New Due Date', date('F d, Y', strtotime($loan->due_date)))
         . ps_cf_total('ESTIMATED NEXT REDEMPTION', 'P ' . number_format($bd['total_due'], 2))
@@ -6207,7 +6295,7 @@ function ps_doc_renewal_notice( $loan, $bd, array $b ): string {
  
  
 // ============================================================
-// ③ REDEMPTION RECEIPT
+// ? REDEMPTION RECEIPT
 // ============================================================
 function ps_doc_redemption_receipt( $loan, $bd, array $b ): string {
     global $wpdb;
@@ -6217,7 +6305,7 @@ function ps_doc_redemption_receipt( $loan, $bd, array $b ): string {
     ) );
  
     $col_line = esc_html($loan->collateral_desc)
-        . ($loan->karat ? ' — ' . esc_html($loan->karat) : '')
+        . ($loan->karat ? ' - ' . esc_html($loan->karat) : '')
         . ($loan->weight_grams > 0 ? ' / ' . $loan->weight_grams . ' GMS.' : '');
  
     $body  = ps_corp_header( $b )
@@ -6238,13 +6326,13 @@ function ps_doc_redemption_receipt( $loan, $bd, array $b ): string {
               .  ps_cf_total('TOTAL AMOUNT PAID', 'P ' . number_format($pay->amount, 2))
               .  ps_cf_line('Payment Method', ucfirst(str_replace('_', ' ', $pay->payment_method)), false, 'margin-top:4px;')
               .  ps_cf_line('Date &amp; Time', date('F d, Y H:i', strtotime($pay->created_at)))
-              .  ($pay->reference_number ? ps_cf_line('OR Number', esc_html($pay->reference_number)) : '');
+              .  ($pay->reference_number ? ps_cf_line('Reference Number', esc_html($pay->reference_number)) : '');
     } else {
         $body .= "<div style='text-align:center;padding:8px;font-size:9.5px;'>No redemption payment record found.</div>";
     }
  
     $body .= ps_divider()
-           . "<div style='font-size:10px;font-weight:700;text-align:center;margin-top:6px;letter-spacing:.5px;'>* COLLATERAL RELEASED — LOAN FULLY SETTLED *</div>"
+           . "<div style='font-size:10px;font-weight:700;text-align:center;margin-top:6px;letter-spacing:.5px;'>* COLLATERAL RELEASED - LOAN FULLY SETTLED *</div>"
            . ps_sig_footer(["Pawner's Signature", 'Teller / Cashier', 'Manager / Authorized Signatory'])
            . ps_footer_line($b['footer']);
  
@@ -6253,7 +6341,7 @@ function ps_doc_redemption_receipt( $loan, $bd, array $b ): string {
  
  
 // ============================================================
-// ④ FORFEITURE NOTICE
+// ? FORFEITURE NOTICE
 // ============================================================
 function ps_doc_forfeiture_notice( $loan, array $b ): string {
     $body  = ps_corp_header( $b )
@@ -6287,7 +6375,7 @@ function ps_doc_forfeiture_notice( $loan, array $b ): string {
  
  
 // ============================================================
-// ⑤ PAYMENT RECEIPT
+// ? PAYMENT RECEIPT
 // ============================================================
 function ps_doc_payment_receipt( $loan, array $b ): string {
     global $wpdb;
@@ -6315,7 +6403,7 @@ function ps_doc_payment_receipt( $loan, array $b ): string {
               .  ps_cf_total('AMOUNT PAID', 'P ' . number_format($pay->amount, 2))
               .  ps_cf_line('Payment Method', ucfirst(str_replace('_', ' ', $pay->payment_method)), false, 'margin-top:4px;')
               .  ps_cf_line('Date &amp; Time', date('F d, Y H:i', strtotime($pay->created_at)))
-              .  ($pay->reference_number ? ps_cf_line('OR Number', esc_html($pay->reference_number)) : '');
+              .  ($pay->reference_number ? ps_cf_line('Reference Number', esc_html($pay->reference_number)) : '');
     } else {
         $body .= "<div style='text-align:center;padding:8px;font-size:9.5px;'>No payment record found.</div>";
     }
@@ -6328,7 +6416,7 @@ function ps_doc_payment_receipt( $loan, array $b ): string {
  
  
 // ============================================================
-// ⑥ CUSTOMER STATEMENT
+// ? CUSTOMER STATEMENT
 // ============================================================
 function ps_doc_customer_statement( $loan, array $b ): string {
     global $wpdb;
@@ -6378,13 +6466,13 @@ function ps_doc_customer_statement( $loan, array $b ): string {
  
     <div style="font-size:8.5px;font-weight:700;text-transform:uppercase;margin:3px 0;text-decoration:underline;">Payment History</div>
     <table class="reg">
-        <thead><tr><th>Date</th><th>Ticket No.</th><th>OR No.</th><th>Type</th><th class="r">Cash</th><th class="r">Interest</th><th class="r">Addt'l Int.</th><th>Method</th></tr></thead>
+        <thead><tr><th>Date</th><th>Ticket No.</th><th>Reference No.</th><th>Type</th><th class="r">Cash</th><th class="r">Interest</th><th class="r">Addt'l Int.</th><th>Method</th></tr></thead>
         <tbody>
         <?php foreach ($all_pays as $p): ?>
         <tr>
             <td><?php echo date('M d, Y',strtotime($p->created_at)); ?></td>
             <td><?php echo esc_html($p->ticket_number); ?></td>
-            <td><?php echo esc_html($p->reference_number ?: '—'); ?></td>
+            <td><?php echo esc_html($p->reference_number ?: '-'); ?></td>
             <td><?php echo ucfirst(str_replace('_',' ',$p->payment_type)); ?></td>
             <td class="r"><?php echo number_format($p->amount,2); ?></td>
             <td class="r"><?php echo number_format($p->interest_amount,2); ?></td>
@@ -6410,7 +6498,7 @@ function ps_doc_customer_statement( $loan, array $b ): string {
  
  
 // ============================================================
-// ⑦ TICKET CHAIN HISTORY
+// ? TICKET CHAIN HISTORY
 // ============================================================
 function ps_doc_ticket_chain( $loan, array $b ): string {
     global $wpdb;
@@ -6447,10 +6535,10 @@ function ps_doc_ticket_chain( $loan, array $b ): string {
             <td><?php echo date('M d, Y',strtotime($ev->created_at)); ?></td>
             <td><?php echo esc_html($ev->ticket_number); ?></td>
             <td><?php echo ucfirst(str_replace('_',' ',$ev->event_type)); ?></td>
-            <td class="r"><?php echo $ev->principal_before > 0 ? number_format($ev->principal_before,2) : '—'; ?></td>
-            <td class="r"><?php echo $ev->principal_after  > 0 ? number_format($ev->principal_after, 2) : '—'; ?></td>
-            <td class="r"><?php echo $ev->interest_paid    > 0 ? number_format($ev->interest_paid,   2) : '—'; ?></td>
-            <td class="r"><?php echo $ev->amount_paid      > 0 ? number_format($ev->amount_paid,     2) : '—'; ?></td>
+            <td class="r"><?php echo $ev->principal_before > 0 ? number_format($ev->principal_before,2) : '-'; ?></td>
+            <td class="r"><?php echo $ev->principal_after  > 0 ? number_format($ev->principal_after, 2) : '-'; ?></td>
+            <td class="r"><?php echo $ev->interest_paid    > 0 ? number_format($ev->interest_paid,   2) : '-'; ?></td>
+            <td class="r"><?php echo $ev->amount_paid      > 0 ? number_format($ev->amount_paid,     2) : '-'; ?></td>
             <td><?php echo date('M d, Y',strtotime($ev->due_date)); ?></td>
             <td style="max-width:100px;"><?php echo esc_html($ev->notes); ?></td>
         </tr>
@@ -6661,24 +6749,24 @@ function ps_generate_daily_summary_html($business_id, $date, $bname, $baddr, $bf
         <div style="text-align:center;padding:10px;border:1px solid #ccc;border-radius:3px;"><div style="font-size:20px;font-weight:900;color:#000;"><?php echo count($new_loans); ?></div><div style="font-size:10px;font-weight:700;color:#555;">NEW LOANS</div></div>
         <div style="text-align:center;padding:10px;border:1px solid #ccc;border-radius:3px;"><div style="font-size:20px;font-weight:900;color:#000;"><?php echo count($renewals); ?></div><div style="font-size:10px;font-weight:700;color:#555;">RENEWALS</div></div>
         <div style="text-align:center;padding:10px;border:1px solid #ccc;border-radius:3px;"><div style="font-size:20px;font-weight:900;color:#000;"><?php echo count($redeemed); ?></div><div style="font-size:10px;font-weight:700;color:#555;">REDEEMED</div></div>
-        <div style="text-align:center;padding:10px;border:1px solid #ccc;border-radius:3px;"><div style="font-size:18px;font-weight:900;color:#059669;">₱<?php echo number_format($total_collections,2); ?></div><div style="font-size:10px;font-weight:700;color:#555;">TOTAL COLLECTED</div></div>
+        <div style="text-align:center;padding:10px;border:1px solid #ccc;border-radius:3px;"><div style="font-size:18px;font-weight:900;color:#059669;">&#8369;<?php echo number_format($total_collections,2); ?></div><div style="font-size:10px;font-weight:700;color:#555;">TOTAL COLLECTED</div></div>
     </div>
     <?php if (!empty($new_loans)): ?>
-    <div class="ps-doc-section-title">New Pawn Tickets (<?php echo count($new_loans); ?>) — Total Principal: ₱<?php echo number_format($total_new_principal,2); ?></div>
+    <div class="ps-doc-section-title">New Pawn Tickets (<?php echo count($new_loans); ?>) - Total Principal: &#8369;<?php echo number_format($total_new_principal,2); ?></div>
     <table class="ps-doc-amounts"><tr><th>Ticket #</th><th>Customer</th><th>Principal</th><th>Rate</th><th>Due Date</th></tr>
-    <?php foreach ($new_loans as $l): ?><tr><td style="font-family:monospace;"><?php echo esc_html($l->ticket_number); ?></td><td><?php echo esc_html($l->cname); ?></td><td>₱<?php echo number_format($l->principal,2); ?></td><td><?php echo $l->interest_rate; ?>%</td><td><?php echo date('M d, Y',strtotime($l->due_date)); ?></td></tr><?php endforeach; ?>
+    <?php foreach ($new_loans as $l): ?><tr><td style="font-family:monospace;"><?php echo esc_html($l->ticket_number); ?></td><td><?php echo esc_html($l->cname); ?></td><td>&#8369;<?php echo number_format($l->principal,2); ?></td><td><?php echo $l->interest_rate; ?>%</td><td><?php echo date('M d, Y',strtotime($l->due_date)); ?></td></tr><?php endforeach; ?>
     </table>
     <?php endif; ?>
     <?php if (!empty($payments)): ?>
-    <div class="ps-doc-section-title">Collections (<?php echo count($payments); ?>) — Interest: ₱<?php echo number_format($total_interest,2); ?></div>
+    <div class="ps-doc-section-title">Collections (<?php echo count($payments); ?>) - Interest: &#8369;<?php echo number_format($total_interest,2); ?></div>
     <table class="ps-doc-amounts"><tr><th>Time</th><th>Ticket #</th><th>Customer</th><th>Type</th><th>Amount</th></tr>
-    <?php foreach ($payments as $p): ?><tr><td><?php echo date('H:i',strtotime($p->created_at)); ?></td><td style="font-family:monospace;"><?php echo esc_html($p->ticket_number); ?></td><td><?php echo esc_html($p->cname); ?></td><td style="text-transform:capitalize;"><?php echo str_replace('_',' ',$p->payment_type); ?></td><td>₱<?php echo number_format($p->amount,2); ?></td></tr><?php endforeach; ?>
+    <?php foreach ($payments as $p): ?><tr><td><?php echo date('H:i',strtotime($p->created_at)); ?></td><td style="font-family:monospace;"><?php echo esc_html($p->ticket_number); ?></td><td><?php echo esc_html($p->cname); ?></td><td style="text-transform:capitalize;"><?php echo str_replace('_',' ',$p->payment_type); ?></td><td>&#8369;<?php echo number_format($p->amount,2); ?></td></tr><?php endforeach; ?>
     </table>
     <?php endif; ?>
     <?php if (!empty($redeemed)): ?>
     <div class="ps-doc-section-title">Redeemed (<?php echo count($redeemed); ?>)</div>
     <table class="ps-doc-amounts"><tr><th>Ticket #</th><th>Customer</th><th>Principal</th></tr>
-    <?php foreach ($redeemed as $l): ?><tr><td style="font-family:monospace;"><?php echo esc_html($l->ticket_number); ?></td><td><?php echo esc_html($l->cname); ?></td><td>₱<?php echo number_format($l->principal,2); ?></td></tr><?php endforeach; ?>
+    <?php foreach ($redeemed as $l): ?><tr><td style="font-family:monospace;"><?php echo esc_html($l->ticket_number); ?></td><td><?php echo esc_html($l->cname); ?></td><td>&#8369;<?php echo number_format($l->principal,2); ?></td></tr><?php endforeach; ?>
     </table>
     <?php endif; ?>
     <div style="margin-top:16px;padding-top:10px;border-top:1px solid #ccc;font-size:10px;color:#666;text-align:center;"><?php echo esc_html($bfooter); ?></div>
@@ -6759,7 +6847,7 @@ function ps_save_customer_photo($base64_data, $business_id, $customer_id) {
 
     // Final size guard
     if (strlen($image_data) > $max_bytes) {
-        // Truncate is wrong — just reject very large images
+        // Truncate is wrong - just reject very large images
         return '';
     }
 
@@ -6793,7 +6881,6 @@ function bntm_ajax_ps_create_loan() {
     check_ajax_referer('ps_create_nonce', 'nonce');
     if (!is_user_logged_in()) { wp_send_json_error(['message'=>'Unauthorized']); }
     ps_ensure_ticket_tag_column();
-    ps_ensure_or_history_column();
     global $wpdb;
     $business_id = bntm_ps_get_business_id();
     $processed_by = get_current_user_id();
@@ -6809,17 +6896,15 @@ function bntm_ajax_ps_create_loan() {
     $payment_method= sanitize_text_field($_POST['payment_method'] ?? 'cash');
     $notes         = sanitize_textarea_field($_POST['notes'] ?? '');
     $ticket_tag    = ps_normalize_ticket_tag(sanitize_text_field($_POST['ticket_tag'] ?? ''));
-    $ticket_override = strtoupper(trim(sanitize_text_field($_POST['ticket_number_override'] ?? '')));
-    $or_number     = strtoupper(trim(sanitize_text_field($_POST['or_number'] ?? '')));
+    $ticket_number = strtoupper(trim(sanitize_text_field($_POST['ticket_number_override'] ?? '')));
     $grace_days    = (int)bntm_get_setting('ps_grace_period', '0');
 
     if (!$customer_id || $principal <= 0 || !$due_date) {
         wp_send_json_error(['message' => 'Required fields missing.']); return;
     }
-    if ($or_number === '') {
-        wp_send_json_error(['message' => 'Official Receipt (OR) number is required.']); return;
+    if ($ticket_number === '') {
+        wp_send_json_error(['message' => 'Pawn ticket number is required.']); return;
     }
-
     $flag = $wpdb->get_var($wpdb->prepare(
         "SELECT customer_flag FROM {$wpdb->prefix}ps_customers WHERE id=%d AND business_id=%d",
         $customer_id, $business_id
@@ -6827,20 +6912,12 @@ function bntm_ajax_ps_create_loan() {
     if ($flag === 'blacklisted') {
         wp_send_json_error(['message' => 'Blacklisted customer cannot create new loans.']); return;
     }
-    if (ps_or_number_exists($or_number)) {
-        wp_send_json_error(['message' => 'Official Receipt number already exists.']); return;
-    }
 
-    if ($ticket_override !== '') {
-        $exists = (int)$wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans WHERE ticket_number=%s",
-            $ticket_override
-        ));
-        if ($exists > 0) { wp_send_json_error(['message'=>'Ticket number already exists.']); return; }
-        $ticket_number = $ticket_override;
-    } else {
-        $ticket_number = ps_generate_ticket_number($business_id);
-    }
+    $exists = (int)$wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans WHERE ticket_number=%s",
+        $ticket_number
+    ));
+    if ($exists > 0) { wp_send_json_error(['message'=>'Ticket number already exists.']); return; }
     $root_ticket   = $ticket_number;
 
     $col_data = [
@@ -6881,7 +6958,6 @@ function bntm_ajax_ps_create_loan() {
         'ticket_number'    => $ticket_number,
         'ticket_tag'       => $ticket_tag,
         'parent_loan_id'   => 0,
-        'old_or_number'    => null,
         'customer_id'      => $customer_id,
         'collateral_id'    => $collateral_id,
         'branch'           => '',
@@ -6899,7 +6975,6 @@ function bntm_ajax_ps_create_loan() {
         'accrued_interest_carried' => 0,
         'status'           => 'active',
         'payment_method'   => $payment_method,
-        'or_number'        => $or_number,
         'notes'            => $notes,
     ]);
 
@@ -6966,7 +7041,6 @@ function bntm_ajax_ps_renew_loan() {
     check_ajax_referer('ps_renew_nonce', 'nonce');
     if (!is_user_logged_in()) { wp_send_json_error(['message'=>'Unauthorized']); }
     global $wpdb;
-    ps_ensure_or_history_column();
     $business_id      = bntm_ps_get_business_id();
     $processed_by     = get_current_user_id();
     $loan_id          = intval($_POST['loan_id'] ?? 0);
@@ -6974,8 +7048,10 @@ function bntm_ajax_ps_renew_loan() {
     $add_months       = intval($_POST['additional_months'] ?? 1);
     $renewal_fee      = floatval($_POST['renewal_fee'] ?? 0);
     $principal_adj    = floatval($_POST['principal_adjustment'] ?? 0);
+    $new_ticket_number = strtoupper(trim(sanitize_text_field($_POST['ticket_number'] ?? '')));
+    $previous_ticket_number = strtoupper(trim(sanitize_text_field($_POST['previous_ticket_number'] ?? '')));
     $payment_method   = sanitize_text_field($_POST['payment_method'] ?? 'cash');
-    $or_number        = strtoupper(trim(sanitize_text_field($_POST['or_number'] ?? $_POST['reference_number'] ?? '')));
+    $reference_number = sanitize_text_field($_POST['reference_number'] ?? '');
     $notes            = sanitize_textarea_field($_POST['notes'] ?? '');
     $is_lost_ticket   = !empty($_POST['is_lost_ticket']);
     $extra_fees_raw   = sanitize_text_field($_POST['extra_fees'] ?? '[]');
@@ -7002,16 +7078,21 @@ function bntm_ajax_ps_renew_loan() {
         $loan_id, $business_id
     ));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found or cannot be processed.']); return; }
-    if ($or_number === '') {
-        wp_send_json_error(['message'=>'Official Receipt (OR) number is required.']);
+    $previous_ticket_number = $previous_ticket_number !== '' ? $previous_ticket_number : strtoupper(trim((string)$loan->ticket_number));
+    if ($previous_ticket_number !== strtoupper(trim((string)$loan->ticket_number))) {
+        wp_send_json_error(['message'=>'Previous ticket number mismatch. Please reopen the renewal form.']);
         return;
     }
-    if ($or_number === strtoupper(trim((string)($loan->or_number ?? '')))) {
-        wp_send_json_error(['message'=>'New OR number must be different from the current OR number.']);
+    if ($new_ticket_number === '') {
+        wp_send_json_error(['message'=>'Pawn ticket number is required.']);
         return;
     }
-    if (ps_or_number_exists($or_number, $loan_id)) {
-        wp_send_json_error(['message'=>'Official Receipt number already exists.']);
+    $ticket_exists = (int)$wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans WHERE ticket_number=%s",
+        $new_ticket_number
+    ));
+    if ($ticket_exists > 0) {
+        wp_send_json_error(['message'=>'Ticket number already exists.']);
         return;
     }
 
@@ -7057,7 +7138,6 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
 
     $grace_days = (int)bntm_get_setting('ps_grace_period', '0');
     $root_ticket = $loan->root_ticket ?: $loan->ticket_number;
-    $new_ticket_number = ps_generate_ticket_number($business_id, $root_ticket);
     $new_status = strtotime($base_due) < strtotime($today) ? 'overdue' : 'active';
     $wpdb->query('START TRANSACTION');
 
@@ -7065,8 +7145,6 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
     if ($is_lost_ticket) {
         $payment_notes = trim($payment_notes . ' [LOST TICKET]');
     }
-    $previous_or_number = trim((string)($loan->or_number ?? ''));
-
     $old_updated = $wpdb->update($wpdb->prefix.'ps_loans', [
         'status'=>'renewed',
         'updated_at'=>current_time('mysql'),
@@ -7086,7 +7164,6 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'ticket_number'=>$new_ticket_number,
         'ticket_tag'=>(string)($loan->ticket_tag ?? ''),
         'parent_loan_id'=>$loan_id,
-        'previous_serial_number'=>trim((string)($loan->previous_serial_number ?? '')),
         'customer_id'=>$loan->customer_id,
         'collateral_id'=>$loan->collateral_id,
         'principal'=>round($new_principal,2),
@@ -7103,8 +7180,6 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'accrued_interest_carried'=>0,
         'status'=>$new_status,
         'payment_method'=>$payment_method,
-        'old_or_number'=>$previous_or_number !== '' ? $previous_or_number : null,
-        'or_number'=>$or_number,
         'notes'=>$payment_notes,
     ]);
 
@@ -7129,7 +7204,7 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
         'payment_type'=>$pay_type,'amount'=>$total_paid,'interest_amount'=>round($interest_component,2),
         'penalty_amount'=>round($penalty_due,2),'principal_amount'=>round($reduce_principal,2),
         'service_fee'=>round($renewal_fee,2),'days_accrued'=>$breakdown['days_elapsed'],
-        'payment_method'=>$payment_method,'reference_number'=>$or_number,'processed_by'=>$processed_by,
+        'payment_method'=>$payment_method,'reference_number'=>$reference_number,'processed_by'=>$processed_by,
         'notes'=>trim($payment_notes . ' Previous ticket: ' . $loan->ticket_number),
     ]);
 
@@ -7177,7 +7252,7 @@ $wpdb->update($wpdb->prefix.'ps_collaterals',
 
     $wpdb->query('COMMIT');
     wp_send_json_success([
-        'message'=>"New pawn ticket {$new_ticket_number} created from {$loan->ticket_number}. Paid: PHP ".number_format($total_paid + $lost_ticket_fee + $extra_total,2),
+        'message'=>"New pawn ticket {$new_ticket_number} created from {$loan->ticket_number}. Paid: ₱ ".number_format($total_paid + $lost_ticket_fee + $extra_total,2),
         'loan_id'=>$new_loan_id,'ticket_number'=>$new_ticket_number,'previous_ticket'=>$loan->ticket_number,'doc_type'=>'pawn_ticket','is_lost'=>$is_lost_ticket,
     ]);
 }
@@ -7463,7 +7538,7 @@ function bntm_ajax_ps_save_customer_photo() {
     if (!is_user_logged_in()) { wp_send_json_error(['message'=>'Unauthorized']); }
     $business_id = bntm_ps_get_business_id();
     $customer_id = intval($_POST['customer_id'] ?? 0);
-    $photo_data  = $_POST['photo_data'] ?? ''; // raw: base64 data URI — validated by ps_save_customer_photo
+    $photo_data  = $_POST['photo_data'] ?? ''; // raw: base64 data URI - validated by ps_save_customer_photo
 
     if (!$customer_id || !$photo_data) { wp_send_json_error(['message'=>'Missing data.']); return; }
     $filename = ps_save_customer_photo($photo_data, $business_id, $customer_id);
@@ -7670,6 +7745,8 @@ function bntm_ajax_ps_get_loan_compute() {
     $bd = ps_compute_interest_breakdown($loan);
     wp_send_json_success(array_merge($bd, [
         'ticket_number' => $loan->ticket_number,
+        'previous_ticket_number' => $loan->ticket_number,
+        'suggested_ticket_number' => ps_generate_ticket_number_by_date($business_id, current_time('Y-m-d')),
         'customer_name' => $loan->customer_name,
         'interest_rate' => $loan->interest_rate,
         'due_date'      => $loan->due_date,
@@ -7680,3 +7757,5 @@ function bntm_ajax_ps_get_loan_compute() {
 // ============================================================
 // END OF MODULE
 // ============================================================
+
+
