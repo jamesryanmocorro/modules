@@ -78,7 +78,7 @@ function bntm_cs_get_tables() {
             instructor_initials VARCHAR(30) NOT NULL DEFAULT '',
             instructor_name VARCHAR(100) NOT NULL DEFAULT '',
             room VARCHAR(30) NOT NULL DEFAULT '',
-            day_group ENUM('mon_thu','tue_fri','wed_sat') NOT NULL,
+            day_group VARCHAR(50) NOT NULL,
             time_slot VARCHAR(20) NOT NULL,
             schedule_type ENUM('lecture','lab','both') NOT NULL DEFAULT 'lecture',
             units TINYINT NOT NULL DEFAULT 3,
@@ -959,9 +959,17 @@ function cs_timetable_tab($business_id) {
         $business_id
     ));
 
-    $filter_section = isset($_GET['cs_section']) ? intval($_GET['cs_section']) : 0;
-    $filter_year    = isset($_GET['cs_year']) ? sanitize_text_field($_GET['cs_year']) : '';
-    $filter_sem     = isset($_GET['cs_sem'])  ? sanitize_text_field($_GET['cs_sem'])  : '';
+    $filter_section    = isset($_GET['cs_section'])    ? intval($_GET['cs_section'])                    : 0;
+    $filter_year       = isset($_GET['cs_year'])       ? sanitize_text_field($_GET['cs_year'])           : '';
+    $filter_sem        = isset($_GET['cs_sem'])        ? sanitize_text_field($_GET['cs_sem'])            : '';
+    $filter_instructor = isset($_GET['cs_instructor']) ? sanitize_text_field($_GET['cs_instructor'])     : '';
+    $filter_yr_level   = isset($_GET['cs_yr_level'])   ? sanitize_text_field($_GET['cs_yr_level'])       : '';
+
+    // Fetch all instructors for the filter dropdown
+    $all_instructors = $wpdb->get_results($wpdb->prepare(
+        "SELECT DISTINCT instructor_initials, instructor_name FROM {$wpdb->prefix}cs_schedules WHERE business_id=%d AND instructor_initials != '' ORDER BY instructor_initials ASC",
+        $business_id
+    ));
 
     // Build section list to render
     $render_sections = [];
@@ -969,20 +977,14 @@ function cs_timetable_tab($business_id) {
         if ($filter_section && $sec->id != $filter_section) continue;
         if ($filter_year  && $sec->academic_year !== $filter_year) continue;
         if ($filter_sem   && $sec->semester !== $filter_sem) continue;
+        if ($filter_yr_level !== '' && (string)$sec->year_level !== $filter_yr_level) continue;
         $render_sections[] = $sec;
     }
-
-    $days = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-    $day_group_map = [
-        'mon_thu' => [0, 3],
-        'tue_fri' => [1, 4],
-        'wed_sat' => [2, 5],
-    ];
 
     ob_start();
     ?>
     <div class="cs-panel cs-filter-bar">
-        <div class="cs-form-grid" style="align-items:flex-end;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
             <div class="cs-field">
                 <label>Section</label>
                 <select id="cs-filter-section">
@@ -990,6 +992,26 @@ function cs_timetable_tab($business_id) {
                     <?php foreach ($sections as $s): ?>
                     <option value="<?php echo $s->id; ?>" <?php selected($filter_section, $s->id); ?>>
                         <?php echo esc_html($s->section_name); ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="cs-field">
+                <label>Year Level</label>
+                <select id="cs-filter-yr-level">
+                    <option value="">All Year Levels</option>
+                    <?php foreach ([1,2,3,4,5] as $yl): ?>
+                    <option value="<?php echo $yl; ?>" <?php selected($filter_yr_level, (string)$yl); ?>>Year <?php echo $yl; ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div class="cs-field">
+                <label>Instructor</label>
+                <select id="cs-filter-instructor">
+                    <option value="">All Instructors</option>
+                    <?php foreach ($all_instructors as $inst): ?>
+                    <option value="<?php echo esc_attr($inst->instructor_initials); ?>" <?php selected($filter_instructor, $inst->instructor_initials); ?>>
+                        <?php echo esc_html($inst->instructor_initials); ?><?php if ($inst->instructor_name): ?> — <?php echo esc_html($inst->instructor_name); ?><?php endif; ?>
                     </option>
                     <?php endforeach; ?>
                 </select>
@@ -1007,13 +1029,16 @@ function cs_timetable_tab($business_id) {
                     <option value="Summer" <?php selected($filter_sem, 'Summer'); ?>>Summer</option>
                 </select>
             </div>
-            <div>
-                <button class="cs-btn cs-btn-primary" id="cs-apply-filter">Apply Filter</button>
-                <button class="cs-btn cs-btn-secondary" id="cs-print-btn" style="margin-left:8px;">
-                    <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
-                    Print
-                </button>
-            </div>
+            <!-- empty cell to keep grid even, buttons span full width below -->
+            <div></div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px;padding-top:14px;border-top:1px solid var(--cs-border-soft);">
+            <button class="cs-btn cs-btn-primary"   id="cs-apply-filter" style="flex:1;">Apply Filter</button>
+            <button class="cs-btn cs-btn-secondary" id="cs-clear-filter" style="flex:1;">Clear</button>
+            <button class="cs-btn cs-btn-secondary" id="cs-print-btn"   style="flex:1;">
+                <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
+                Print
+            </button>
         </div>
     </div>
 
@@ -1027,13 +1052,68 @@ function cs_timetable_tab($business_id) {
                 "SELECT * FROM {$wpdb->prefix}cs_schedules WHERE section_id=%d AND business_id=%d",
                 $sec->id, $business_id
             ));
-            // Index entries by day_index => time_slot
-            $grid = [];
-            foreach ($entries as $e) {
-                foreach ($day_group_map[$e->day_group] as $di) {
-                    $grid[$di][$e->time_slot] = $e;
-                }
+            // Apply instructor filter if set
+            if ($filter_instructor !== '') {
+                $entries = array_filter($entries, function($e) use ($filter_instructor) {
+                    return strtoupper($e->instructor_initials) === strtoupper($filter_instructor);
+                });
+                $entries = array_values($entries);
             }
+
+            // Determine canonical day groups and time slots from the legacy map + any custom values
+            $legacy_dg_map = [
+                'mon_thu' => ['Mon', 'Thu'],
+                'tue_fri' => ['Tue', 'Fri'],
+                'wed_sat' => ['Wed', 'Sat'],
+            ];
+            $day_order = ['Mon'=>0,'Tue'=>1,'Wed'=>2,'Thu'=>3,'Fri'=>4,'Sat'=>5,'Sun'=>6];
+            $day_labels = ['Mon'=>'Monday','Tue'=>'Tuesday','Wed'=>'Wednesday','Thu'=>'Thursday',
+                           'Fri'=>'Friday','Sat'=>'Saturday','Sun'=>'Sunday'];
+
+            // Helper: normalise time_slot to "HH:MM-HH:MM"
+            $norm_slot = function($s) {
+                if (preg_match('/^(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})$/', trim($s), $m)) {
+                    $pad = fn($t) => strlen($t) === 4 ? '0'.$t : $t;
+                    return $pad($m[1]) . '-' . $pad($m[2]);
+                }
+                return trim($s);
+            };
+
+            // Expand entries into (day_abbrev, time_slot) pairs
+            $active_days = [];   // day abbrevs actually used
+            $active_slots = [];  // normalised time slots used
+            $grid = [];          // $grid[day_abbrev][time_slot] = entry
+
+            foreach ($entries as $e) {
+                $slot = $norm_slot($e->time_slot);
+
+                // Determine which days this entry covers
+                $days_for_entry = [];
+                if (isset($legacy_dg_map[$e->day_group])) {
+                    // legacy key like "mon_thu"
+                    $days_for_entry = $legacy_dg_map[$e->day_group];
+                } else {
+                    // new CSV format like "Mon,Wed,Fri"
+                    $days_for_entry = array_filter(
+                        array_map('trim', explode(',', $e->day_group)),
+                        fn($d) => isset($day_order[$d])
+                    );
+                }
+
+                foreach ($days_for_entry as $day) {
+                    if (!in_array($day, $active_days)) $active_days[] = $day;
+                    $grid[$day][$slot] = $e;
+                }
+                if (!in_array($slot, $active_slots)) $active_slots[] = $slot;
+            }
+
+            // Sort days by canonical week order, slots alphabetically (HH:MM sorts correctly)
+            usort($active_days, fn($a,$b) => ($day_order[$a]??99) - ($day_order[$b]??99));
+            sort($active_slots);
+
+            // Fall back to a default slot list if section has no entries yet
+            if (empty($active_slots)) $active_slots = array_map($norm_slot, BNTM_CS_TIME_SLOTS);
+            if (empty($active_days))  $active_days  = ['Mon','Tue','Wed','Thu','Fri','Sat'];
         ?>
         <div class="cs-panel cs-print-target" style="margin-bottom:28px;">
             <h3>
@@ -1047,22 +1127,18 @@ function cs_timetable_tab($business_id) {
                 <thead>
                     <tr>
                         <th style="min-width:110px;">Time</th>
-                        <?php foreach ($days as $d): ?>
-                        <th><?php echo $d; ?></th>
+                        <?php foreach ($active_days as $day): ?>
+                        <th><?php echo esc_html($day_labels[$day] ?? $day); ?></th>
                         <?php endforeach; ?>
                     </tr>
                 </thead>
                 <tbody>
-                    <?php foreach (BNTM_CS_TIME_SLOTS as $slot): ?>
+                    <?php foreach ($active_slots as $slot): ?>
                     <tr>
-                        <td class="cs-slot-label"><?php echo esc_html($slot); ?></td>
-                        <?php for ($di = 0; $di < 7; $di++):
-                            if ($di === 6) { // Sunday always empty
-                                echo '<td class="cs-cell cs-cell-empty"></td>';
-                                continue;
-                            }
-                            if (isset($grid[$di][$slot])):
-                                $e = $grid[$di][$slot];
+                        <td class="cs-slot-label"><?php echo esc_html(str_replace('-', ' – ', $slot)); ?></td>
+                        <?php foreach ($active_days as $day):
+                            if (isset($grid[$day][$slot])):
+                                $e = $grid[$day][$slot];
                                 $is_lab = (strpos($e->subject_code, ' L') !== false);
                         ?>
                         <td class="cs-cell">
@@ -1074,7 +1150,7 @@ function cs_timetable_tab($business_id) {
                         </td>
                         <?php else: ?>
                         <td class="cs-cell cs-cell-empty"></td>
-                        <?php endif; endfor; ?>
+                        <?php endif; endforeach; ?>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>
@@ -1087,13 +1163,22 @@ function cs_timetable_tab($business_id) {
 
     <script>
     document.getElementById('cs-apply-filter').addEventListener('click', function () {
-        const sec = document.getElementById('cs-filter-section').value;
-        const yr  = document.getElementById('cs-filter-year').value;
-        const sem = document.getElementById('cs-filter-sem').value;
+        const sec  = document.getElementById('cs-filter-section').value;
+        const yr   = document.getElementById('cs-filter-year').value;
+        const sem  = document.getElementById('cs-filter-sem').value;
+        const inst = document.getElementById('cs-filter-instructor').value;
+        const yl   = document.getElementById('cs-filter-yr-level').value;
+        const url  = new URL(window.location.href);
+        sec  ? url.searchParams.set('cs_section', sec)       : url.searchParams.delete('cs_section');
+        yr   ? url.searchParams.set('cs_year', yr)           : url.searchParams.delete('cs_year');
+        sem  ? url.searchParams.set('cs_sem', sem)           : url.searchParams.delete('cs_sem');
+        inst ? url.searchParams.set('cs_instructor', inst)   : url.searchParams.delete('cs_instructor');
+        yl   ? url.searchParams.set('cs_yr_level', yl)       : url.searchParams.delete('cs_yr_level');
+        window.location.href = url.toString() + '#cs-tab-timetable';
+    });
+    document.getElementById('cs-clear-filter').addEventListener('click', function () {
         const url = new URL(window.location.href);
-        sec ? url.searchParams.set('cs_section', sec) : url.searchParams.delete('cs_section');
-        yr  ? url.searchParams.set('cs_year', yr)     : url.searchParams.delete('cs_year');
-        sem ? url.searchParams.set('cs_sem', sem)     : url.searchParams.delete('cs_sem');
+        ['cs_section','cs_year','cs_sem','cs_instructor','cs_yr_level'].forEach(p => url.searchParams.delete(p));
         window.location.href = url.toString() + '#cs-tab-timetable';
     });
     document.getElementById('cs-print-btn').addEventListener('click', function () { window.print(); });
@@ -1321,8 +1406,6 @@ function cs_schedule_tab($business_id) {
         ));
     }
 
-    $day_group_labels = BNTM_CS_DAY_GROUPS;
-
     ob_start();
     ?>
     <div class="cs-panel">
@@ -1376,8 +1459,17 @@ function cs_schedule_tab($business_id) {
                 <tr>
                     <td><strong><?php echo esc_html($e->subject_code); ?></strong></td>
                     <td><?php echo esc_html($e->subject_name ?: '—'); ?></td>
-                    <td><?php echo esc_html($day_group_labels[$e->day_group] ?? $e->day_group); ?></td>
-                    <td><?php echo esc_html($e->time_slot); ?></td>
+                    <td><?php
+                        // Format day_group: "Mon,Wed,Fri" → "Mon, Wed, Fri"
+                        // or legacy key → human label
+                        $dg_raw = $e->day_group;
+                        $legacy_labels = ['mon_thu'=>'Mon / Thu','tue_fri'=>'Tue / Fri','wed_sat'=>'Wed / Sat'];
+                        echo esc_html($legacy_labels[$dg_raw] ?? implode(', ', array_map('trim', explode(',', $dg_raw))));
+                    ?></td>
+                    <td><?php
+                        // Format time_slot: "07:30-09:00" → "07:30 – 09:00"
+                        echo esc_html(preg_replace('/^(\d{2}:\d{2})-(\d{2}:\d{2})$/', '$1 – $2', $e->time_slot));
+                    ?></td>
                     <td><?php echo esc_html($e->instructor_initials); ?> <?php if ($e->instructor_name): ?><small style="color:#5c7ea6;">(<?php echo esc_html($e->instructor_name); ?>)</small><?php endif; ?></td>
                     <td><?php echo esc_html($e->room); ?></td>
                     <td><span class="cs-badge <?php echo $e->schedule_type === 'lab' ? 'cs-badge-green' : 'cs-badge-blue'; ?>"><?php echo ucfirst($e->schedule_type); ?></span></td>
@@ -1411,8 +1503,6 @@ function cs_schedule_tab($business_id) {
         const sections   = <?php echo json_encode(array_map(fn($s) => ['id'=>$s->id,'name'=>$s->section_name], $sections)); ?>;
         const instructors= <?php echo json_encode(array_map(fn($i) => ['id'=>$i->id,'initials'=>$i->initials,'name'=>$i->full_name], $instructors)); ?>;
         const rooms      = <?php echo json_encode(array_map(fn($r) => ['id'=>$r->id,'code'=>$r->room_code], $rooms)); ?>;
-        const timeSlots  = <?php echo json_encode(BNTM_CS_TIME_SLOTS); ?>;
-        const dayGroups  = <?php echo json_encode(BNTM_CS_DAY_GROUPS); ?>;
         const sectionId  = <?php echo $selected_section ?: 0; ?>;
 
         document.getElementById('cs-go-section').addEventListener('click', function () {
@@ -1420,6 +1510,25 @@ function cs_schedule_tab($business_id) {
             url.searchParams.set('cs_sched_section', document.getElementById('cs-sched-section-filter').value);
             window.location.href = url.toString() + '#cs-tab-schedule';
         });
+
+        // ── Day / time helpers ────────────────────────────────────────────
+        const ALL_DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+        // Parse stored day_group "Mon,Wed,Fri" → Set of abbrevs
+        function parseDays(str) {
+            if (!str) return new Set();
+            return new Set(str.split(',').map(d => d.trim()).filter(Boolean));
+        }
+
+        // Parse stored time_slot "07:30-09:00" → {start, end} (both "HH:MM")
+        function parseSlot(str) {
+            if (!str) return { start: '', end: '' };
+            // Support both "07:30-09:00" and legacy "7:30 - 9:00"
+            const m = str.match(/(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})/);
+            if (!m) return { start: '', end: '' };
+            const pad = t => t.length === 4 ? '0' + t : t; // "7:30" → "07:30"
+            return { start: pad(m[1]), end: pad(m[2]) };
+        }
 
         function entryForm(data) {
             data = data || {};
@@ -1432,31 +1541,50 @@ function cs_schedule_tab($business_id) {
             const roomOptions = '<option value="">-- Select Room --</option>' + rooms.map(r =>
                 `<option value="${r.code}">${r.code}</option>`
             ).join('');
-            const dgOptions = Object.entries(dayGroups).map(([k,v]) =>
-                `<option value="${k}" ${data.dg===k?'selected':''}>${v}</option>`
-            ).join('');
-            const slotOptions = timeSlots.map(s =>
-                `<option value="${s}" ${data.slot===s?'selected':''}>${s}</option>`
+
+            const activeDays = parseDays(data.dg || '');
+            const dayChecks = ALL_DAYS.map(d =>
+                `<label class="ef-day-label">
+                    <input type="checkbox" class="ef-day-cb" value="${d}" ${activeDays.has(d)?'checked':''}>
+                    <span>${d}</span>
+                </label>`
             ).join('');
 
+            const { start, end } = parseSlot(data.slot || '');
+
             return `
+            <style>
+            .ef-day-picker{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;}
+            .ef-day-label{display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border:1.5px solid var(--cs-border,#c4d9ef);border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;color:var(--cs-text-secondary,#2a4f82);transition:all .15s;user-select:none;}
+            .ef-day-label:hover{border-color:var(--cs-accent,#1e6bb8);color:var(--cs-accent,#1e6bb8);}
+            .ef-day-label input{display:none;}
+            .ef-day-label:has(input:checked){background:var(--cs-accent,#1e6bb8);border-color:var(--cs-accent,#1e6bb8);color:#fff;}
+            .ef-time-row{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin-top:4px;}
+            .ef-time-sep{font-size:13px;font-weight:700;color:var(--cs-text-muted,#5c7ea6);text-align:center;}
+            .ef-time-row input[type=time]{padding:8px 10px;border:1.5px solid var(--cs-border,#c4d9ef);border-radius:6px;font-family:inherit;font-size:13.5px;color:var(--cs-text-primary,#102f53);background:#fff;width:100%;}
+            .ef-time-row input[type=time]:focus{outline:none;border-color:var(--cs-accent,#1e6bb8);box-shadow:0 0 0 3px rgba(30,107,184,.14);}
+            </style>
             <h2 class="cs-modal-title">${data.id ? 'Edit Entry' : 'Add Schedule Entry'}</h2>
             <div class="cs-form-grid">
                 <div class="cs-field">
                     <label>Section *</label>
                     <select id="ef-section">${secOptions}</select>
                 </div>
-                <div class="cs-field">
-                    <label>Day Group *</label>
-                    <select id="ef-dg">${dgOptions}</select>
-                </div>
-                <div class="cs-field">
-                    <label>Time Slot *</label>
-                    <select id="ef-slot">${slotOptions}</select>
-                </div>
-                <div class="cs-field">
+                <div class="cs-field" style="grid-column:span 1;">
                     <label>Subject Code * <small style="color:#5c7ea6;">(add " L" for lab)</small></label>
                     <input type="text" id="ef-code" value="${data.code||''}" placeholder="e.g. MATH 89 or CHEM 86 L">
+                </div>
+                <div class="cs-field" style="grid-column:1/-1;">
+                    <label>Day Group *</label>
+                    <div class="ef-day-picker">${dayChecks}</div>
+                </div>
+                <div class="cs-field" style="grid-column:1/-1;">
+                    <label>Time *</label>
+                    <div class="ef-time-row">
+                        <input type="time" id="ef-start" value="${start}" step="300">
+                        <span class="ef-time-sep">to</span>
+                        <input type="time" id="ef-end"   value="${end}"   step="300">
+                    </div>
                 </div>
                 <div class="cs-field">
                     <label>Subject Name</label>
@@ -1507,6 +1635,29 @@ function cs_schedule_tab($business_id) {
             });
             document.getElementById('ef-save').addEventListener('click', function () {
                 const btn = this;
+
+                // Collect checked days → "Mon,Wed,Fri"
+                const checkedDays = [...document.querySelectorAll('.ef-day-cb:checked')]
+                    .map(cb => cb.value);
+                if (!checkedDays.length) {
+                    csNotice(document.getElementById('ef-notice'), 'Please select at least one day.', 'error');
+                    return;
+                }
+                const dayGroup = checkedDays.join(',');
+
+                // Compose time_slot → "07:30-09:00"
+                const startVal = document.getElementById('ef-start').value;
+                const endVal   = document.getElementById('ef-end').value;
+                if (!startVal || !endVal) {
+                    csNotice(document.getElementById('ef-notice'), 'Please set both Start Time and End Time.', 'error');
+                    return;
+                }
+                if (startVal >= endVal) {
+                    csNotice(document.getElementById('ef-notice'), 'End Time must be after Start Time.', 'error');
+                    return;
+                }
+                const timeSlot = startVal + '-' + endVal;  // e.g. "07:30-09:00"
+
                 const roomOverride = document.getElementById('ef-room').value.trim();
                 const roomSelect   = document.getElementById('ef-room-select').value;
                 const roomFinal    = roomOverride || roomSelect;
@@ -1515,8 +1666,8 @@ function cs_schedule_tab($business_id) {
                 fd.append('nonce', nonce);
                 fd.append('id', document.getElementById('ef-id').value);
                 fd.append('section_id', document.getElementById('ef-section').value);
-                fd.append('day_group', document.getElementById('ef-dg').value);
-                fd.append('time_slot', document.getElementById('ef-slot').value);
+                fd.append('day_group', dayGroup);
+                fd.append('time_slot', timeSlot);
                 fd.append('subject_code', document.getElementById('ef-code').value.trim());
                 fd.append('subject_name', document.getElementById('ef-name').value.trim());
                 fd.append('instructor_initials', document.getElementById('ef-initials').value.trim().toUpperCase());
@@ -1950,8 +2101,6 @@ function bntm_ajax_cs_save_schedule() {
     $business_id        = get_current_user_id();
     $id                 = intval($_POST['id']);
     $section_id         = intval($_POST['section_id']);
-    $day_group          = sanitize_text_field($_POST['day_group']);
-    $time_slot          = sanitize_text_field($_POST['time_slot']);
     $subject_code       = sanitize_text_field($_POST['subject_code']);
     $subject_name       = sanitize_text_field($_POST['subject_name'] ?? '');
     $instructor_initials= strtoupper(sanitize_text_field($_POST['instructor_initials'] ?? ''));
@@ -1960,24 +2109,44 @@ function bntm_ajax_cs_save_schedule() {
     $schedule_type      = sanitize_text_field($_POST['schedule_type'] ?? 'lecture');
     $units              = intval($_POST['units'] ?? 3);
 
+    // ── Day group: comma-separated abbreviations e.g. "Mon,Wed,Fri" ──────
+    $valid_days = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    $raw_days   = array_map('trim', explode(',', sanitize_text_field($_POST['day_group'] ?? '')));
+    $clean_days = array_values(array_filter($raw_days, fn($d) => in_array($d, $valid_days)));
+    $day_group  = implode(',', $clean_days);
+
+    // ── Time slot: "HH:MM-HH:MM" 24-hour ─────────────────────────────────
+    $raw_slot  = sanitize_text_field($_POST['time_slot'] ?? '');
+    // Accept both "07:30-09:00" (new) and "7:30 - 9:00" (legacy text)
+    if (preg_match('/^(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})$/', $raw_slot, $m)) {
+        $pad      = fn($t) => strlen($t) === 4 ? '0'.$t : $t;
+        $time_slot = $pad($m[1]) . '-' . $pad($m[2]);
+    } else {
+        $time_slot = $raw_slot; // store as-is if format is unrecognised
+    }
+
     if (!$section_id || empty($subject_code) || empty($day_group) || empty($time_slot)) {
         wp_send_json_error(['message' => 'Section, subject code, day group, and time slot are required.']);
     }
 
-    $valid_dg   = array_keys(BNTM_CS_DAY_GROUPS);
-    $valid_slot = BNTM_CS_TIME_SLOTS;
-    if (!in_array($day_group, $valid_dg))   wp_send_json_error(['message' => 'Invalid day group.']);
-    if (!in_array($time_slot, $valid_slot)) wp_send_json_error(['message' => 'Invalid time slot.']);
-
     $table = $wpdb->prefix . 'cs_schedules';
 
-    // Conflict check: same section + same day_group + same time_slot
-    $conflict = $wpdb->get_var($wpdb->prepare(
-        "SELECT id FROM {$table} WHERE section_id=%d AND day_group=%s AND time_slot=%s AND id != %d",
-        $section_id, $day_group, $time_slot, $id
+    // Conflict check: any existing entry for this section whose day_group shares
+    // at least one day with the new entry AND has the same time_slot.
+    $existing = $wpdb->get_results($wpdb->prepare(
+        "SELECT id, day_group FROM {$table} WHERE section_id=%d AND time_slot=%s AND id != %d",
+        $section_id, $time_slot, $id
     ));
-    if ($conflict) {
-        wp_send_json_error(['message' => 'Conflict: This section already has a subject at ' . esc_html($day_group) . ' / ' . esc_html($time_slot) . '.']);
+    $new_days = $clean_days;
+    foreach ($existing as $ex) {
+        $ex_days = array_map('trim', explode(',', $ex->day_group));
+        $overlap = array_intersect($new_days, $ex_days);
+        if (!empty($overlap)) {
+            wp_send_json_error(['message' =>
+                'Conflict: A subject is already scheduled on ' .
+                implode(', ', $overlap) . ' at ' . $time_slot . '.'
+            ]);
+        }
     }
 
     $data   = compact('section_id','business_id','subject_code','subject_name',
@@ -2046,8 +2215,7 @@ function bntm_ajax_cs_bulk_import_section() {
     foreach ($entries as $e) {
         $dg   = sanitize_text_field($e['day_group'] ?? '');
         $slot = sanitize_text_field($e['time_slot'] ?? '');
-        if (!in_array($dg, array_keys(BNTM_CS_DAY_GROUPS))) continue;
-        if (!in_array($slot, BNTM_CS_TIME_SLOTS)) continue;
+        if (empty($dg) || empty($slot)) continue;
 
         // Skip duplicates
         $exists = $wpdb->get_var($wpdb->prepare(
@@ -2216,15 +2384,49 @@ function bntm_shortcode_cs_public() {
         $section_id
     ));
 
-    $days = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-    $day_group_map = ['mon_thu'=>[0,3],'tue_fri'=>[1,4],'wed_sat'=>[2,5]];
+    $legacy_dg_map = [
+        'mon_thu' => ['Mon','Thu'],
+        'tue_fri' => ['Tue','Fri'],
+        'wed_sat' => ['Wed','Sat'],
+    ];
+    $day_order = ['Mon'=>0,'Tue'=>1,'Wed'=>2,'Thu'=>3,'Fri'=>4,'Sat'=>5,'Sun'=>6];
+    $day_labels = ['Mon'=>'Monday','Tue'=>'Tuesday','Wed'=>'Wednesday','Thu'=>'Thursday',
+                   'Fri'=>'Friday','Sat'=>'Saturday','Sun'=>'Sunday'];
 
-    $grid = [];
-    foreach ($entries as $e) {
-        foreach ($day_group_map[$e->day_group] as $di) {
-            $grid[$di][$e->time_slot] = $e;
+    $norm_slot = function($s) {
+        if (preg_match('/^(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})$/', trim($s), $m)) {
+            $pad = fn($t) => strlen($t) === 4 ? '0'.$t : $t;
+            return $pad($m[1]) . '-' . $pad($m[2]);
         }
+        return trim($s);
+    };
+
+    $pub_active_days  = [];
+    $pub_active_slots = [];
+    $pub_grid = [];
+
+    foreach ($entries as $e) {
+        $slot = $norm_slot($e->time_slot);
+        if (isset($legacy_dg_map[$e->day_group])) {
+            $days_here = $legacy_dg_map[$e->day_group];
+        } else {
+            $days_here = array_filter(
+                array_map('trim', explode(',', $e->day_group)),
+                fn($d) => isset($day_order[$d])
+            );
+        }
+        foreach ($days_here as $day) {
+            if (!in_array($day, $pub_active_days)) $pub_active_days[] = $day;
+            $pub_grid[$day][$slot] = $e;
+        }
+        if (!in_array($slot, $pub_active_slots)) $pub_active_slots[] = $slot;
     }
+
+    usort($pub_active_days,  fn($a,$b) => ($day_order[$a]??99) - ($day_order[$b]??99));
+    sort($pub_active_slots);
+
+    if (empty($pub_active_days))  $pub_active_days  = ['Mon','Tue','Wed','Thu','Fri','Sat'];
+    if (empty($pub_active_slots)) $pub_active_slots = ['07:30-09:00'];
 
     ob_start();
     ?>
@@ -2265,17 +2467,18 @@ function bntm_shortcode_cs_public() {
             <thead>
                 <tr>
                     <th style="min-width:100px;">Time</th>
-                    <?php foreach ($days as $d): ?><th><?php echo $d; ?></th><?php endforeach; ?>
+                    <?php foreach ($pub_active_days as $day): ?>
+                    <th><?php echo esc_html($day_labels[$day] ?? $day); ?></th>
+                    <?php endforeach; ?>
                 </tr>
             </thead>
             <tbody>
-                <?php foreach (BNTM_CS_TIME_SLOTS as $slot): ?>
+                <?php foreach ($pub_active_slots as $slot): ?>
                 <tr>
-                    <td class="cs-pub-slot"><?php echo esc_html($slot); ?></td>
-                    <?php for ($di = 0; $di < 7; $di++):
-                        if ($di === 6) { echo '<td class="cs-pub-cell cs-pub-empty"></td>'; continue; }
-                        if (isset($grid[$di][$slot])):
-                            $e = $grid[$di][$slot];
+                    <td class="cs-pub-slot"><?php echo esc_html(str_replace('-', ' – ', $slot)); ?></td>
+                    <?php foreach ($pub_active_days as $day):
+                        if (isset($pub_grid[$day][$slot])):
+                            $e = $pub_grid[$day][$slot];
                             $is_lab = strpos($e->subject_code, ' L') !== false;
                     ?>
                     <td class="cs-pub-cell">
@@ -2287,7 +2490,7 @@ function bntm_shortcode_cs_public() {
                     </td>
                     <?php else: ?>
                     <td class="cs-pub-cell cs-pub-empty"></td>
-                    <?php endif; endfor; ?>
+                    <?php endif; endforeach; ?>
                 </tr>
                 <?php endforeach; ?>
             </tbody>
