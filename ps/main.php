@@ -4452,6 +4452,7 @@ function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, 
     $rd   = $report_date;
     $tag_filter = trim($tag_filter);
     $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
+    $tag_filter_sql = strtolower($tag_filter);
     $dlabel = date('F d, Y', strtotime($rd));
  
     $loans_today = $wpdb->get_results( $wpdb->prepare(
