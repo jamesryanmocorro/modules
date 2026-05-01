@@ -642,11 +642,27 @@ function pb_events_tab($business_id) {
     $events_table = $wpdb->prefix . 'pb_events';
     $photos_table = $wpdb->prefix . 'pb_photos';
 
-    $events = $wpdb->get_results($wpdb->prepare(
-        "SELECT e.*, (SELECT COUNT(*) FROM {$photos_table} WHERE event_id = e.id) as photo_count
-         FROM {$events_table} e WHERE e.business_id = %d ORDER BY e.created_at DESC",
-        $business_id
-    ));
+    // Load events with a simple query first, then attach photo counts.
+    // This avoids correlated-subquery edge cases on some DB configurations.
+    $events = $wpdb->get_results("SELECT * FROM {$events_table} ORDER BY id DESC");
+
+    $photo_counts = [];
+    if (!empty($events)) {
+        $event_ids = array_map('intval', wp_list_pluck($events, 'id'));
+        $placeholders = implode(',', array_fill(0, count($event_ids), '%d'));
+        $count_rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT event_id, COUNT(*) as cnt
+             FROM {$photos_table}
+             WHERE event_id IN ($placeholders)
+             GROUP BY event_id",
+            $event_ids
+        ));
+        if (!empty($count_rows)) {
+            foreach ($count_rows as $row) {
+                $photo_counts[(int) $row->event_id] = (int) $row->cnt;
+            }
+        }
+    }
 
     $nonce = wp_create_nonce('pb_nonce');
 
@@ -689,7 +705,7 @@ function pb_events_tab($business_id) {
                 <tr>
                     <td><strong><?php echo esc_html($ev->title); ?></strong></td>
                     <td><?php echo $ev->event_date ? esc_html(date('M d, Y', strtotime($ev->event_date))) : '—'; ?></td>
-                    <td><?php echo number_format($ev->photo_count); ?></td>
+                    <td><?php echo number_format(isset($photo_counts[(int) $ev->id]) ? $photo_counts[(int) $ev->id] : 0); ?></td>
                     <td><?php echo $ev->max_photos > 0 ? number_format($ev->max_photos) : 'Unlimited'; ?></td>
                     <td>
                         <span class="pb-status-badge pb-status-<?php echo esc_attr($ev->status); ?>">
@@ -728,7 +744,7 @@ function pb_events_tab($business_id) {
                         <?php endif; ?>
                         <button class="bntm-btn-danger bntm-btn-small pb-delete-event-btn"
                                 data-id="<?php echo $ev->id; ?>"
-                                data-count="<?php echo $ev->photo_count; ?>"
+                                data-count="<?php echo isset($photo_counts[(int) $ev->id]) ? $photo_counts[(int) $ev->id] : 0; ?>"
                                 data-nonce="<?php echo $nonce; ?>">
                             Delete
                         </button>
@@ -1552,20 +1568,20 @@ function bntm_ajax_pb_add_event() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $title       = sanitize_text_field($_POST['title']);
     $description = sanitize_textarea_field($_POST['description']);
-    $event_date  = sanitize_text_field($_POST['event_date']);
-    $max_photos  = intval($_POST['max_photos']);
+    $event_date_raw = sanitize_text_field($_POST['event_date']);
+    $event_date  = $event_date_raw !== '' ? $event_date_raw : null;
+    $max_photos  = max(0, intval($_POST['max_photos']));
 
     if (empty($title)) { wp_send_json_error(['message' => 'Event title is required']); }
 
     $rand_id = bntm_rand_id();
     $result  = $wpdb->insert(
         $wpdb->prefix . 'pb_events',
-        ['rand_id' => $rand_id, 'business_id' => $business_id, 'title' => $title,
-         'description' => $description, 'event_date' => $event_date ?: null, 'max_photos' => $max_photos, 'status' => 'inactive'],
-        ['%s','%d','%s','%s','%s','%d','%s']
+        ['rand_id' => $rand_id, 'title' => $title,
+         'description' => $description, 'event_date' => $event_date, 'max_photos' => $max_photos, 'status' => 'inactive'],
+        ['%s','%s','%s',null,'%d','%s']
     );
 
     if (!$result) { wp_send_json_error(['message' => 'Failed to create event']); }
@@ -1574,9 +1590,9 @@ function bntm_ajax_pb_add_event() {
     // Auto-create Free Capture prompt
     $wpdb->insert(
         $wpdb->prefix . 'pb_prompts',
-        ['rand_id' => bntm_rand_id(), 'business_id' => $business_id, 'event_id' => $event_id,
+        ['rand_id' => bntm_rand_id(), 'event_id' => $event_id,
          'prompt_text' => 'Free Capture', 'sort_order' => 0, 'status' => 'active', 'is_free_capture' => 1],
-        ['%s','%d','%d','%s','%d','%s','%d']
+        ['%s','%d','%s','%d','%s','%d']
     );
 
     wp_send_json_success(['message' => 'Event created successfully!']);
@@ -1587,21 +1603,21 @@ function bntm_ajax_pb_edit_event() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
     $title       = sanitize_text_field($_POST['title']);
     $description = sanitize_textarea_field($_POST['description']);
-    $event_date  = sanitize_text_field($_POST['event_date']);
-    $max_photos  = intval($_POST['max_photos']);
+    $event_date_raw = sanitize_text_field($_POST['event_date']);
+    $event_date  = $event_date_raw !== '' ? $event_date_raw : null;
+    $max_photos  = max(0, intval($_POST['max_photos']));
 
     if (empty($title)) { wp_send_json_error(['message' => 'Event title is required']); }
 
     $result = $wpdb->update(
         $wpdb->prefix . 'pb_events',
         ['title' => $title, 'description' => $description,
-         'event_date' => $event_date ?: null, 'max_photos' => $max_photos],
-        ['id' => $event_id, 'business_id' => $business_id],
-        ['%s','%s','%s','%d'], ['%d','%d']
+         'event_date' => $event_date, 'max_photos' => $max_photos],
+        ['id' => $event_id],
+        ['%s','%s',null,'%d'], ['%d']
     );
 
     if ($result === false) { wp_send_json_error(['message' => 'Failed to update event']); }
@@ -1613,13 +1629,12 @@ function bntm_ajax_pb_delete_event() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
 
     // Delete photos from filesystem
     $photos = $wpdb->get_results($wpdb->prepare(
-        "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE event_id = %d AND business_id = %d",
-        $event_id, $business_id
+        "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE event_id = %d",
+        $event_id
     ));
     $upload_dir = wp_upload_dir();
     foreach ($photos as $photo) {
@@ -1627,9 +1642,9 @@ function bntm_ajax_pb_delete_event() {
         if (file_exists($file)) @unlink($file);
     }
 
-    $wpdb->delete($wpdb->prefix . 'pb_photos',  ['event_id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
-    $wpdb->delete($wpdb->prefix . 'pb_prompts', ['event_id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
-    $result = $wpdb->delete($wpdb->prefix . 'pb_events', ['id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
+    $wpdb->delete($wpdb->prefix . 'pb_photos',  ['event_id' => $event_id], ['%d']);
+    $wpdb->delete($wpdb->prefix . 'pb_prompts', ['event_id' => $event_id], ['%d']);
+    $result = $wpdb->delete($wpdb->prefix . 'pb_events', ['id' => $event_id], ['%d']);
 
     if ($result) wp_send_json_success(['message' => 'Event deleted successfully']);
     else         wp_send_json_error(['message' => 'Failed to delete event']);
@@ -1640,7 +1655,6 @@ function bntm_ajax_pb_toggle_event_status() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
     $new_status  = sanitize_text_field($_POST['new_status']);
 
@@ -1649,12 +1663,12 @@ function bntm_ajax_pb_toggle_event_status() {
     $wpdb->query('START TRANSACTION');
     try {
         if ($new_status === 'active') {
-            // Deactivate all other events for this business
+            // Deactivate all other events
             $wpdb->update($wpdb->prefix . 'pb_events', ['status' => 'inactive'],
-                ['business_id' => $business_id], ['%s'], ['%d']);
+                ['status' => 'active'], ['%s'], ['%s']);
         }
         $r = $wpdb->update($wpdb->prefix . 'pb_events', ['status' => $new_status],
-            ['id' => $event_id, 'business_id' => $business_id], ['%s'], ['%d','%d']);
+            ['id' => $event_id], ['%s'], ['%d']);
         if ($r === false) throw new Exception('Update failed');
         $wpdb->query('COMMIT');
         wp_send_json_success(['message' => 'Event status updated']);
