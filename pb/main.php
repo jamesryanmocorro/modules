@@ -12,6 +12,7 @@ if (!defined('ABSPATH')) exit;
 
 define('BNTM_PB_PATH', dirname(__FILE__) . '/');
 define('BNTM_PB_URL', plugin_dir_url(__FILE__));
+define('BNTM_PB_DB_VERSION', '1.0.1');
 
 // ============================================================
 // MODULE CONFIGURATION
@@ -100,6 +101,37 @@ function bntm_pb_create_tables() {
     return count($tables);
 }
 
+function bntm_pb_tables_exist() {
+    global $wpdb;
+
+    $required_tables = [
+        $wpdb->prefix . 'pb_events',
+        $wpdb->prefix . 'pb_prompts',
+        $wpdb->prefix . 'pb_photos',
+    ];
+
+    foreach ($required_tables as $table_name) {
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table_name));
+        if ($exists !== $table_name) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function bntm_pb_ensure_tables() {
+    $installed_version = get_option('bntm_pb_db_version', '');
+    if ($installed_version === BNTM_PB_DB_VERSION && bntm_pb_tables_exist()) {
+        return;
+    }
+
+    bntm_pb_create_tables();
+    update_option('bntm_pb_db_version', BNTM_PB_DB_VERSION, false);
+}
+
+add_action('init', 'bntm_pb_ensure_tables');
+
 function pb_get_frontend_page_url($slug, $shortcode, $query_args = []) {
     $page = get_page_by_path($slug);
 
@@ -165,6 +197,8 @@ function bntm_shortcode_pb() {
     if (!is_user_logged_in()) {
         return '<div class="bntm-notice">Please log in.</div>';
     }
+
+    bntm_pb_ensure_tables();
 
     $current_user = wp_get_current_user();
     $business_id  = $current_user->ID;
@@ -639,12 +673,17 @@ function pb_overview_tab($business_id) {
 
 function pb_events_tab($business_id) {
     global $wpdb;
+    bntm_pb_ensure_tables();
+
     $events_table = $wpdb->prefix . 'pb_events';
     $photos_table = $wpdb->prefix . 'pb_photos';
 
     // Load events with a simple query first, then attach photo counts.
     // This avoids correlated-subquery edge cases on some DB configurations.
-    $events = $wpdb->get_results("SELECT * FROM {$events_table} ORDER BY id DESC");
+    $events = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$events_table} WHERE business_id = %d ORDER BY id DESC",
+        $business_id
+    ));
 
     $photo_counts = [];
     if (!empty($events)) {
@@ -653,9 +692,9 @@ function pb_events_tab($business_id) {
         $count_rows = $wpdb->get_results($wpdb->prepare(
             "SELECT event_id, COUNT(*) as cnt
              FROM {$photos_table}
-             WHERE event_id IN ($placeholders)
+             WHERE business_id = %d AND event_id IN ($placeholders)
              GROUP BY event_id",
-            $event_ids
+            array_merge([$business_id], $event_ids)
         ));
         if (!empty($count_rows)) {
             foreach ($count_rows as $row) {
@@ -840,6 +879,10 @@ function pb_events_tab($business_id) {
                 msg.innerHTML = '<div class="bntm-notice bntm-notice-'+(json.success?'success':'error')+'">'+json.data.message+'</div>';
                 if (json.success) setTimeout(()=>location.reload(), 1200);
                 else { this.disabled = false; this.textContent = 'Create Event'; }
+            }).catch(()=>{
+                const msg = document.getElementById('pb-add-event-msg');
+                msg.innerHTML = '<div class="bntm-notice bntm-notice-error">Request failed. Please refresh and try again.</div>';
+                this.disabled = false; this.textContent = 'Create Event';
             });
         });
 
@@ -873,6 +916,10 @@ function pb_events_tab($business_id) {
                 msg.innerHTML = '<div class="bntm-notice bntm-notice-'+(json.success?'success':'error')+'">'+json.data.message+'</div>';
                 if (json.success) setTimeout(()=>location.reload(), 1200);
                 else { this.disabled = false; this.textContent = 'Save Changes'; }
+            }).catch(()=>{
+                const msg = document.getElementById('pb-edit-event-msg');
+                msg.innerHTML = '<div class="bntm-notice bntm-notice-error">Request failed. Please refresh and try again.</div>';
+                this.disabled = false; this.textContent = 'Save Changes';
             });
         });
 
@@ -1567,7 +1614,10 @@ function bntm_ajax_pb_add_event() {
     check_ajax_referer('pb_nonce', 'nonce');
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
+    bntm_pb_ensure_tables();
+
     global $wpdb;
+    $business_id = get_current_user_id();
     $title       = sanitize_text_field($_POST['title']);
     $description = sanitize_textarea_field($_POST['description']);
     $event_date_raw = sanitize_text_field($_POST['event_date']);
@@ -1575,24 +1625,29 @@ function bntm_ajax_pb_add_event() {
     $max_photos  = max(0, intval($_POST['max_photos']));
 
     if (empty($title)) { wp_send_json_error(['message' => 'Event title is required']); }
+    if ($event_date !== null && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $event_date)) {
+        wp_send_json_error(['message' => 'Invalid event date format']);
+    }
 
     $rand_id = bntm_rand_id();
     $result  = $wpdb->insert(
         $wpdb->prefix . 'pb_events',
-        ['rand_id' => $rand_id, 'title' => $title,
+        ['rand_id' => $rand_id, 'business_id' => $business_id, 'title' => $title,
          'description' => $description, 'event_date' => $event_date, 'max_photos' => $max_photos, 'status' => 'inactive'],
-        ['%s','%s','%s',null,'%d','%s']
+        ['%s','%d','%s','%s','%s','%d','%s']
     );
 
-    if (!$result) { wp_send_json_error(['message' => 'Failed to create event']); }
+    if (!$result) {
+        wp_send_json_error(['message' => 'Failed to create event' . (!empty($wpdb->last_error) ? ': ' . $wpdb->last_error : '')]);
+    }
 
     $event_id = $wpdb->insert_id;
     // Auto-create Free Capture prompt
     $wpdb->insert(
         $wpdb->prefix . 'pb_prompts',
-        ['rand_id' => bntm_rand_id(), 'event_id' => $event_id,
+        ['rand_id' => bntm_rand_id(), 'business_id' => $business_id, 'event_id' => $event_id,
          'prompt_text' => 'Free Capture', 'sort_order' => 0, 'status' => 'active', 'is_free_capture' => 1],
-        ['%s','%d','%s','%d','%s','%d']
+        ['%s','%d','%d','%s','%d','%s','%d']
     );
 
     wp_send_json_success(['message' => 'Event created successfully!']);
@@ -1603,6 +1658,7 @@ function bntm_ajax_pb_edit_event() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
+    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
     $title       = sanitize_text_field($_POST['title']);
     $description = sanitize_textarea_field($_POST['description']);
@@ -1611,16 +1667,21 @@ function bntm_ajax_pb_edit_event() {
     $max_photos  = max(0, intval($_POST['max_photos']));
 
     if (empty($title)) { wp_send_json_error(['message' => 'Event title is required']); }
+    if ($event_date !== null && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $event_date)) {
+        wp_send_json_error(['message' => 'Invalid event date format']);
+    }
 
     $result = $wpdb->update(
         $wpdb->prefix . 'pb_events',
         ['title' => $title, 'description' => $description,
          'event_date' => $event_date, 'max_photos' => $max_photos],
-        ['id' => $event_id],
-        ['%s','%s',null,'%d'], ['%d']
+        ['id' => $event_id, 'business_id' => $business_id],
+        ['%s','%s','%s','%d'], ['%d','%d']
     );
 
-    if ($result === false) { wp_send_json_error(['message' => 'Failed to update event']); }
+    if ($result === false) {
+        wp_send_json_error(['message' => 'Failed to update event' . (!empty($wpdb->last_error) ? ': ' . $wpdb->last_error : '')]);
+    }
     wp_send_json_success(['message' => 'Event updated successfully!']);
 }
 
@@ -1629,12 +1690,13 @@ function bntm_ajax_pb_delete_event() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
+    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
 
     // Delete photos from filesystem
     $photos = $wpdb->get_results($wpdb->prepare(
-        "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE event_id = %d",
-        $event_id
+        "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE event_id = %d AND business_id = %d",
+        $event_id, $business_id
     ));
     $upload_dir = wp_upload_dir();
     foreach ($photos as $photo) {
@@ -1642,9 +1704,9 @@ function bntm_ajax_pb_delete_event() {
         if (file_exists($file)) @unlink($file);
     }
 
-    $wpdb->delete($wpdb->prefix . 'pb_photos',  ['event_id' => $event_id], ['%d']);
-    $wpdb->delete($wpdb->prefix . 'pb_prompts', ['event_id' => $event_id], ['%d']);
-    $result = $wpdb->delete($wpdb->prefix . 'pb_events', ['id' => $event_id], ['%d']);
+    $wpdb->delete($wpdb->prefix . 'pb_photos',  ['event_id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
+    $wpdb->delete($wpdb->prefix . 'pb_prompts', ['event_id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
+    $result = $wpdb->delete($wpdb->prefix . 'pb_events', ['id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
 
     if ($result) wp_send_json_success(['message' => 'Event deleted successfully']);
     else         wp_send_json_error(['message' => 'Failed to delete event']);
@@ -1655,6 +1717,7 @@ function bntm_ajax_pb_toggle_event_status() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
+    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
     $new_status  = sanitize_text_field($_POST['new_status']);
 
@@ -1665,10 +1728,10 @@ function bntm_ajax_pb_toggle_event_status() {
         if ($new_status === 'active') {
             // Deactivate all other events
             $wpdb->update($wpdb->prefix . 'pb_events', ['status' => 'inactive'],
-                ['status' => 'active'], ['%s'], ['%s']);
+                ['status' => 'active', 'business_id' => $business_id], ['%s'], ['%s','%d']);
         }
         $r = $wpdb->update($wpdb->prefix . 'pb_events', ['status' => $new_status],
-            ['id' => $event_id], ['%s'], ['%d']);
+            ['id' => $event_id, 'business_id' => $business_id], ['%s'], ['%d','%d']);
         if ($r === false) throw new Exception('Update failed');
         $wpdb->query('COMMIT');
         wp_send_json_success(['message' => 'Event status updated']);
