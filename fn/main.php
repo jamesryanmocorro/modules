@@ -2,139 +2,44 @@
 /**
  * Module Name: Finance Management
  * Module Slug: fn
- * Description: Complete finance management with income/expense tracking, e-commerce integration, and financial reporting
- * Version: 1.0.2
+ * Description: Business finance, planning, costing, budgeting, MBA dashboard
+ * Version: 2.1.0
  * Author: BNTM Hub
  * Icon: 💰
+ *
+ * DATABASE TABLES:
+ *  fn_transactions         — income / expense ledger
+ *  fn_cashflow_summary     — monthly rollup
+ *  fn_recurring_expenses   — scheduled recurring cost items
+ *  fn_budgets              — monthly budget targets per category
  */
 
-// Prevent direct access
-if (!defined('ABSPATH')) exit;
+if ( ! defined( 'ABSPATH' ) ) exit;
 
-// Module constants
-define('BNTM_FN_PATH', dirname(__FILE__) . '/');
-define('BNTM_FN_URL', plugin_dir_url(__FILE__));
+define( 'BNTM_FN_PATH', dirname( __FILE__ ) . '/' );
+define( 'BNTM_FN_URL',  plugin_dir_url( __FILE__ ) );
 
-/* ---------- MODULE CONFIGURATION ---------- */
+/* ============================================================
+   MODULE CONFIGURATION
+   ============================================================ */
 
-/**
- * Get module pages
- * Returns array of page_title => shortcode
- */
 function bntm_fn_get_pages() {
-    return [
-        'Finance' => '[fn_page]'
-    ];
+    return [ 'Finance' => '[fn_page]' ];
 }
 
-/**
- * Get module database tables
- * Returns array of table_name => CREATE TABLE SQL
- */
-function bntm_fn_get_tables() {
-    global $wpdb;
-    $charset = $wpdb->get_charset_collate();
-    $prefix = $wpdb->prefix;
-    
-    return [
-        'fn_transactions' => "CREATE TABLE {$prefix}fn_transactions (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            rand_id VARCHAR(20) UNIQUE NOT NULL,
-            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-            type VARCHAR(10) NOT NULL,
-            amount DECIMAL(10,2) NOT NULL,
-            category VARCHAR(100),
-            notes TEXT,
-            reference_type VARCHAR(50) NULL,
-            reference_id BIGINT UNSIGNED NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_business (business_id),
-            INDEX idx_type (type),
-            INDEX idx_category (category),
-            INDEX idx_date (created_at),
-            INDEX idx_reference (reference_type, reference_id)
-        ) {$charset};",
-        
-        'fn_cashflow_summary' => "CREATE TABLE {$prefix}fn_cashflow_summary (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            rand_id VARCHAR(20) UNIQUE NOT NULL,
-            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-            period VARCHAR(20) NOT NULL,
-            total_income DECIMAL(10,2) DEFAULT 0,
-            total_expense DECIMAL(10,2) DEFAULT 0,
-            balance DECIMAL(10,2) DEFAULT 0,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_business_period (business_id, period)
-        ) {$charset};"
-    ];
-}
-
-/**
- * Get module shortcodes
- * Returns array of shortcode => callback_function
- */
 function bntm_fn_get_shortcodes() {
     return [
-        'fn_page' => 'bntm_shortcode_fn_page',
-        'fn_dashboard' => 'bntm_shortcode_fn_page'
+        'fn_page'      => 'bntm_shortcode_fn_page',
+        'fn_dashboard' => 'bntm_shortcode_fn_page',
     ];
 }
 
-/**
- * Create module tables
- * Called when "Generate Tables" is clicked in admin
- */
-function bntm_fn_create_tables() {
-    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-    
-    $tables = bntm_fn_get_tables();
-    
-    foreach ($tables as $sql) {
-        dbDelta($sql);
-    }
-    
-    // Set default categories if not exists
-    if (!bntm_get_setting('fn_categories_income')) {
-        bntm_set_setting('fn_categories_income', json_encode([
-            'Sales',
-            'Services',
-            'Investment',
-            'Other Income'
-        ]));
-    }
-    
-    if (!bntm_get_setting('fn_categories_expense')) {
-        bntm_set_setting('fn_categories_expense', json_encode([
-            'Rent',
-            'Utilities',
-            'Payroll',
-            'Supplies',
-            'Marketing',
-            'Transportation',
-            'Maintenance',
-            'Other Expense'
-        ]));
-    }
-    
-    return count($tables);
-}
-
-// AJAX handlers
-add_action('wp_ajax_bntm_fn_save_transaction', 'bntm_ajax_fn_save_transaction');
-add_action('wp_ajax_bntm_fn_delete_transaction', 'bntm_ajax_fn_delete_transaction');
-add_action('wp_ajax_bntm_fn_import_order', 'bntm_ajax_fn_import_order');
-add_action('wp_ajax_bntm_fn_revert_order', 'bntm_ajax_fn_revert_order');
-add_action('wp_ajax_bntm_fn_save_categories', 'bntm_ajax_fn_save_categories');
-add_action('wp_ajax_bntm_fn_export_csv', 'bntm_ajax_fn_export_csv');
-
-// Create Finance tables on module activation
-function bntm_fn_create_tables2() {
+function bntm_fn_get_tables() {
     global $wpdb;
-    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-    $prefix = $wpdb->prefix;
-    
-    $tables = [
-        'fn_transactions' => "CREATE TABLE {$prefix}fn_transactions (
+    $c = $wpdb->get_charset_collate();
+    $p = $wpdb->prefix;
+    return [
+        'fn_transactions' => "CREATE TABLE {$p}fn_transactions (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
             business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -145,14 +50,11 @@ function bntm_fn_create_tables2() {
             reference_type VARCHAR(50) NULL,
             reference_id BIGINT UNSIGNED NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_business (business_id),
-            INDEX idx_type (type),
-            INDEX idx_category (category),
-            INDEX idx_date (created_at),
+            INDEX idx_business (business_id), INDEX idx_type (type),
+            INDEX idx_category (category), INDEX idx_date (created_at),
             INDEX idx_reference (reference_type, reference_id)
-        ) {$wpdb->get_charset_collate()};",
-        
-        'fn_cashflow_summary' => "CREATE TABLE {$prefix}fn_cashflow_summary (
+        ) {$c};",
+        'fn_cashflow_summary' => "CREATE TABLE {$p}fn_cashflow_summary (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
             business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -162,1782 +64,2010 @@ function bntm_fn_create_tables2() {
             balance DECIMAL(10,2) DEFAULT 0,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_business_period (business_id, period)
-        ) {$wpdb->get_charset_collate()};"
+        ) {$c};",
+        'fn_recurring_expenses' => "CREATE TABLE {$p}fn_recurring_expenses (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            name VARCHAR(150) NOT NULL,
+            amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+            category VARCHAR(100) DEFAULT 'Fixed Cost',
+            frequency ENUM('monthly','weekly','annual') DEFAULT 'monthly',
+            is_active TINYINT(1) DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_business (business_id)
+        ) {$c};",
+        'fn_budgets' => "CREATE TABLE {$p}fn_budgets (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            period VARCHAR(7) NOT NULL COMMENT 'YYYY-MM',
+            category VARCHAR(100) NOT NULL,
+            budget_type ENUM('income','expense') NOT NULL,
+            budgeted_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+            INDEX idx_business_period (business_id, period)
+        ) {$c};"
     ];
-    
-    foreach ($tables as $sql) {
-        dbDelta($sql);
-    }
-    
-    // Set default categories
-    if (!bntm_get_setting('fn_categories_income')) {
-        bntm_set_setting('fn_categories_income', json_encode(['Sales', 'Services', 'Investment', 'Other Income']));
-    }
-    if (!bntm_get_setting('fn_categories_expense')) {
-        bntm_set_setting('fn_categories_expense', json_encode(['Rent', 'Utilities', 'Payroll', 'Supplies', 'Marketing', 'Other Expense']));
-    }
 }
 
-// Generate Finance pages
-add_action('wp_ajax_bntm_fn_generate_pages', 'bntm_ajax_fn_generate_pages');
-function bntm_ajax_fn_generate_pages() {
-    check_ajax_referer('bntm_fn_action');
-    
-    if (!is_user_logged_in()) {
-        wp_send_json_error('Please log in.');
+function bntm_fn_create_tables() {
+    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    foreach ( bntm_fn_get_tables() as $sql ) dbDelta( $sql );
+
+    if ( ! bntm_get_setting( 'fn_income_categories' ) ) {
+        bntm_set_setting( 'fn_income_categories', json_encode( ['Sales','Services','Investment','Other Income'] ) );
     }
-    
-    $current_user = wp_get_current_user();
-    $is_wp_admin = current_user_can('manage_options');
-    $current_role = bntm_get_user_role($current_user->ID);
-    
-    if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) {
-        wp_send_json_error('Unauthorized.');
+    if ( ! bntm_get_setting( 'fn_expense_categories' ) ) {
+        bntm_set_setting( 'fn_expense_categories', json_encode( ['Rent','Utilities','Payroll','Supplies','Marketing','Transportation','Maintenance','Other Expense'] ) );
     }
-    
-    // Create Finance page if doesn't exist
-    $finance_page = get_page_by_title('Finance');
-    if (!$finance_page) {
-        $page_id = wp_insert_post([
-            'post_title' => 'Finance',
-            'post_content' => '[fn_page]',
-            'post_status' => 'publish',
-            'post_type' => 'page',
-            'post_author' => get_current_user_id()
-        ]);
-        
-        if (is_wp_error($page_id)) {
-            wp_send_json_error('Failed to create Finance page.');
-        }
-    }
-    
-    
-    // Create tables
-    bntm_fn_create_tables2();
-    
-    wp_send_json_success('Finance pages and tables created successfully!');
+    return count( bntm_fn_get_tables() );
 }
 
-/* ---------- MAIN SHORTCODE ---------- */function bntm_shortcode_fn_dashboard() {
-    if (!is_user_logged_in()) {
+/* ============================================================
+   AJAX HOOKS
+   ============================================================ */
+add_action( 'wp_ajax_fn_save_transaction',   'bntm_ajax_fn_save_transaction' );
+add_action('wp_ajax_fn_update_transaction', 'bntm_ajax_fn_update_transaction');
+add_action( 'wp_ajax_fn_delete_transaction', 'bntm_ajax_fn_delete_transaction' );
+add_action( 'wp_ajax_fn_export_csv',         'bntm_ajax_fn_export_csv' );
+add_action( 'wp_ajax_fn_save_categories',    'bntm_ajax_fn_save_categories' );
+add_action( 'wp_ajax_fn_save_recurring',     'bntm_ajax_fn_save_recurring' );
+add_action( 'wp_ajax_fn_delete_recurring',   'bntm_ajax_fn_delete_recurring' );
+add_action( 'wp_ajax_fn_save_budget',        'bntm_ajax_fn_save_budget' );
+add_action( 'wp_ajax_fn_delete_budget',      'bntm_ajax_fn_delete_budget' );
+add_action( 'wp_ajax_fn_generate_pdf',       'bntm_ajax_fn_generate_pdf' );
+add_action( 'wp_ajax_fn_import_order',       'bntm_ajax_fn_import_order' );
+add_action( 'wp_ajax_fn_revert_order',       'bntm_ajax_fn_revert_order' );
+
+/* ============================================================
+   MAIN SHORTCODE
+   ============================================================ */
+function bntm_shortcode_fn_page() {
+    if ( ! is_user_logged_in() ) {
         return '<div class="bntm-notice bntm-notice-error">Please log in to access Finance.</div>';
     }
-    
-    $stats = bntm_fn_get_dashboard_stats();
-    $currency = get_option('bntm_currency_symbol', '$');
-    
-    ob_start();
-    ?>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    
-    <div class="bntm-fn-dashboard">
-        <div class="bntm-fn-stats-grid">
-            <div class="bntm-fn-stat-card">
-                <div class="bntm-fn-stat-icon bntm-fn-stat-icon-income">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                        <polyline points="19 12 12 19 5 12"></polyline>
-                    </svg>
-                </div>
-                <div class="bntm-fn-stat-content">
-                    <h3>Total Income</h3>
-                    <p class="bntm-fn-stat-number bntm-fn-stat-income"><?php echo $currency; ?><?php echo number_format($stats['total_income'], 2); ?></p>
-                </div>
-            </div>
-            
-            <div class="bntm-fn-stat-card">
-                <div class="bntm-fn-stat-icon bntm-fn-stat-icon-expense">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="12" y1="19" x2="12" y2="5"></line>
-                        <polyline points="5 12 12 5 19 12"></polyline>
-                    </svg>
-                </div>
-                <div class="bntm-fn-stat-content">
-                    <h3>Total Expenses</h3>
-                    <p class="bntm-fn-stat-number bntm-fn-stat-expense"><?php echo $currency; ?><?php echo number_format($stats['total_expense'], 2); ?></p>
-                </div>
-            </div>
-            
-            <div class="bntm-fn-stat-card">
-                <div class="bntm-fn-stat-icon bntm-fn-stat-icon-balance">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="1" y="4" width="22" height="16" rx="2" ry="2"></rect>
-                        <line x1="1" y1="10" x2="23" y2="10"></line>
-                    </svg>
-                </div>
-                <div class="bntm-fn-stat-content">
-                    <h3>Net Balance</h3>
-                    <p class="bntm-fn-stat-number <?php echo $stats['balance'] >= 0 ? 'bntm-fn-stat-income' : 'bntm-fn-stat-expense'; ?>"><?php echo $currency; ?><?php echo number_format($stats['balance'], 2); ?></p>
-                </div>
-            </div>
-            
-            <div class="bntm-fn-stat-card">
-                <div class="bntm-fn-stat-icon bntm-fn-stat-icon-primary">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-                        <line x1="16" y1="2" x2="16" y2="6"></line>
-                        <line x1="8" y1="2" x2="8" y2="6"></line>
-                        <line x1="3" y1="10" x2="21" y2="10"></line>
-                    </svg>
-                </div>
-                <div class="bntm-fn-stat-content">
-                    <h3>This Month</h3>
-                    <p class="bntm-fn-stat-number"><?php echo $currency; ?><?php echo number_format($stats['month_balance'], 2); ?></p>
-                </div>
-            </div>
-        </div>
-        
-        <div class="bntm-fn-charts-grid">
-            <div class="bntm-fn-chart-card bntm-fn-chart-large">
-                <h3>Cash Flow Overview</h3>
-                <canvas id="cashFlowChart"></canvas>
-            </div>
-            
-            <div class="bntm-fn-chart-card">
-                <h3>Income by Category</h3>
-                <canvas id="incomeCategoryChart"></canvas>
-            </div>
-            
-            <div class="bntm-fn-chart-card">
-                <h3>Expenses by Category</h3>
-                <canvas id="expenseCategoryChart"></canvas>
-            </div>
-        </div>
-        
-        <div style="margin-top: 20px; text-align: center;">
-            <a href="<?php echo add_query_arg('type', 'transactions', get_permalink()); ?>" class="bntm-btn-primary">View All Transactions</a>
-        </div>
-    </div>
-    
+
+    if ( fn_get_current_business_id() <= 0 ) {
+        return '<div class="bntm-notice bntm-notice-error">Business context is unavailable for Finance.</div>';
+    }
+
+    $tab = isset( $_GET['type'] ) ? sanitize_text_field( $_GET['type'] ) : 'dashboard';
+
+    $tabs = [
+        'dashboard'   => 'Dashboard',
+        'recurring'   => 'Recurring Expenses',
+        'budgets'     => 'Budgets',
+        'transactions'=> 'Transactions',
+        'reports'     => 'Reports',
+        'settings'    => 'Settings',
+    ];
+
+    ob_start(); ?>
     <style>
-    .bntm-fn-dashboard {
-        max-width: 1200px;
-        margin: 0 auto;
+    :root {
+        --fn-primary: #1a1a2e;
+        --fn-accent: #e94560;
+        --fn-green:  #10b981;
+        --fn-amber:  #f59e0b;
+        --fn-blue:   #3b82f6;
+        --fn-red:    #ef4444;
+        --color-background-primary:   #ffffff;
+        --color-background-secondary: #f9fafb;
+        --color-background-tertiary:  #f3f4f6;
+        --color-text-primary:   #111827;
+        --color-text-secondary: #6b7280;
+        --color-border-primary:   #e5e7eb;
+        --color-border-secondary: #d1d5db;
+        --color-border-tertiary:  #e5e7eb;
+        --color-shadow: rgba(0, 0, 0, 0.05);
     }
-    
-    .bntm-fn-stats-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 20px;
-        margin-bottom: 30px;
+    .fn-wrap { --fn-primary:#1a1a2e; --fn-accent:#e94560; --fn-green:#10b981; --fn-amber:#f59e0b; --fn-blue:#3b82f6; --fn-red:#ef4444; }
+    .fn-chart-wrap { position:relative; height:220px; width:100%; }
+    .fn-kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:20px; }
+    .fn-kpi { background:var(--color-background-secondary); border:1px solid var(--color-border-tertiary); border-radius:12px; padding:18px 16px; position:relative; overflow:hidden; }
+    .fn-kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--color-text-secondary); margin-bottom:6px; }
+    .fn-kpi-value { font-size:22px; font-weight:600; color:var(--color-text-primary); line-height:1.2; }
+    .fn-kpi-sub { font-size:12px; margin-top:4px; }
+    .fn-kpi-bar { position:absolute; bottom:0; left:0; height:3px; background:var(--fn-accent); border-radius:0 0 12px 12px; transition:width .6s; }
+    .fn-chart-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-bottom:20px; }
+    .fn-chart-box { background:var(--color-background-primary); border:1px solid var(--color-border-tertiary); border-radius:12px; padding:16px; }
+    .fn-chart-box h4 { font-size:13px; font-weight:500; color:var(--color-text-secondary); margin:0 0 12px; text-transform:uppercase; letter-spacing:.05em; }
+    .fn-two-col { display:grid; grid-template-columns:1.4fr 1fr; gap:14px; margin-bottom:20px; }
+    .fn-full { margin-bottom:20px; }
+    .fn-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .fn-table th { background:var(--color-background-tertiary); padding:9px 12px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--color-text-secondary); border-bottom:1px solid var(--color-border-tertiary); }
+    .fn-table td { padding:9px 12px; border-bottom:1px solid var(--color-border-tertiary); color:var(--color-text-primary); }
+    .fn-table tr:last-child td { border-bottom:none; }
+    .fn-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; font-weight:600; }
+    .fn-badge-income  { background:#d1fae5; color:#065f46; }
+    .fn-badge-expense { background:#fee2e2; color:#991b1b; }
+    .fn-badge-ok      { background:#d1fae5; color:#065f46; }
+    .fn-badge-warn    { background:#fef3c7; color:#92400e; }
+    .fn-badge-bad     { background:#fee2e2; color:#991b1b; }
+    .fn-bar-track { background:var(--color-border-tertiary); border-radius:4px; height:6px; overflow:hidden; }
+    .fn-bar-fill  { height:6px; border-radius:4px; transition:width .5s; }
+    .fn-section-hdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:8px; }
+    .fn-section-hdr h3 { margin:0; font-size:16px; }
+    .fn-input { width:100%; padding:8px 10px; border:1px solid var(--color-border-secondary); border-radius:6px; background:var(--color-background-secondary); color:var(--color-text-primary); font-size:13px; }
+    .fn-input:focus { outline:none; border-color:var(--fn-blue,#3b82f6); box-shadow:0 0 0 2px rgba(59,130,246,.15); }
+    @media(max-width:900px){
+        .fn-chart-grid { grid-template-columns:1fr; }
+        .fn-two-col { grid-template-columns:1fr; }
     }
-    
-    .bntm-fn-stat-card {
-        background: #ffffff;
-        padding: 24px;
-        border-radius: 12px;
-        display: flex;
-        align-items: flex-start;
-        gap: 16px;
-        border: 1px solid #e5e7eb;
-        transition: all 0.2s ease;
-    }
-    
-    .bntm-fn-stat-card:hover {
-        border-color: #d1d5db;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-    }
-    
-    .bntm-fn-stat-icon {
-        width: 48px;
-        height: 48px;
-        border-radius: 10px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-shrink: 0;
-    }
-    
-    .bntm-fn-stat-icon-income {
-        background: #10b981;
-        color: #ffffff;
-    }
-    
-    .bntm-fn-stat-icon-expense {
-        background: #ef4444;
-        color: #ffffff;
-    }
-    
-    .bntm-fn-stat-icon-balance {
-        background: #3b82f6;
-        color: #ffffff;
-    }
-    
-    .bntm-fn-stat-icon-primary {
-        background: var(--bntm-primary, #374151);
-        color: #ffffff;
-    }
-    
-    .bntm-fn-stat-content {
-        flex: 1;
-    }
-    
-    .bntm-fn-stat-content h3 {
-        margin: 0 0 8px 0;
-        font-size: 13px;
-        color: #6b7280;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    
-    .bntm-fn-stat-number {
-        font-size: 28px;
-        font-weight: 700;
-        color: #111827;
-        margin: 0;
-        line-height: 1;
-    }
-    
-    .bntm-fn-stat-income {
-        color: #059669;
-    }
-    
-    .bntm-fn-stat-expense {
-        color: #dc2626;
-    }
-    
-    .bntm-fn-charts-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-        gap: 20px;
-        margin-bottom: 30px;
-    }
-    
-    .bntm-fn-chart-card {
-        background: #ffffff;
-        padding: 24px;
-        border-radius: 12px;
-        border: 1px solid #e5e7eb;
-    }
-    
-    .bntm-fn-chart-large {
-        grid-column: 1 / -1;
-    }
-    
-    .bntm-fn-chart-card h3 {
-        margin: 0 0 20px 0;
-        font-size: 16px;
-        font-weight: 600;
-        color: #111827;
-    }
-    
-    .bntm-fn-chart-card canvas {
-        max-height: 300px;
-    }
-    
-    @media (max-width: 768px) {
-        .bntm-fn-chart-card {
-            grid-column: 1 / -1;
-        }
+    @media(max-width:600px){
+        .fn-kpi-grid { grid-template-columns:1fr 1fr; }
     }
     </style>
+
+    <div class="fn-wrap">
+    <div class="bntm-tabs">
+        <?php foreach ( $tabs as $slug => $label ) : ?>
+        <a href="<?php echo add_query_arg( 'type', $slug, get_permalink() ); ?>"
+           class="bntm-tab <?php echo $tab === $slug ? 'active' : ''; ?>">
+            <?php echo esc_html( $label ); ?>
+        </a>
+        <?php endforeach; ?>
+    </div>
+
+    <div class="bntm-tab-content" style="margin-top:20px;">
+    <?php
+    switch ( $tab ) {
+        case 'dashboard':    echo fn_dashboard_tab();    break;
+        case 'recurring':    echo fn_recurring_tab();    break;
+        case 'budgets':      echo fn_budgets_tab();      break;
+        case 'transactions': echo fn_transactions_tab(); break;
+        case 'reports':      echo fn_reports_tab();      break;
+        case 'settings':     echo fn_settings_tab();     break;
+        default:             echo fn_dashboard_tab();
+    }
+    ?>
+    </div>
+    </div>
+    <?php
+    $content = ob_get_clean();
+    return bntm_universal_container( 'Finance', $content );
+}
+
+/* ============================================================
+   HELPER: shared JS url + nonce head
+   ============================================================ */
+function fn_js_head() {
+    return '<script>var ajaxurl="' . admin_url('admin-ajax.php') . '";var fnNonce="' . wp_create_nonce('bntm_fn_action') . '";</script>';
+}
+
+function fn_get_current_business_id() {
+    if (function_exists('bntm_get_current_business_id')) {
+        $business_id = absint(bntm_get_current_business_id());
+        if ($business_id > 0) {
+            return $business_id;
+        }
+    }
+
+    return absint(get_current_user_id());
+}
+
+function fn_get_setting_for_business($key, $default = '', $business_id = 0) {
+    $business_id = absint($business_id ?: fn_get_current_business_id());
+
+    if ($business_id > 0 && function_exists('bntm_get_scoped_setting_option_key')) {
+        $scoped_value = get_option(bntm_get_scoped_setting_option_key($key, $business_id), null);
+        if ($scoped_value !== null) {
+            return $scoped_value;
+        }
+    }
+
+    if ($business_id > 0 && function_exists('bntm_get_business_option')) {
+        $legacy_value = bntm_get_business_option('setting_' . $key, null, $business_id);
+        if ($legacy_value !== null) {
+            return $legacy_value;
+        }
+    }
+
+    return function_exists('bntm_get_setting') ? bntm_get_setting($key, $default) : $default;
+}
+
+function fn_update_setting_for_business($key, $value, $business_id = 0) {
+    $business_id = absint($business_id ?: fn_get_current_business_id());
+
+    if ($business_id > 0 && function_exists('bntm_get_scoped_setting_option_key')) {
+        return update_option(bntm_get_scoped_setting_option_key($key, $business_id), $value);
+    }
+
+    if (function_exists('bntm_set_setting')) {
+        return bntm_set_setting($key, $value);
+    }
+
+    return update_option($key, $value);
+}
+
+function fn_get_categories_for_business($type, $business_id = 0) {
+    $business_id = absint($business_id ?: fn_get_current_business_id());
+    $defaults = [
+        'income' => ['Sales','Services','Investment','Other Income'],
+        'expense' => ['Rent','Utilities','Payroll','Supplies','Marketing','Transportation','Maintenance','Other Expense'],
+    ];
+
+    $setting_key = $type === 'expense' ? 'fn_expense_categories' : 'fn_income_categories';
+    $raw_value = fn_get_setting_for_business($setting_key, wp_json_encode($defaults[$type] ?? []), $business_id);
+    $categories = json_decode((string) $raw_value, true);
+
+    if (!is_array($categories) || empty($categories)) {
+        $categories = $defaults[$type] ?? [];
+    }
+
+    return array_values(array_filter(array_map('sanitize_text_field', $categories)));
+}
+
+/* ============================================================
+   HELPER FUNCTIONS — data
+   ============================================================ */
+function fn_get_stats( $year = null, $month = null ) {
+    global $wpdb;
+    $t = $wpdb->prefix . 'fn_transactions';
+    $business_id = fn_get_current_business_id();
+
+    $all = $wpdb->get_row( $wpdb->prepare( "SELECT
+        SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as total_income,
+        SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as total_expense,
+        SUM(CASE WHEN type='income' THEN amount ELSE -amount END) as balance
+        FROM {$t}
+        WHERE business_id = %d", $business_id ) );
+
+    $y = $year  ?: date('Y');
+    $m = $month ?: date('m');
+
+    $cur = $wpdb->get_row( $wpdb->prepare(
+        "SELECT
+         SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as income,
+         SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as expense,
+         SUM(CASE WHEN type='income' THEN amount ELSE -amount END) as net
+         FROM {$t} WHERE business_id = %d AND YEAR(created_at)=%d AND MONTH(created_at)=%d", $business_id, $y, $m ) );
+
+    $prev_y = $m == 1 ? $y - 1 : $y;
+    $prev_m = $m == 1 ? 12     : $m - 1;
+    $prev = $wpdb->get_row( $wpdb->prepare(
+        "SELECT SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as income
+         FROM {$t} WHERE business_id = %d AND YEAR(created_at)=%d AND MONTH(created_at)=%d", $business_id, $prev_y, $prev_m ) );
+
+    $growth = ( $prev->income > 0 )
+        ? ( ( floatval($cur->income) - floatval($prev->income) ) / floatval($prev->income) * 100 )
+        : 0;
+
+    return [
+        'total_income'   => floatval( $all->total_income  ?? 0 ),
+        'total_expense'  => floatval( $all->total_expense ?? 0 ),
+        'balance'        => floatval( $all->balance       ?? 0 ),
+        'month_income'   => floatval( $cur->income  ?? 0 ),
+        'month_expense'  => floatval( $cur->expense ?? 0 ),
+        'month_net'      => floatval( $cur->net     ?? 0 ),
+        'growth_pct'     => round( $growth, 1 ),
+    ];
+}
+
+function fn_get_monthly_series( $months = 6 ) {
+    global $wpdb;
+    $t = $wpdb->prefix . 'fn_transactions';
+    $business_id = fn_get_current_business_id();
+    $rows = $wpdb->get_results( $wpdb->prepare(
+        "SELECT DATE_FORMAT(created_at,'%%Y-%%m') as period,
+                SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as income,
+                SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as expense
+         FROM {$t}
+         WHERE business_id = %d
+         AND created_at >= DATE_SUB(NOW(), INTERVAL %d MONTH)
+         GROUP BY period ORDER BY period ASC", $business_id, $months ) );
+    return $rows;
+}
+
+function fn_get_category_breakdown( $type, $year, $month ) {
+    global $wpdb;
+    $t = $wpdb->prefix . 'fn_transactions';
+    $business_id = fn_get_current_business_id();
+    return $wpdb->get_results( $wpdb->prepare(
+        "SELECT category, SUM(amount) as total FROM {$t}
+         WHERE business_id = %d AND type=%s AND YEAR(created_at)=%d AND MONTH(created_at)=%d
+         GROUP BY category ORDER BY total DESC", $business_id, $type, $year, $month ) );
+}
+
+function fn_get_recurring_total() {
+    global $wpdb;
+    $t = $wpdb->prefix . 'fn_recurring_expenses';
+    $business_id = fn_get_current_business_id();
+    if ( ! $wpdb->get_var("SHOW TABLES LIKE '{$t}'") ) return 0;
+    $monthly = $wpdb->get_var($wpdb->prepare("SELECT SUM(amount) FROM {$t} WHERE business_id = %d AND is_active=1 AND frequency='monthly'", $business_id));
+    $weekly  = $wpdb->get_var($wpdb->prepare("SELECT SUM(amount) FROM {$t} WHERE business_id = %d AND is_active=1 AND frequency='weekly'", $business_id));
+    $annual  = $wpdb->get_var($wpdb->prepare("SELECT SUM(amount) FROM {$t} WHERE business_id = %d AND is_active=1 AND frequency='annual'", $business_id));
+    return floatval($monthly) + floatval($weekly)*4.33 + floatval($annual)/12;
+}
+
+function fn_currency() {
+    return bntm_get_setting('ec_currency','PHP');
+}
+
+function fn_fmt( $n ) {
+    return fn_currency() . number_format(floatval($n),2);
+}
+
+function fn_update_cashflow_summary( $business_id = 0 ) {
+    global $wpdb;
+    $tx = $wpdb->prefix . 'fn_transactions';
+    $sm = $wpdb->prefix . 'fn_cashflow_summary';
+    $business_id = absint($business_id ?: fn_get_current_business_id());
+    $period = date('Y-m');
+    if ($business_id <= 0) {
+        return;
+    }
+    $stats = $wpdb->get_row($wpdb->prepare("SELECT
+        SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as i,
+        SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as e,
+        SUM(CASE WHEN type='income' THEN amount ELSE -amount END) as b
+        FROM {$tx} WHERE business_id = %d AND DATE_FORMAT(created_at,'%Y-%m')=%s", $business_id, $period));
+    $data = [
+        'period'=>$period,'business_id'=>$business_id,
+        'total_income'=>$stats->i??0,'total_expense'=>$stats->e??0,'balance'=>$stats->b??0
+    ];
+    $exists = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$sm} WHERE business_id = %d AND period=%s", $business_id, $period));
+    if ($exists) $wpdb->update($sm,$data,['id'=>$exists]);
+    else { $data['rand_id']=bntm_rand_id(); $wpdb->insert($sm,$data); }
+}
+
+function fn_get_inventory_potential_revenue($business_id = 0) {
+    global $wpdb;
+
+    $business_id = absint($business_id ?: fn_get_current_business_id());
+    $table = $wpdb->prefix . 'in_products';
+    if ($business_id <= 0 || !$wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table))) {
+        return 0.0;
+    }
+
+    return floatval($wpdb->get_var($wpdb->prepare(
+        "SELECT SUM(stock_quantity * selling_price) FROM {$table} WHERE business_id = %d AND inventory_type != %s",
+        $business_id,
+        'Raw Material'
+    )));
+}
+
+function fn_get_unrealized_order_profit($business_id = 0) {
+    global $wpdb;
+
+    $business_id = absint($business_id ?: fn_get_current_business_id());
+    $orders_table = $wpdb->prefix . 'om_orders';
+    $items_table = $wpdb->prefix . 'om_order_items';
+    $products_table = $wpdb->prefix . 'in_products';
+
+    if ($business_id <= 0 || !$wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $orders_table))) {
+        return 0.0;
+    }
+
+    $rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT o.id, o.total, COALESCE(SUM(oi.quantity * COALESCE(p.cost_per_unit, 0)), 0) AS estimated_cost
+         FROM {$orders_table} o
+         LEFT JOIN {$items_table} oi ON oi.order_id = o.id AND oi.business_id = o.business_id
+         LEFT JOIN {$products_table} p ON p.id = oi.inventory_product_id AND p.business_id = o.business_id
+         WHERE o.business_id = %d
+           AND o.status != %s
+           AND o.payment_status != %s
+         GROUP BY o.id, o.total",
+        $business_id,
+        'cancelled',
+        'paid'
+    ));
+
+    $profit = 0.0;
+    foreach ($rows as $row) {
+        $profit += floatval($row->total) - floatval($row->estimated_cost);
+    }
+
+    return $profit;
+}
+
+/* ============================================================
+   TAB: DASHBOARD
+   ============================================================ */
+function fn_dashboard_tab() {
+    $currency = fn_currency();
+    $stats    = fn_get_stats();
+    $series   = fn_get_monthly_series(6);
+    $fixed    = fn_get_recurring_total();
+    $target   = floatval( bntm_get_setting('fn_monthly_revenue_target', 0) );
+    $business_id = fn_get_current_business_id();
+    $potential_revenue = fn_get_inventory_potential_revenue($business_id);
+    $unrealized_profit = fn_get_unrealized_order_profit($business_id);
+ 
+    global $wpdb;
+    $y = date('Y'); $m = date('m');
+    $bt = $wpdb->prefix . 'fn_budgets';
+    $budgets_exist   = $wpdb->get_var("SHOW TABLES LIKE '{$bt}'");
+    $budget_income   = $budgets_exist ? floatval($wpdb->get_var($wpdb->prepare("SELECT SUM(budgeted_amount) FROM {$bt} WHERE business_id=%d AND period=%s AND budget_type='income'",  $business_id, "$y-$m"))) : 0;
+    $budget_expense  = $budgets_exist ? floatval($wpdb->get_var($wpdb->prepare("SELECT SUM(budgeted_amount) FROM {$bt} WHERE business_id=%d AND period=%s AND budget_type='expense'", $business_id, "$y-$m"))) : 0;
+ 
+    /* ── Derived metrics ── */
+    $gross_margin    = $stats['month_income'] > 0 ? ( $stats['month_income'] - $stats['month_expense'] ) / $stats['month_income'] * 100 : 0;
+    $net_margin      = $stats['total_income'] > 0 ? $stats['balance'] / $stats['total_income'] * 100 : 0;
+    $expense_ratio   = $stats['month_income'] > 0 ? $stats['month_expense'] / $stats['month_income'] * 100 : 0;
+ 
+    /* ── Runway calculation ──
+       runway = all-time balance ÷ monthly fixed costs
+       If net monthly cash flow is positive we also compute "months until target" */
+    $balance          = $stats['balance'] + $potential_revenue + $unrealized_profit;
+    $monthly_burn     = $fixed > 0 ? $fixed : max($stats['month_expense'], 0.01);
+    $runway_months    = $monthly_burn > 0 ? floor( $balance / $monthly_burn ) : 999;
+    $monthly_net      = $stats['month_net'];
+    $cash_flow_status = $monthly_net >= 0 ? 'positive' : 'negative';
+ 
+    // Project balance for next 12 months using current month net as trend
+    $proj_labels  = [];
+    $proj_balance = [];
     
+    $running_bal = $balance;
+    $monthly_burn = $fixed > 0 ? $fixed : 0;
+    
+    $max_months = 24; // you can adjust
+    
+    for ($i = 1; $i <= $max_months; $i++) {
+        $proj_labels[] = '"' . date('M y', strtotime("+{$i} months")) . '"';
+    
+        // PURE RUNWAY: subtract only recurring expenses
+        $running_bal -= $monthly_burn;
+    
+        $proj_balance[] = round($running_bal, 2);
+    
+        if ($running_bal <= 0) break; // stop when money runs out
+    }
+    // Find when balance goes negative in projection
+    $runway_cross = null;
+    foreach ($proj_balance as $idx => $bal) {
+        if ($bal <= 0) {
+            $runway_cross = $idx + 1;
+            break;
+        }
+    }
+ 
+    /* ── Chart series ── */
+    $labels = []; $income_arr = []; $expense_arr = [];
+    foreach ( $series as $row ) {
+        $labels[]      = '"' . date('M y', strtotime($row->period.'-01')) . '"';
+        $income_arr[]  = floatval($row->income);
+        $expense_arr[] = floatval($row->expense);
+    }
+    if ( empty($labels) ) { $labels = ['""']; $income_arr = [0]; $expense_arr = [0]; }
+ 
+    /* ── Category breakdowns ── */
+    $exp_breakdown = fn_get_category_breakdown('expense', $y, $m);
+    $inc_breakdown = fn_get_category_breakdown('income',  $y, $m);
+ 
+    /* ── Avg monthly revenue (last 3 months) ── */
+    $last3 = $wpdb->get_var($wpdb->prepare("SELECT AVG(inc) FROM (
+        SELECT SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as inc
+        FROM {$wpdb->prefix}fn_transactions
+        WHERE business_id = %d
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 3 MONTH)
+        GROUP BY DATE_FORMAT(created_at,'%Y-%m')
+    ) t", $business_id));
+    $avg_monthly_rev = floatval($last3);
+ 
+    /* ── Top expense category ── */
+    $top_exp_cat   = !empty($exp_breakdown) ? $exp_breakdown[0]->category : '—';
+    $top_exp_amt   = !empty($exp_breakdown) ? floatval($exp_breakdown[0]->total) : 0;
+ 
+    /* ── Break-even distance ── */
+    $be_gap = $fixed > 0 && $stats['month_income'] > 0
+        ? $stats['month_income'] - $fixed
+        : null;
+ 
+    ob_start(); ?>
+    <?php echo fn_js_head(); ?>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+        <div>
+            <h3 style="margin:0;font-size:18px;">Finance dashboard</h3>
+            <p style="margin:4px 0 0;color:var(--color-text-secondary);font-size:13px;">Cash position, inventory upside, and pending order profit in one view.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <a href="<?php echo add_query_arg('type','transactions',get_permalink()); ?>" class="bntm-btn-primary bntm-btn-small">+ Add Transaction</a>
+            <a href="<?php echo add_query_arg('type','recurring',get_permalink()); ?>" class="bntm-btn-secondary bntm-btn-small">Recurring</a>
+            <a href="<?php echo add_query_arg('type','budgets',get_permalink()); ?>" class="bntm-btn-secondary bntm-btn-small">Budgets</a>
+        </div>
+    </div>
+ 
+   <!-- ═══════════════════════════════════════════
+     ROW 1 — KPI grid (in-style stat cards)
+════════════════════════════════════════════ -->
+<style>
+.fn-stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px; margin-bottom:24px; }
+.fn-stat-card { background:var(--color-background-primary); padding:20px; border-radius:10px; display:flex; align-items:flex-start; gap:14px; border:1px solid var(--color-border-primary); transition:box-shadow .2s; }
+.fn-stat-card:hover { box-shadow:0 4px 12px var(--color-shadow); }
+.fn-stat-icon { width:44px; height:44px; border-radius:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.fn-stat-icon.ic-green  { background:#ecfdf5; color:#059669; }
+.fn-stat-icon.ic-blue   { background:#eff6ff; color:#2563eb; }
+.fn-stat-icon.ic-amber  { background:#fffbeb; color:#d97706; }
+.fn-stat-icon.ic-red    { background:#fef2f2; color:#dc2626; }
+.fn-stat-icon.ic-purple { background:#f5f3ff; color:#7c3aed; }
+.fn-stat-icon.ic-neutral{ background:#f3f4f6; color:#374151; }
+.fn-stat-content h3 { margin:0 0 4px; font-size:11px; color:var(--color-text-secondary); text-transform:uppercase; letter-spacing:.06em; font-weight:600; }
+.fn-stat-number { font-size:22px; font-weight:700; color:var(--color-text-primary); margin:0; line-height:1.1; }
+.fn-stat-content small { color:var(--color-text-secondary); font-size:11px; }
+.fn-stat-bar { height:3px; border-radius:2px; margin-top:8px; }
+</style>
+
+<div class="fn-stat-grid">
+
+    <!-- Revenue this month -->
+    <div class="fn-stat-card">
+        <div class="fn-stat-icon ic-green">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>Revenue this month</h3>
+            <p class="fn-stat-number" style="color:#10b981;"><?php echo fn_fmt($stats['month_income']); ?></p>
+            <small style="color:<?php echo $stats['growth_pct']>=0?'#10b981':'#ef4444'; ?>;">
+                <?php echo ($stats['growth_pct']>=0?'▲':'▼').abs($stats['growth_pct']); ?>% vs last month
+            </small>
+            <?php if ($target > 0) : $pct = min(100, round($stats['month_income']/$target*100)); ?>
+            <div class="fn-bar-track" style="margin-top:8px;"><div class="fn-bar-fill" style="width:<?php echo $pct; ?>%;background:#10b981;"></div></div>
+            <small><?php echo $pct; ?>% of <?php echo fn_fmt($target); ?> target</small>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <!-- Net this month -->
+    <div class="fn-stat-card">
+        <div class="fn-stat-icon <?php echo $stats['month_net']>=0?'ic-green':'ic-red'; ?>">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>Net this month</h3>
+            <p class="fn-stat-number" style="color:<?php echo $stats['month_net']>=0?'#10b981':'#ef4444'; ?>;"><?php echo fn_fmt($stats['month_net']); ?></p>
+            <small>Gross margin: <?php echo round($gross_margin,1); ?>%</small>
+            <div class="fn-bar-track" style="margin-top:8px;"><div class="fn-bar-fill" style="width:<?php echo min(100,max(0,abs($gross_margin))); ?>%;background:<?php echo $stats['month_net']>=0?'#10b981':'#ef4444'; ?>;"></div></div>
+        </div>
+    </div>
+
+    <!-- All-time balance -->
+    <div class="fn-stat-card">
+        <div class="fn-stat-icon <?php echo $balance>=0?'ic-blue':'ic-red'; ?>">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>All-time balance</h3>
+            <p class="fn-stat-number" style="color:<?php echo $balance>=0?'#3b82f6':'#ef4444'; ?>;"><?php echo fn_fmt($balance); ?></p>
+            <small>Net margin: <?php echo round($net_margin,1); ?>%</small>
+        </div>
+    </div>
+
+    <!-- Fixed costs -->
+    <div class="fn-stat-card">
+        <div class="fn-stat-icon ic-amber">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>Fixed costs / mo</h3>
+            <p class="fn-stat-number" style="color:#f59e0b;"><?php echo fn_fmt($fixed); ?></p>
+            <small><?php echo $stats['month_income']>0 ? round($fixed/$stats['month_income']*100,1).'% of revenue' : 'No revenue yet'; ?></small>
+            <div class="fn-bar-track" style="margin-top:8px;"><div class="fn-bar-fill" style="width:<?php echo $stats['month_income']>0?min(100,round($fixed/$stats['month_income']*100)):0; ?>%;background:#f59e0b;"></div></div>
+        </div>
+    </div>
+
+    <!-- Avg 3-month revenue -->
+    <div class="fn-stat-card">
+        <div class="fn-stat-icon ic-purple">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>Avg revenue (3 mo)</h3>
+            <p class="fn-stat-number"><?php echo fn_fmt($avg_monthly_rev); ?></p>
+            <small>Monthly rolling average</small>
+        </div>
+    </div>
+
+    <!-- Expense ratio -->
+    <div class="fn-stat-card">
+        <?php
+        $er_cls = $expense_ratio<=70 ? 'ic-green' : ($expense_ratio<=90 ? 'ic-amber' : 'ic-red');
+        $er_col = $expense_ratio<=70 ? '#10b981' : ($expense_ratio<=90 ? '#f59e0b' : '#ef4444');
+        ?>
+        <div class="fn-stat-icon <?php echo $er_cls; ?>">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>Expense ratio</h3>
+            <p class="fn-stat-number" style="color:<?php echo $er_col; ?>;"><?php echo round($expense_ratio,1); ?>%</p>
+            <small>Expenses ÷ Revenue</small>
+            <div class="fn-bar-track" style="margin-top:8px;"><div class="fn-bar-fill" style="width:<?php echo min(100,$expense_ratio); ?>%;background:<?php echo $er_col; ?>;"></div></div>
+        </div>
+    </div>
+
+    <div class="fn-stat-card">
+        <div class="fn-stat-icon ic-blue">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M3 7h18"/><path d="M6 11h12"/><path d="M9 15h6"/><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>Potential inventory revenue</h3>
+            <p class="fn-stat-number" style="color:#3b82f6;"><?php echo fn_fmt($potential_revenue); ?></p>
+            <small>Estimated from current sellable stock in Inventory.</small>
+        </div>
+    </div>
+
+    <div class="fn-stat-card">
+        <div class="fn-stat-icon ic-purple">
+            <svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+        </div>
+        <div class="fn-stat-content" style="flex:1;min-width:0;">
+            <h3>Unrealized profit</h3>
+            <p class="fn-stat-number" style="color:<?php echo $unrealized_profit >= 0 ? '#7c3aed' : '#ef4444'; ?>;"><?php echo fn_fmt($unrealized_profit); ?></p>
+            <small>Estimated profit from unpaid orders still open in Order Management.</small>
+        </div>
+    </div>
+
+</div>
+ 
+    <!-- ═══════════════════════════════════════════
+         ROW 2 — Runway banner
+    ════════════════════════════════════════════ -->
+    <?php
+    if ($balance > 0 && $monthly_burn > 0) :
+        $runway_col  = $runway_months >= 6 ? '#10b981' : ($runway_months >= 3 ? '#f59e0b' : '#ef4444');
+        $runway_bg   = $runway_months >= 6 ? 'rgba(16,185,129,.08)' : ($runway_months >= 3 ? 'rgba(245,158,11,.08)' : 'rgba(239,68,68,.08)');
+        $runway_border = $runway_months >= 6 ? 'rgba(16,185,129,.25)' : ($runway_months >= 3 ? 'rgba(245,158,11,.25)' : 'rgba(239,68,68,.25)');
+        $runway_icon = $runway_months >= 6 ? '▲' : ($runway_months >= 3 ? '●' : '▼');
+        $runway_msg  = $runway_months >= 6
+            ? 'Healthy runway. Current balance covers at least ' . $runway_months . ' months of fixed costs.'
+            : ($runway_months >= 3
+                ? 'Moderate runway. ' . $runway_months . ' months of fixed costs covered — monitor closely.'
+                : 'Low runway. Balance covers only ' . $runway_months . ' month(s) of fixed costs.');
+        if ($runway_cross !== null) {
+            $runway_msg .= ' Projected balance turns negative in ~' . $runway_cross . ' month(s) at current trajectory.';
+        } elseif ($cash_flow_status === 'positive') {
+            $runway_msg .= ' Cash flow is positive — balance is projected to grow.';
+        }
+    ?>
+    <div style="border:1px solid <?php echo $runway_border; ?>;background:<?php echo $runway_bg; ?>;border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+        <div style="flex:0 0 auto;text-align:center;min-width:90px;">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--color-text-secondary);margin-bottom:4px;">Runway</div>
+            <div style="font-size:30px;font-weight:600;color:<?php echo $runway_col; ?>;line-height:1.1;"><?php echo $runway_months >= 999 ? '∞' : $runway_months; ?></div>
+            <div style="font-size:11px;color:var(--color-text-secondary);">months</div>
+        </div>
+        <div style="flex:1;min-width:200px;">
+            <div style="font-size:13px;font-weight:500;color:<?php echo $runway_col; ?>;margin-bottom:4px;"><?php echo $runway_icon; ?> <?php echo $runway_months >= 6 ? 'Healthy' : ($runway_months >= 3 ? 'Watch' : 'Critical'); ?></div>
+            <div style="font-size:13px;color:var(--color-text-secondary);line-height:1.5;"><?php echo $runway_msg; ?></div>
+        </div>
+        <div style="flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr;gap:10px;min-width:220px;">
+            <div style="background:var(--color-background-primary);border-radius:8px;padding:10px;border:1px solid var(--color-border-tertiary);">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-secondary);margin-bottom:2px;">Balance</div>
+                <div style="font-size:14px;font-weight:500;color:<?php echo $balance>=0?'#3b82f6':'#ef4444'; ?>;"><?php echo fn_fmt($balance); ?></div>
+            </div>
+            <div style="background:var(--color-background-primary);border-radius:8px;padding:10px;border:1px solid var(--color-border-tertiary);">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-secondary);margin-bottom:2px;">Monthly burn</div>
+                <div style="font-size:14px;font-weight:500;color:#f59e0b;"><?php echo fn_fmt($monthly_burn); ?></div>
+            </div>
+            <div style="background:var(--color-background-primary);border-radius:8px;padding:10px;border:1px solid var(--color-border-tertiary);">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-secondary);margin-bottom:2px;">Mo. cash flow</div>
+                <div style="font-size:14px;font-weight:500;color:<?php echo $monthly_net>=0?'#10b981':'#ef4444'; ?>;"><?php echo fn_fmt($monthly_net); ?></div>
+            </div>
+            <div style="background:var(--color-background-primary);border-radius:8px;padding:10px;border:1px solid var(--color-border-tertiary);">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-secondary);margin-bottom:2px;">Break-even gap</div>
+                <div style="font-size:14px;font-weight:500;color:<?php echo $be_gap!==null&&$be_gap>=0?'#10b981':'#ef4444'; ?>;">
+                    <?php echo $be_gap !== null ? fn_fmt($be_gap) : '—'; ?>
+                </div>
+            </div>
+            <div style="background:var(--color-background-primary);border-radius:8px;padding:10px;border:1px solid var(--color-border-tertiary);">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-secondary);margin-bottom:2px;">Potential revenue</div>
+                <div style="font-size:14px;font-weight:500;color:#3b82f6;"><?php echo fn_fmt($potential_revenue); ?></div>
+            </div>
+            <div style="background:var(--color-background-primary);border-radius:8px;padding:10px;border:1px solid var(--color-border-tertiary);">
+                <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-secondary);margin-bottom:2px;">Unrealized profit</div>
+                <div style="font-size:14px;font-weight:500;color:<?php echo $unrealized_profit >= 0 ? '#7c3aed' : '#ef4444'; ?>;"><?php echo fn_fmt($unrealized_profit); ?></div>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+ 
+    <!-- ═══════════════════════════════════════════
+         ROW 3 — Three charts
+    ════════════════════════════════════════════ -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:20px;">
+ 
+        <!-- Chart 1: Revenue vs Expense trend -->
+        <div class="fn-chart-box">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <h4 style="margin:0;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Revenue vs expenses</h4>
+                <div style="display:flex;gap:10px;font-size:11px;color:var(--color-text-secondary);">
+                    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:3px;background:#10b981;border-radius:2px;display:inline-block;"></span>Revenue</span>
+                    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:3px;background:#ef4444;border-radius:2px;display:inline-block;"></span>Expenses</span>
+                </div>
+            </div>
+            <div style="position:relative;height:200px;">
+                <canvas id="fn-trend-chart"></canvas>
+            </div>
+        </div>
+ 
+        <!-- Chart 2: Monthly net cash flow -->
+        <div class="fn-chart-box">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <h4 style="margin:0;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Monthly net cash flow</h4>
+                <div style="display:flex;gap:10px;font-size:11px;color:var(--color-text-secondary);">
+                    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;background:rgba(16,185,129,.7);border-radius:2px;display:inline-block;"></span>Positive</span>
+                    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;background:rgba(239,68,68,.7);border-radius:2px;display:inline-block;"></span>Negative</span>
+                </div>
+            </div>
+            <div style="position:relative;height:200px;">
+                <canvas id="fn-cashflow-chart"></canvas>
+            </div>
+        </div>
+ 
+        <!-- Chart 3: Risk & efficiency gauges -->
+        <div class="fn-chart-box">
+            <h4 style="margin:0 0 12px;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Risk &amp; efficiency</h4>
+            <?php
+            $gauges = [
+                ['label'=>'Gross margin',     'val'=>round($gross_margin,1),  'suffix'=>'%', 'ok'=>40,  'warn'=>20,  'ok_inv'=>false, 'tip'=>'> 40% healthy'],
+                ['label'=>'Net margin',       'val'=>round($net_margin,1),    'suffix'=>'%', 'ok'=>15,  'warn'=>5,   'ok_inv'=>false, 'tip'=>'> 15% healthy'],
+                ['label'=>'Expense ratio',    'val'=>round($expense_ratio,1), 'suffix'=>'%', 'ok'=>70,  'warn'=>90,  'ok_inv'=>true,  'tip'=>'< 70% healthy'],
+                ['label'=>'Revenue vs target','val'=>$target>0?round($stats['month_income']/$target*100,1):0, 'suffix'=>'%','ok'=>90,'warn'=>60,'ok_inv'=>false,'tip'=>'> 90% healthy'],
+                ['label'=>'Fixed cost ratio', 'val'=>$stats['month_income']>0?round($fixed/$stats['month_income']*100,1):0,'suffix'=>'%','ok'=>40,'warn'=>70,'ok_inv'=>true,'tip'=>'< 40% healthy'],
+            ];
+            foreach ($gauges as $g) :
+                $v = $g['val']; $inv = !empty($g['ok_inv']);
+                if ($inv) { $col = $v<=$g['ok']?'#10b981':($v<=$g['warn']?'#f59e0b':'#ef4444'); }
+                else       { $col = $v>=$g['ok']?'#10b981':($v>=$g['warn']?'#f59e0b':'#ef4444'); }
+                $bar = min(100,max(0,abs($v)));
+            ?>
+            <div style="margin-bottom:10px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                    <span style="color:var(--color-text-secondary);"><?php echo $g['label']; ?> <span style="font-size:10px;opacity:.6;"><?php echo $g['tip']; ?></span></span>
+                    <span style="font-weight:500;color:<?php echo $col; ?>;"><?php echo $v.$g['suffix']; ?></span>
+                </div>
+                <div class="fn-bar-track"><div class="fn-bar-fill" style="width:<?php echo $bar; ?>%;background:<?php echo $col; ?>;"></div></div>
+            </div>
+            <?php endforeach; ?>
+        </div>
+ 
+    </div>
+ 
+    <!-- ═══════════════════════════════════════════
+         ROW 4 — Projection runway chart + Profitability
+    ════════════════════════════════════════════ -->
+    <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:14px;margin-bottom:20px;">
+ 
+        <!-- Projection runway chart -->
+        <div class="fn-chart-box">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px;">
+                <div>
+                    <h4 style="margin:0 0 2px;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">12-month balance projection</h4>
+                    <div style="font-size:11px;color:var(--color-text-secondary);">Based on current growth rate (<?php echo $stats['growth_pct']; ?>%) &amp; fixed costs (<?php echo fn_fmt($fixed); ?>/mo)</div>
+                </div>
+                <div style="display:flex;gap:10px;font-size:11px;color:var(--color-text-secondary);">
+                    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:3px;background:#3b82f6;border-radius:2px;display:inline-block;"></span>Balance</span>
+                    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:3px;background:#10b981;border-radius:2px;display:inline-block;"></span>Income</span>
+                    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:3px;background:#ef4444;border-radius:2px;display:inline-block;"></span>Expense</span>
+                </div>
+            </div>
+            <div style="position:relative;height:220px;">
+                <canvas id="fn-runway-chart"></canvas>
+            </div>
+        </div>
+ 
+        <!-- Profitability breakdown table -->
+        <div class="fn-chart-box">
+            <h4 style="margin:0 0 12px;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Profitability — <?php echo date('M Y'); ?></h4>
+            <table class="fn-table" style="font-size:12px;">
+                <thead><tr><th>Metric</th><th style="text-align:right;">Amount</th><th style="text-align:right;">%</th></tr></thead>
+                <tbody>
+                <?php
+                $pb_rows = [
+                    ['Revenue',     $stats['month_income'],  100,  '#10b981'],
+                    ['Expenses',    $stats['month_expense'], $stats['month_income']>0?round($stats['month_expense']/$stats['month_income']*100,1):0, '#ef4444'],
+                    ['Gross profit',$stats['month_income']-$stats['month_expense'], round($gross_margin,1), '#3b82f6'],
+                    ['Fixed costs', $fixed, $stats['month_income']>0?round($fixed/$stats['month_income']*100,1):0, '#f59e0b'],
+                    ['Net profit',  $stats['month_income']-$stats['month_expense']-$fixed, $stats['month_income']>0?round(($stats['month_income']-$stats['month_expense']-$fixed)/$stats['month_income']*100,1):0, '#8b5cf6'],
+                ];
+                foreach ($pb_rows as $r) : $col=$r[3]; ?>
+                <tr>
+                    <td style="color:var(--color-text-primary);"><?php echo $r[0]; ?></td>
+                    <td style="text-align:right;font-weight:500;color:<?php echo $col; ?>;"><?php echo fn_fmt($r[1]); ?></td>
+                    <td style="text-align:right;color:var(--color-text-secondary);"><?php echo $r[2]; ?>%</td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+ 
+            <?php if ($be_gap !== null) : ?>
+            <div style="margin-top:12px;padding:10px;background:var(--color-background-tertiary);border-radius:8px;font-size:12px;">
+                <div style="font-weight:500;margin-bottom:4px;color:var(--color-text-primary);">Break-even status</div>
+                <div style="color:<?php echo $be_gap>=0?'#10b981':'#ef4444'; ?>;">
+                    <?php echo $be_gap >= 0
+                        ? '✓ Covering fixed costs by ' . fn_fmt($be_gap)
+                        : '✗ ' . fn_fmt(abs($be_gap)) . ' short of covering fixed costs'; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+        </div>
+ 
+    </div>
+ 
+    <!-- ═══════════════════════════════════════════
+         ROW 5 — Budget vs actual + Category breakdown
+    ════════════════════════════════════════════ -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px;">
+ 
+        <!-- Budget vs Actual -->
+        <div class="fn-chart-box">
+            <h4 style="margin:0 0 12px;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Budget vs actual — <?php echo date('M Y'); ?></h4>
+            <?php if (!$budget_income && !$budget_expense) : ?>
+            <p style="color:var(--color-text-secondary);font-size:13px;margin:0;">No budgets set. <a href="<?php echo add_query_arg('type','budgets',get_permalink()); ?>" style="color:#3b82f6;">Set budgets →</a></p>
+            <?php else : ?>
+ 
+            <?php if ($budget_income > 0) :
+                $pi = min(100, round($stats['month_income']/$budget_income*100));
+                $pi_col = $pi>=100?'#10b981':($pi>=70?'#f59e0b':'#ef4444'); ?>
+            <div style="margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                    <span style="color:var(--color-text-secondary);">Revenue</span>
+                    <span><?php echo fn_fmt($stats['month_income']); ?> <span style="color:var(--color-text-secondary);">/ <?php echo fn_fmt($budget_income); ?></span></span>
+                </div>
+                <div class="fn-bar-track"><div class="fn-bar-fill" style="width:<?php echo $pi; ?>%;background:#10b981;"></div></div>
+                <div style="font-size:11px;margin-top:2px;color:<?php echo $pi_col; ?>;"><?php echo $pi; ?>% achieved</div>
+            </div>
+            <?php endif; ?>
+ 
+            <?php if ($budget_expense > 0) :
+                $pe = min(100, round($stats['month_expense']/$budget_expense*100));
+                $pe_col = $pe<=80?'#10b981':($pe<=100?'#f59e0b':'#ef4444'); ?>
+            <div style="margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                    <span style="color:var(--color-text-secondary);">Expenses</span>
+                    <span><?php echo fn_fmt($stats['month_expense']); ?> <span style="color:var(--color-text-secondary);">/ <?php echo fn_fmt($budget_expense); ?></span></span>
+                </div>
+                <div class="fn-bar-track"><div class="fn-bar-fill" style="width:<?php echo $pe; ?>%;background:#ef4444;"></div></div>
+                <div style="font-size:11px;margin-top:2px;color:<?php echo $pe_col; ?>;"><?php echo $pe; ?>% used</div>
+            </div>
+            <?php endif; ?>
+ 
+            <?php if ($budget_income > 0 && $budget_expense > 0) :
+                $budgeted_net = $budget_income - $budget_expense;
+                $actual_net   = $stats['month_net'];
+                $net_var      = $actual_net - $budgeted_net;
+            ?>
+            <div style="border-top:1px solid var(--color-border-tertiary);padding-top:10px;margin-top:4px;font-size:12px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+                    <span style="color:var(--color-text-secondary);">Budgeted net</span>
+                    <span><?php echo fn_fmt($budgeted_net); ?></span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
+                    <span style="color:var(--color-text-secondary);">Actual net</span>
+                    <span style="color:<?php echo $actual_net>=0?'#10b981':'#ef4444'; ?>;"><?php echo fn_fmt($actual_net); ?></span>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-weight:500;">
+                    <span style="color:var(--color-text-secondary);">Variance</span>
+                    <span style="color:<?php echo $net_var>=0?'#10b981':'#ef4444'; ?>;"><?php echo ($net_var>=0?'+':'').fn_fmt($net_var); ?></span>
+                </div>
+            </div>
+            <?php endif; ?>
+            <?php endif; ?>
+        </div>
+ 
+        <!-- Expense category breakdown -->
+        <div class="fn-chart-box">
+            <h4 style="margin:0 0 12px;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Expenses by category — <?php echo date('M Y'); ?></h4>
+            <?php if (empty($exp_breakdown)) : ?>
+            <p style="color:var(--color-text-secondary);font-size:13px;margin:0;">No expenses recorded this month.</p>
+            <?php else :
+                $total_exp = array_sum(array_column((array)$exp_breakdown,'total'));
+                $colors = ['#ef4444','#f59e0b','#8b5cf6','#3b82f6','#10b981','#06b6d4','#f97316','#ec4899'];
+                foreach (array_slice((array)$exp_breakdown,0,6) as $idx => $cat) :
+                    $pct3 = $total_exp>0?round($cat->total/$total_exp*100):0;
+                    $col3 = $colors[$idx % count($colors)];
+            ?>
+            <div style="margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                    <span style="display:flex;align-items:center;gap:6px;color:var(--color-text-primary);">
+                        <span style="width:8px;height:8px;border-radius:50%;background:<?php echo $col3; ?>;flex-shrink:0;display:inline-block;"></span>
+                        <?php echo esc_html($cat->category); ?>
+                    </span>
+                    <span style="color:var(--color-text-secondary);"><?php echo fn_fmt($cat->total); ?> <span style="font-size:10px;">(<?php echo $pct3; ?>%)</span></span>
+                </div>
+                <div class="fn-bar-track"><div class="fn-bar-fill" style="width:<?php echo $pct3; ?>%;background:<?php echo $col3; ?>;"></div></div>
+            </div>
+            <?php endforeach; ?>
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border-tertiary);font-size:12px;display:flex;justify-content:space-between;">
+                <span style="color:var(--color-text-secondary);">Total expenses</span>
+                <span style="font-weight:500;color:#ef4444;"><?php echo fn_fmt($total_exp); ?></span>
+            </div>
+            <?php endif; ?>
+        </div>
+ 
+    </div>
+ 
+    <!-- ═══════════════════════════════════════════
+         ROW 6 — Income breakdown + Recent transactions
+    ════════════════════════════════════════════ -->
+    <div style="display:grid;grid-template-columns:1fr 2fr;gap:14px;margin-bottom:20px;">
+ 
+        <!-- Income category breakdown -->
+        <div class="fn-chart-box">
+            <h4 style="margin:0 0 12px;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Income by category — <?php echo date('M Y'); ?></h4>
+            <?php if (empty($inc_breakdown)) : ?>
+            <p style="color:var(--color-text-secondary);font-size:13px;margin:0;">No income recorded this month.</p>
+            <?php else :
+                $total_inc2 = array_sum(array_column((array)$inc_breakdown,'total'));
+                $inc_colors = ['#10b981','#3b82f6','#8b5cf6','#f59e0b','#06b6d4','#f97316'];
+                foreach ((array)$inc_breakdown as $idx2 => $cat2) :
+                    $pct4 = $total_inc2>0?round($cat2->total/$total_inc2*100):0;
+                    $col4 = $inc_colors[$idx2 % count($inc_colors)];
+            ?>
+            <div style="margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+                    <span style="display:flex;align-items:center;gap:6px;color:var(--color-text-primary);">
+                        <span style="width:8px;height:8px;border-radius:50%;background:<?php echo $col4; ?>;flex-shrink:0;display:inline-block;"></span>
+                        <?php echo esc_html($cat2->category); ?>
+                    </span>
+                    <span style="color:var(--color-text-secondary);"><?php echo $pct4; ?>%</span>
+                </div>
+                <div class="fn-bar-track"><div class="fn-bar-fill" style="width:<?php echo $pct4; ?>%;background:<?php echo $col4; ?>;"></div></div>
+            </div>
+            <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+ 
+        <!-- Recent transactions -->
+        <div class="fn-chart-box">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h4 style="margin:0;font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;">Recent transactions</h4>
+                <a href="<?php echo add_query_arg('type','transactions',get_permalink()); ?>" style="font-size:12px;color:#3b82f6;text-decoration:none;">View all →</a>
+            </div>
+            <?php
+            $recent = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$wpdb->prefix}fn_transactions WHERE business_id = %d ORDER BY created_at DESC LIMIT 8", $business_id));
+            if (empty($recent)) : ?>
+            <p style="color:var(--color-text-secondary);font-size:13px;margin:0;">No transactions yet.</p>
+            <?php else : ?>
+            <table class="fn-table" style="font-size:12px;">
+                <thead><tr><th>Date</th><th>Type</th><th>Category</th><th>Amount</th><th>Notes</th></tr></thead>
+                <tbody>
+                <?php foreach ($recent as $tx) : ?>
+                <tr>
+                    <td style="color:var(--color-text-secondary);"><?php echo date('M d', strtotime($tx->created_at)); ?></td>
+                    <td><span class="fn-badge fn-badge-<?php echo $tx->type; ?>"><?php echo ucfirst($tx->type); ?></span></td>
+                    <td><?php echo esc_html($tx->category); ?></td>
+                    <td style="font-weight:500;color:<?php echo $tx->type==='income'?'#10b981':'#ef4444'; ?>;"><?php echo fn_fmt($tx->amount); ?></td>
+                    <td style="color:var(--color-text-secondary);"><?php echo esc_html(mb_strimwidth($tx->notes??'',0,30,'…')); ?></td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <?php endif; ?>
+        </div>
+ 
+    </div>
+ 
+    <!-- Chart.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <script>
-    (function() {
-        const primaryColor = getComputedStyle(document.documentElement)
-            .getPropertyValue('--bntm-primary').trim() || '#374151';
-        
-        // Cash Flow Overview Chart (Line Chart)
-        const cashFlowCtx = document.getElementById('cashFlowChart');
-        if (cashFlowCtx) {
-            new Chart(cashFlowCtx, {
-                type: 'line',
-                data: {
-                    labels: <?php echo json_encode(array_column($stats['monthly_data'], 'month')); ?>,
-                    datasets: [
-                        {
-                            label: 'Income',
-                            data: <?php echo json_encode(array_column($stats['monthly_data'], 'income')); ?>,
-                            borderColor: '#10b981',
-                            backgroundColor: '#10b98120',
-                            tension: 0.4,
-                            fill: true,
-                            pointBackgroundColor: '#10b981',
-                            pointBorderColor: '#fff',
-                            pointBorderWidth: 2,
-                            pointRadius: 5,
-                            pointHoverRadius: 7
-                        },
-                        {
-                            label: 'Expenses',
-                            data: <?php echo json_encode(array_column($stats['monthly_data'], 'expense')); ?>,
-                            borderColor: '#ef4444',
-                            backgroundColor: '#ef444420',
-                            tension: 0.4,
-                            fill: true,
-                            pointBackgroundColor: '#ef4444',
-                            pointBorderColor: '#fff',
-                            pointBorderWidth: 2,
-                            pointRadius: 5,
-                            pointHoverRadius: 7
-                        }
-                    ]
+    (function(){
+        var C     = '<?php echo esc_js(fn_currency()); ?>';
+        var isDark= window.matchMedia('(prefers-color-scheme:dark)').matches;
+        var gc    = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)';
+        var tc    = isDark ? 'rgba(255,255,255,0.45)' : 'rgba(0,0,0,0.45)';
+        var fmt   = function(v){ return C + Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}); };
+        Chart.defaults.font.family = 'system-ui,sans-serif';
+        Chart.defaults.font.size   = 11;
+ 
+        var sharedScales = function(yLabel, xLabel){
+            return {
+                x: {
+                    grid: { color: gc },
+                    ticks: { color: tc, maxRotation: 45, autoSkip: false },
+                    title: { display: !!xLabel, text: xLabel||'', color: tc, font:{ size:10 } }
                 },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    plugins: {
-                        legend: {
-                            position: 'top',
-                            labels: {
-                                padding: 15,
-                                font: { size: 12 },
-                                color: '#374151',
-                                usePointStyle: true
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: '#111827',
-                            padding: 12,
-                            titleFont: { size: 14, weight: '600' },
-                            bodyFont: { size: 13 },
-                            cornerRadius: 8,
-                            callbacks: {
-                                label: function(context) {
-                                    return context.dataset.label + ': <?php echo $currency; ?>' + context.parsed.y.toFixed(2);
-                                }
-                            }
+                y: {
+                    grid: { color: gc },
+                    ticks: { color: tc, callback: function(v){ return C + v.toLocaleString('en-US',{maximumFractionDigits:0}); } },
+                    title: { display: !!yLabel, text: yLabel||'', color: tc, font:{ size:10 } }
+                }
+            };
+        };
+ 
+        var sharedPlugins = function(extra){
+            return Object.assign({
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: function(c){ return ' ' + c.dataset.label + ': ' + C + parseFloat(c.raw).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+                    }
+                }
+            }, extra||{});
+        };
+ 
+        /* ── Chart 1: Revenue vs Expense ── */
+        var labels  = [<?php echo implode(',', $labels); ?>];
+        var income  = [<?php echo implode(',', $income_arr); ?>];
+        var expense = [<?php echo implode(',', $expense_arr); ?>];
+ 
+        var ctx1 = document.getElementById('fn-trend-chart');
+        if(ctx1){ new Chart(ctx1, {
+            type: 'line',
+            data: { labels: labels, datasets: [
+                { label:'Revenue', data:income,  borderColor:'#10b981', backgroundColor:'rgba(16,185,129,.1)', tension:.4, fill:true, pointRadius:3, pointHoverRadius:5 },
+                { label:'Expenses',data:expense, borderColor:'#ef4444', backgroundColor:'rgba(239,68,68,.1)',  tension:.4, fill:true, pointRadius:3, pointHoverRadius:5 }
+            ]},
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                interaction: { mode:'index', intersect:false },
+                plugins: sharedPlugins(),
+                scales: sharedScales('Amount (<?php echo esc_js(fn_currency()); ?>)', 'Month')
+            }
+        }); }
+ 
+        /* ── Chart 2: Net cash flow ── */
+        var netFlow = income.map(function(v,i){ return v - expense[i]; });
+        var ctx2 = document.getElementById('fn-cashflow-chart');
+        if(ctx2){ new Chart(ctx2, {
+            type: 'bar',
+            data: { labels: labels, datasets: [
+                { label:'Net cash flow', data:netFlow,
+                  backgroundColor: netFlow.map(function(v){ return v>=0?'rgba(16,185,129,.75)':'rgba(239,68,68,.75)'; }),
+                  borderRadius: 4, borderSkipped: false }
+            ]},
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                interaction: { mode:'index', intersect:false },
+                plugins: sharedPlugins({ annotation:{ annotations:{
+                    zero:{ type:'line', yMin:0, yMax:0, borderColor: isDark?'rgba(255,255,255,.2)':'rgba(0,0,0,.2)', borderWidth:1, borderDash:[4,4] }
+                }}}),
+                scales: Object.assign(sharedScales('Net (<?php echo esc_js(fn_currency()); ?>)', 'Month'),{
+                    x: { grid:{color:gc}, ticks:{color:tc,maxRotation:45,autoSkip:false}, title:{display:true,text:'Month',color:tc,font:{size:10}} },
+                    y: { grid:{color:gc}, ticks:{color:tc, callback:function(v){
+                        return (v<0?'-':'')+C+Math.abs(v).toLocaleString('en-US',{maximumFractionDigits:0});
+                    }}, title:{display:true,text:'Net (<?php echo esc_js(fn_currency()); ?>)',color:tc,font:{size:10}} }
+                })
+            }
+        }); }
+ 
+       var projLabels  = [<?php echo implode(',', $proj_labels); ?>];
+        var projBalance = [<?php echo implode(',', $proj_balance); ?>];
+        
+        var ctx3 = document.getElementById('fn-runway-chart');
+        if(ctx3){ new Chart(ctx3, {
+            type: 'line',
+            data: { 
+                labels: projLabels, 
+                datasets: [
+                    { 
+                        label:'Runway balance',
+                        data: projBalance,
+                        borderColor:'#3b82f6',
+                        backgroundColor:'rgba(59,130,246,.1)',
+                        tension:.3,
+                        fill:true,
+                        pointRadius:3,
+                        pointHoverRadius:5,
+                        borderWidth:2
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode:'index', intersect:false },
+                plugins: sharedPlugins({
+                    annotation:{ annotations:{
+                        zeroLine:{
+                            type:'line',
+                            yMin:0,
+                            yMax:0,
+                            borderColor:'rgba(239,68,68,.5)',
+                            borderWidth:1,
+                            borderDash:[5,5]
                         }
+                    }}
+                }),
+                scales: {
+                    x: {
+                        grid:{color:gc},
+                        ticks:{color:tc,maxRotation:45,autoSkip:false},
+                        title:{display:true,text:'Month',color:tc,font:{size:10}}
                     },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            grid: {
-                                color: '#f3f4f6'
-                            },
-                            ticks: {
-                                color: '#6b7280',
-                                font: { size: 12 }
-                            }
-                        },
-                        x: {
-                            grid: {
-                                display: false
-                            },
-                            ticks: {
-                                color: '#6b7280',
-                                font: { size: 12 }
-                            }
-                        }
+                    y: {
+                        grid:{color:gc},
+                        ticks:{color:tc,callback:function(v){
+                            return (v<0?'-':'')+C+Math.abs(v).toLocaleString();
+                        }},
+                        title:{display:true,text:'Balance',color:tc,font:{size:10}}
                     }
                 }
-            });
-        }
-        
-        // Income Category Chart (Doughnut Chart)
-        const incomeCategoryCtx = document.getElementById('incomeCategoryChart');
-        if (incomeCategoryCtx) {
-            new Chart(incomeCategoryCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: <?php echo json_encode(array_column($stats['income_by_category'], 'category')); ?>,
-                    datasets: [{
-                        data: <?php echo json_encode(array_column($stats['income_by_category'], 'total')); ?>,
-                        backgroundColor: [
-                            '#10b981',
-                            '#059669',
-                            '#047857',
-                            '#065f46',
-                            '#064e3b'
-                        ],
-                        borderWidth: 2,
-                        borderColor: '#ffffff'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: {
-                                padding: 15,
-                                font: { size: 12 },
-                                color: '#374151'
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: '#111827',
-                            padding: 12,
-                            titleFont: { size: 14, weight: '600' },
-                            bodyFont: { size: 13 },
-                            cornerRadius: 8,
-                            callbacks: {
-                                label: function(context) {
-                                    const label = context.label || '';
-                                    const value = context.parsed || 0;
-                                    return label + ': <?php echo $currency; ?>' + value.toFixed(2);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
-        
-        // Expense Category Chart (Doughnut Chart)
-        const expenseCategoryCtx = document.getElementById('expenseCategoryChart');
-        if (expenseCategoryCtx) {
-            new Chart(expenseCategoryCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: <?php echo json_encode(array_column($stats['expense_by_category'], 'category')); ?>,
-                    datasets: [{
-                        data: <?php echo json_encode(array_column($stats['expense_by_category'], 'total')); ?>,
-                        backgroundColor: [
-                            '#ef4444',
-                            '#dc2626',
-                            '#b91c1c',
-                            '#991b1b',
-                            '#7f1d1d'
-                        ],
-                        borderWidth: 2,
-                        borderColor: '#ffffff'
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: true,
-                    plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: {
-                                padding: 15,
-                                font: { size: 12 },
-                                color: '#374151'
-                            }
-                        },
-                        tooltip: {
-                            backgroundColor: '#111827',
-                            padding: 12,
-                            titleFont: { size: 14, weight: '600' },
-                            bodyFont: { size: 13 },
-                            cornerRadius: 8,
-                            callbacks: {
-                                label: function(context) {
-                                    const label = context.label || '';
-                                    const value = context.parsed || 0;
-                                    return label + ': <?php echo $currency; ?>' + value.toFixed(2);
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        }
+            }
+        }); }
+ 
     })();
     </script>
     <?php
     return ob_get_clean();
 }
 
-function bntm_fn_get_dashboard_stats() {
+/* ============================================================
+   TAB: RECURRING EXPENSES
+   ============================================================ */
+function fn_recurring_tab() {
     global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    
-    // Basic stats
-    $stats = $wpdb->get_row("
-        SELECT 
-            SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as total_income,
-            SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as total_expense,
-            SUM(CASE WHEN type='income' THEN amount ELSE -amount END) as balance
-        FROM {$table}
-    ");
-    
-    $month_stats = $wpdb->get_row("
-        SELECT 
-            SUM(CASE WHEN type='income' THEN amount ELSE -amount END) as month_balance
-        FROM {$table}
-        WHERE MONTH(created_at) = MONTH(CURRENT_DATE())
-        AND YEAR(created_at) = YEAR(CURRENT_DATE())
-    ");
-    
-    // Monthly data (last 6 months)
-    $monthly_data = $wpdb->get_results("
-        SELECT 
-            DATE_FORMAT(created_at, '%b %Y') as month,
-            SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as income,
-            SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as expense
-        FROM {$table}
-        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-        GROUP BY YEAR(created_at), MONTH(created_at)
-        ORDER BY YEAR(created_at), MONTH(created_at)
-    ", ARRAY_A);
-    
-    // If no data, create empty months
-    if (empty($monthly_data)) {
-        $monthly_data = [];
-        for ($i = 5; $i >= 0; $i--) {
-            $monthly_data[] = [
-                'month' => date('M Y', strtotime("-$i months")),
-                'income' => 0,
-                'expense' => 0
-            ];
-        }
-    }
-    
-    // Income by category
-    $income_by_category = $wpdb->get_results("
-        SELECT category, SUM(amount) as total
-        FROM {$table}
-        WHERE type = 'income'
-        GROUP BY category
-        ORDER BY total DESC
-        LIMIT 5
-    ", ARRAY_A);
-    
-    // Expense by category
-    $expense_by_category = $wpdb->get_results("
-        SELECT category, SUM(amount) as total
-        FROM {$table}
-        WHERE type = 'expense'
-        GROUP BY category
-        ORDER BY total DESC
-        LIMIT 5
-    ", ARRAY_A);
-    
-    return [
-        'total_income' => $stats->total_income ?? 0,
-        'total_expense' => $stats->total_expense ?? 0,
-        'balance' => $stats->balance ?? 0,
-        'month_balance' => $month_stats->month_balance ?? 0,
-        'monthly_data' => $monthly_data,
-        'income_by_category' => $income_by_category ?: [],
-        'expense_by_category' => $expense_by_category ?: []
-    ];
+    $t        = $wpdb->prefix . 'fn_recurring_expenses';
+    $bid      = fn_get_current_business_id();
+    $currency = fn_currency();
+    $nonce    = wp_create_nonce('bntm_fn_action');
+
+    if (!$wpdb->get_var("SHOW TABLES LIKE '{$t}'")) bntm_fn_create_tables();
+    $items = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$t} WHERE business_id=%d ORDER BY is_active DESC, name ASC", $bid));
+
+    $monthly_total = fn_get_recurring_total();
+
+    // Use expense categories from settings (same source as Transactions tab)
+    $expense_cats = fn_get_categories_for_business('expense', $bid);
+
+    ob_start(); ?>
+    <?php echo fn_js_head(); ?>
+    <div class="bntm-form-section">
+        <div class="fn-section-hdr">
+            <div>
+                <h3 style="margin:0 0 4px;">Recurring expenses</h3>
+                <p style="font-size:13px;color:var(--color-text-secondary);margin:0;">Monthly equivalent: <strong><?php echo fn_fmt($monthly_total); ?></strong></p>
+            </div>
+            <button class="bntm-btn-primary bntm-btn-small" id="fn-add-recurring-btn">+ Add expense</button>
+        </div>
+
+        <!-- Add/Edit form (hidden by default) -->
+        <div id="fn-recurring-form-wrap" style="display:none;background:var(--color-background-secondary);border-radius:10px;padding:16px;margin-bottom:16px;">
+            <h4 style="margin:0 0 12px;font-size:14px;" id="fn-recurring-form-title">Add recurring expense</h4>
+            <form id="fn-recurring-form" class="bntm-form">
+                <input type="hidden" id="fr-id" name="expense_id" value="0">
+                <div class="bntm-form-row">
+                    <div class="bntm-form-group">
+                        <label>Expense name *</label>
+                        <input type="text" id="fr-name" name="name" class="fn-input" required placeholder="e.g. Rent">
+                    </div>
+                    <div class="bntm-form-group">
+                        <label>Amount (<?php echo $currency; ?>) *</label>
+                        <input type="number" id="fr-amount" name="amount" class="fn-input" step="0.01" min="0" required>
+                    </div>
+                    <div class="bntm-form-group">
+                        <label>Category</label>
+                        <select id="fr-category" name="category" class="fn-input">
+                            <?php foreach ($expense_cats as $cat) : ?>
+                            <option value="<?php echo esc_attr($cat); ?>"><?php echo esc_html($cat); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div class="bntm-form-group">
+                        <label>Frequency</label>
+                        <select id="fr-freq" name="frequency" class="fn-input">
+                            <option value="monthly">Monthly</option>
+                            <option value="weekly">Weekly</option>
+                            <option value="annual">Annual</option>
+                        </select>
+                    </div>
+                </div>
+                <input type="hidden" name="_ajax_nonce" value="<?php echo $nonce; ?>">
+                <input type="hidden" name="action" value="fn_save_recurring">
+                <button type="submit" class="bntm-btn-primary bntm-btn-small">Save</button>
+                <button type="button" class="bntm-btn-secondary bntm-btn-small" id="fn-recurring-cancel" style="margin-left:6px;">Cancel</button>
+                <div id="fn-recurring-msg" style="margin-top:6px;"></div>
+            </form>
+        </div>
+
+        <?php if (empty($items)) : ?>
+        <p style="color:var(--color-text-secondary);">No recurring expenses yet. Add rent, payroll, utilities, etc.</p>
+        <?php else : ?>
+        <table class="fn-table">
+            <thead><tr><th>Name</th><th>Category</th><th>Amount</th><th>Frequency</th><th>Monthly equiv.</th><th>Active</th><th></th></tr></thead>
+            <tbody>
+            <?php foreach ($items as $item) :
+                $mo_equiv = $item->frequency==='monthly' ? $item->amount : ($item->frequency==='weekly' ? $item->amount*4.33 : $item->amount/12);
+            ?>
+            <tr style="<?php echo $item->is_active ? '' : 'opacity:.5;'; ?>">
+                <td style="font-weight:500;"><?php echo esc_html($item->name); ?></td>
+                <td><?php echo esc_html($item->category); ?></td>
+                <td><?php echo fn_fmt($item->amount); ?></td>
+                <td><?php echo ucfirst($item->frequency); ?></td>
+                <td style="color:#f59e0b;"><?php echo fn_fmt($mo_equiv); ?></td>
+                <td><span class="fn-badge <?php echo $item->is_active?'fn-badge-ok':'fn-badge-bad'; ?>"><?php echo $item->is_active?'Active':'Inactive'; ?></span></td>
+                <td>
+                    <button class="bntm-btn-small bntm-btn-secondary fn-rec-edit"
+                        data-id="<?php echo $item->id; ?>"
+                        data-name="<?php echo esc_attr($item->name); ?>"
+                        data-amount="<?php echo $item->amount; ?>"
+                        data-cat="<?php echo esc_attr($item->category); ?>"
+                        data-freq="<?php echo $item->frequency; ?>">Edit</button>
+                    <button class="bntm-btn-small bntm-btn-danger fn-rec-del" data-id="<?php echo $item->id; ?>">Delete</button>
+                </td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+            <tfoot>
+                <tr style="font-weight:600;">
+                    <td colspan="4">Total monthly fixed costs</td>
+                    <td style="color:#f59e0b;"><?php echo fn_fmt($monthly_total); ?></td>
+                    <td colspan="2"></td>
+                </tr>
+            </tfoot>
+        </table>
+        <?php endif; ?>
+    </div>
+    <script>
+    (function(){
+        var wrap = document.getElementById('fn-recurring-form-wrap');
+
+        document.getElementById('fn-add-recurring-btn').addEventListener('click', function(){
+            document.getElementById('fn-recurring-form-title').textContent = 'Add recurring expense';
+            document.getElementById('fr-id').value     = '0';
+            document.getElementById('fr-name').value   = '';
+            document.getElementById('fr-amount').value = '';
+            document.getElementById('fr-category').value = document.getElementById('fr-category').options[0].value;
+            document.getElementById('fr-freq').value   = 'monthly';
+            wrap.style.display = 'block';
+            document.getElementById('fr-name').focus();
+        });
+
+        document.getElementById('fn-recurring-cancel').addEventListener('click', function(){
+            wrap.style.display = 'none';
+        });
+
+        document.querySelectorAll('.fn-rec-edit').forEach(function(btn){
+            btn.addEventListener('click', function(){
+                document.getElementById('fn-recurring-form-title').textContent = 'Edit expense';
+                document.getElementById('fr-id').value     = this.dataset.id;
+                document.getElementById('fr-name').value   = this.dataset.name;
+                document.getElementById('fr-amount').value = this.dataset.amount;
+                document.getElementById('fr-freq').value   = this.dataset.freq;
+                // Set category select to matching option
+                var sel = document.getElementById('fr-category');
+                var cat = this.dataset.cat;
+                var matched = false;
+                for (var i = 0; i < sel.options.length; i++) {
+                    if (sel.options[i].value === cat) { sel.selectedIndex = i; matched = true; break; }
+                }
+                // If saved category not in list, temporarily add it
+                if (!matched) {
+                    var opt = document.createElement('option');
+                    opt.value = cat; opt.textContent = cat; opt.dataset.temp = '1';
+                    sel.appendChild(opt);
+                    sel.value = cat;
+                }
+                wrap.style.display = 'block';
+                document.getElementById('fr-name').focus();
+            });
+        });
+
+        document.getElementById('fn-recurring-form').addEventListener('submit', function(e){
+            e.preventDefault();
+            var btn = this.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = 'Saving...';
+            fetch(ajaxurl, {method:'POST', body:new FormData(this)}).then(r=>r.json()).then(j=>{
+                document.getElementById('fn-recurring-msg').innerHTML = '<div class="bntm-notice bntm-notice-'+(j.success?'success':'error')+'">'+j.data+'</div>';
+                btn.disabled = false; btn.textContent = 'Save';
+                if (j.success) setTimeout(()=>location.reload(), 1000);
+            });
+        });
+
+        document.querySelectorAll('.fn-rec-del').forEach(function(btn){
+            btn.addEventListener('click', function(){
+                if (!confirm('Delete this recurring expense?')) return;
+                var fd = new FormData();
+                fd.append('action','fn_delete_recurring');
+                fd.append('expense_id', this.dataset.id);
+                fd.append('_ajax_nonce', fnNonce);
+                fetch(ajaxurl, {method:'POST', body:fd}).then(r=>r.json()).then(j=>{
+                    if (j.success) location.reload(); else alert(j.data);
+                });
+            });
+        });
+    })();
+    </script>
+    <?php return ob_get_clean();
 }
 
-function bntm_shortcode_fn_page() {
-    if (!is_user_logged_in()) {
-        return '<div class="bntm-notice bntm-notice-error">Please log in to access Finance.</div>';
-    }
-    
-    $currency = bntm_get_setting('ec_currency', 'PHP');
-    $type = isset($_GET['type']) ? sanitize_text_field($_GET['type']) : 'dashboard';
-    
-    ob_start();
-    ?>
-    <div class="bntm-tabs">
-        <a href="<?php echo add_query_arg('type', 'dashboard', get_permalink()); ?>" class="bntm-tab <?php echo $type === 'dashboard' ? 'active' : ''; ?>">Dashboard</a>
-        <a href="<?php echo add_query_arg('type', 'transactions', get_permalink()); ?>" class="bntm-tab <?php echo $type === 'transactions' ? 'active' : ''; ?>">Transactions</a>
-       
-        <a href="<?php echo add_query_arg('type', 'reports', get_permalink()); ?>" class="bntm-tab <?php echo $type === 'reports' ? 'active' : ''; ?>">Reports</a>
-        <a href="<?php echo add_query_arg('type', 'export', get_permalink()); ?>" class="bntm-tab <?php echo $type === 'export' ? 'active' : ''; ?>">Export</a>
-        <a href="<?php echo add_query_arg('type', 'settings', get_permalink()); ?>" class="bntm-tab <?php echo $type === 'settings' ? 'active' : ''; ?>">Settings</a>
-    </div>
-    
-    <div class="bntm-tab-content" style="margin-top: 20px;">
-        <?php
-        switch ($type) {
-            case 'dashboard':
-                echo bntm_shortcode_fn_dashboard();
-            case 'transactions':
-                echo bntm_fn_transactions_tab();
-                break;
-            
-            case 'reports':
-                echo bntm_fn_reports_tab();
-                break;
-            case 'export':
-                echo bntm_fn_export_tab();
-                break;
-            case 'settings':
-                echo bntm_fn_settings_tab();
-                break;
-        }
-        ?>
-    </div>
-    <?php
-    $content = ob_get_clean();
-    return bntm_universal_container('Finance', $content);
-}
-/* ---------- TAB CONTENT ---------- */
-function bntm_fn_transactions_tab() {
-    $currency = bntm_get_setting('ec_currency', 'PHP');
-    $income_cats = json_decode(bntm_get_setting('fn_categories_income', '[]'), true);
-    $expense_cats = json_decode(bntm_get_setting('fn_categories_expense', '[]'), true);
-    $nonce = wp_create_nonce('bntm_fn_action');
-    
-    ob_start();
-    ?>
+/* ============================================================
+   TAB: BUDGETS
+   ============================================================ */
+function fn_budgets_tab() {
+    global $wpdb;
+    $bt       = $wpdb->prefix . 'fn_budgets';
+    $tt       = $wpdb->prefix . 'fn_transactions';
+    $bid      = fn_get_current_business_id();
+    $currency = fn_currency();
+    $nonce    = wp_create_nonce('bntm_fn_action');
+    $y        = isset($_GET['by']) ? intval($_GET['by']) : date('Y');
+    $m        = isset($_GET['bm']) ? intval($_GET['bm']) : date('m');
+    $period   = sprintf('%04d-%02d',$y,$m);
+
+    if (!$wpdb->get_var("SHOW TABLES LIKE '{$bt}'")) bntm_fn_create_tables();
+
+    $budgets = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$bt} WHERE business_id=%d AND period=%s ORDER BY budget_type, category",
+        $bid, $period));
+    $actuals = $wpdb->get_results($wpdb->prepare(
+        "SELECT type, category, SUM(amount) as total FROM {$tt} WHERE business_id=%d AND YEAR(created_at)=%d AND MONTH(created_at)=%d GROUP BY type, category",
+        $bid, $y, $m));
+    $actual_map = [];
+    foreach ($actuals as $a) $actual_map[$a->type][$a->category] = floatval($a->total);
+
+    // Same category sources as Transactions tab
+    $income_cats  = fn_get_categories_for_business('income', $bid);
+    $expense_cats = fn_get_categories_for_business('expense', $bid);
+
+    ob_start(); ?>
+    <?php echo fn_js_head(); ?>
     <div class="bntm-form-section">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <h3>Add New Transaction</h3>
-            <div style="background: #eff6ff; border-left: 4px solid #0284c7; padding: 12px 16px; border-radius: 6px; font-size: 13px; color: #0c4a6e;">
-                <strong style="display: block; margin-bottom: 6px;">⌨️ Keyboard Shortcuts:</strong>
-                <div style="display: flex; gap: 16px;">
-                    <span><strong>E</strong> — Quick Expense Entry</span>
-                    <span><strong>S</strong> — Quick Sales/Income Entry</span>
-                </div>
-            </div>
+        <div class="fn-section-hdr">
+            <h3>Budgets — <?php echo date('F Y',mktime(0,0,0,$m,1,$y)); ?></h3>
+            <form method="GET" style="display:flex;gap:8px;align-items:center;">
+                <input type="hidden" name="type" value="budgets">
+                <select name="bm" class="fn-input" style="padding:5px 8px;font-size:12px;width:auto;">
+                    <?php for($i=1;$i<=12;$i++): ?><option value="<?php echo $i; ?>" <?php selected($m,$i); ?>><?php echo date('F',mktime(0,0,0,$i,1)); ?></option><?php endfor; ?>
+                </select>
+                <select name="by" class="fn-input" style="padding:5px 8px;font-size:12px;width:auto;">
+                    <?php for($yi=date('Y');$yi>=date('Y')-3;$yi--): ?><option value="<?php echo $yi; ?>" <?php selected($y,$yi); ?>><?php echo $yi; ?></option><?php endfor; ?>
+                </select>
+                <button type="submit" class="bntm-btn-primary bntm-btn-small">Go</button>
+            </form>
         </div>
-        <form id="bntm-fn-transaction-form" class="bntm-form">
-            <div class="bntm-form-row">
-                <div class="bntm-form-group">
-                    <label for="fn_type">Type</label>
-                    <select id="fn_type" name="type" required>
+
+        <!-- Quick add budget row -->
+        <div style="background:var(--color-background-secondary);border-radius:10px;padding:14px;margin-bottom:16px;">
+            <h4 style="margin:0 0 10px;font-size:13px;">Add / update budget line</h4>
+            <form id="fn-budget-form" class="bntm-form" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+                <div class="bntm-form-group" style="margin:0;flex:1;min-width:120px;">
+                    <label style="font-size:11px;">Type</label>
+                    <select id="fb-type" name="budget_type" class="fn-input" style="font-size:12px;padding:6px 8px;">
                         <option value="income">Income</option>
                         <option value="expense">Expense</option>
                     </select>
                 </div>
-                
-                <div class="bntm-form-group">
-                    <label for="fn_amount">Amount (<?php echo $currency ?>)</label>
-                    <input type="number" id="fn_amount" name="amount" step="0.01" min="0" required>
-                </div>
-                
-                <div class="bntm-form-group">
-                    <label for="fn_category">Category</label>
-                    <select id="fn_category" name="category" required>
-                        <optgroup label="Income" id="income_opts">
-                            <?php foreach ($income_cats as $cat): ?>
+                <div class="bntm-form-group" style="margin:0;flex:2;min-width:160px;">
+                    <label style="font-size:11px;">Category</label>
+                    <select id="fb-cat" name="category" class="fn-input" style="font-size:12px;padding:6px 8px;">
+                        <optgroup label="Income" id="fb-income-opts">
+                            <?php foreach ($income_cats as $cat) : ?>
                             <option value="<?php echo esc_attr($cat); ?>"><?php echo esc_html($cat); ?></option>
                             <?php endforeach; ?>
                         </optgroup>
-                        <optgroup label="Expense" id="expense_opts" style="display:none;">
-                            <?php foreach ($expense_cats as $cat): ?>
+                        <optgroup label="Expense" id="fb-expense-opts" style="display:none;">
+                            <?php foreach ($expense_cats as $cat) : ?>
                             <option value="<?php echo esc_attr($cat); ?>"><?php echo esc_html($cat); ?></option>
                             <?php endforeach; ?>
                         </optgroup>
                     </select>
                 </div>
+                <div class="bntm-form-group" style="margin:0;flex:1;min-width:100px;">
+                    <label style="font-size:11px;">Amount</label>
+                    <input type="number" name="budgeted_amount" class="fn-input" style="font-size:12px;padding:6px 8px;" step="0.01" min="0">
+                </div>
+                <input type="hidden" name="period" value="<?php echo $period; ?>">
+                <input type="hidden" name="_ajax_nonce" value="<?php echo $nonce; ?>">
+                <input type="hidden" name="action" value="fn_save_budget">
+                <button type="submit" class="bntm-btn-primary bntm-btn-small">Save</button>
+            </form>
+            <div id="fn-budget-msg" style="margin-top:6px;"></div>
+        </div>
+
+        <?php foreach (['income'=>'Income budgets','expense'=>'Expense budgets'] as $btype=>$btitle) :
+            $rows = array_filter($budgets, function($b) use($btype){ return $b->budget_type===$btype; });
+        ?>
+        <h4 style="margin:16px 0 8px;"><?php echo $btitle; ?></h4>
+        <table class="fn-table">
+            <thead><tr><th>Category</th><th>Budgeted</th><th>Actual</th><th>Variance</th><th>%</th><th></th></tr></thead>
+            <tbody>
+            <?php if (empty($rows)) : ?>
+            <tr><td colspan="6" style="color:var(--color-text-secondary);">No <?php echo $btype; ?> budgets set for this period.</td></tr>
+            <?php else : foreach($rows as $b) :
+                $actual = $actual_map[$btype][$b->category] ?? 0;
+                $var    = $btype==='income' ? $actual-$b->budgeted_amount : $b->budgeted_amount-$actual;
+                $pct    = $b->budgeted_amount>0 ? round($actual/$b->budgeted_amount*100) : 0;
+                $col    = $var>=0 ? '#10b981' : '#ef4444';
+            ?>
+            <tr>
+                <td><?php echo esc_html($b->category); ?></td>
+                <td><?php echo fn_fmt($b->budgeted_amount); ?></td>
+                <td><?php echo fn_fmt($actual); ?></td>
+                <td style="color:<?php echo $col; ?>;font-weight:500;"><?php echo ($var>=0?'+':'').fn_fmt($var); ?></td>
+                <td>
+                    <div class="fn-bar-track" style="min-width:60px;"><div class="fn-bar-fill" style="width:<?php echo min(100,$pct); ?>%;background:<?php echo $btype==='income'?'#10b981':'#ef4444'; ?>;"></div></div>
+                    <span style="font-size:11px;"><?php echo $pct; ?>%</span>
+                </td>
+                <td><button class="bntm-btn-small bntm-btn-danger fn-del-budget" data-id="<?php echo $b->id; ?>">Del</button></td>
+            </tr>
+            <?php endforeach; endif; ?>
+            </tbody>
+        </table>
+        <?php endforeach; ?>
+    </div>
+    <script>
+    (function(){
+        // Mirror the Transactions tab: switch category optgroup based on type
+        document.getElementById('fb-type').addEventListener('change', function(){
+            var isInc = this.value === 'income';
+            document.getElementById('fb-income-opts').style.display  = isInc ? '' : 'none';
+            document.getElementById('fb-expense-opts').style.display = isInc ? 'none' : '';
+            var firstOpt = document.getElementById(isInc ? 'fb-income-opts' : 'fb-expense-opts').querySelector('option');
+            if (firstOpt) firstOpt.selected = true;
+        });
+
+        document.getElementById('fn-budget-form').addEventListener('submit', function(e){
+            e.preventDefault();
+            var btn = this.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = '...';
+            fetch(ajaxurl, {method:'POST', body:new FormData(this)}).then(r=>r.json()).then(j=>{
+                document.getElementById('fn-budget-msg').innerHTML = '<div class="bntm-notice bntm-notice-'+(j.success?'success':'error')+'">'+j.data+'</div>';
+                btn.disabled = false; btn.textContent = 'Save';
+                if (j.success) setTimeout(()=>location.reload(), 1000);
+            });
+        });
+
+        document.querySelectorAll('.fn-del-budget').forEach(function(btn){
+            btn.addEventListener('click', function(){
+                if (!confirm('Delete budget line?')) return;
+                var fd = new FormData();
+                fd.append('action','fn_delete_budget');
+                fd.append('budget_id', this.dataset.id);
+                fd.append('_ajax_nonce', fnNonce);
+                fetch(ajaxurl, {method:'POST', body:fd}).then(r=>r.json()).then(j=>{
+                    if (j.success) location.reload();
+                });
+            });
+        });
+    })();
+    </script>
+    <?php return ob_get_clean();
+}
+
+/* ============================================================
+   TAB: TRANSACTIONS
+   ============================================================ */
+function fn_transactions_tab() {
+    global $wpdb;
+    $t        = $wpdb->prefix . 'fn_transactions';
+    $business_id = fn_get_current_business_id();
+    $currency = fn_currency();
+    $nonce    = wp_create_nonce('bntm_fn_action');
+    $per_page = 15;
+    $pg       = max(1,intval($_GET['fn_page']??1));
+    $offset   = ($pg-1)*$per_page;
+    $filter_type = isset($_GET['ft']) ? sanitize_text_field($_GET['ft']) : '';
+    $filter_cat  = isset($_GET['fc']) ? sanitize_text_field($_GET['fc']) : '';
+
+    $where = 'business_id=%d'; $args = [$business_id];
+    if ($filter_type) { $where .= ' AND type=%s'; $args[] = $filter_type; }
+    if ($filter_cat)  { $where .= ' AND category=%s'; $args[] = $filter_cat; }
+
+    $total = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$t} WHERE {$where}", ...$args));
+    $rows  = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$t} WHERE {$where} ORDER BY created_at DESC LIMIT %d OFFSET %d", ...array_merge($args,[$per_page,$offset])));
+    $total_pages = ceil($total/$per_page);
+
+    $income_cats  = fn_get_categories_for_business('income', $business_id);
+    $expense_cats = fn_get_categories_for_business('expense', $business_id);
+
+    ob_start(); ?>
+    <?php echo fn_js_head(); ?>
+    <div class="bntm-form-section">
+        <div class="fn-section-hdr"><h3>Add transaction</h3></div>
+        <form id="fn-txn-form" class="bntm-form">
+            <input type="hidden" name="id" id="txn-id">
+            <div class="bntm-form-row">
+                <div class="bntm-form-group">
+                    <label>Date</label>
+                    <input type="date" name="created_at" class="fn-input" required>
+                </div>
+                <div class="bntm-form-group">
+                    <label>Type</label>
+                    <select id="txn-type" name="type" class="fn-input">
+                        <option value="income">Income</option>
+                        <option value="expense">Expense</option>
+                    </select>
+                </div>
+                <div class="bntm-form-group">
+                    <label>Amount (<?php echo $currency; ?>)</label>
+                    <input type="number" name="amount" class="fn-input" step="0.01" min="0" required>
+                </div>
+                <div class="bntm-form-group">
+                    <label>Category</label>
+                    <select id="txn-cat" name="category" class="fn-input">
+                        <optgroup label="Income" id="txn-income-opts">
+                            <?php foreach ($income_cats as $cat) : ?><option value="<?php echo esc_attr($cat); ?>"><?php echo esc_html($cat); ?></option><?php endforeach; ?>
+                        </optgroup>
+                        <optgroup label="Expense" id="txn-expense-opts" style="display:none;">
+                            <?php foreach ($expense_cats as $cat) : ?><option value="<?php echo esc_attr($cat); ?>"><?php echo esc_html($cat); ?></option><?php endforeach; ?>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="bntm-form-group">
+                    <label>Notes</label>
+                    <input type="text" name="notes" class="fn-input" placeholder="Optional">
+                </div>
             </div>
-            
-            <div class="bntm-form-group">
-                <label for="fn_notes">Notes</label>
-                <textarea id="fn_notes" name="notes" rows="2"></textarea>
-            </div>
-            
-            <button type="submit" class="bntm-btn-primary">Add Transaction</button>
-            <div id="fn-transaction-message"></div>
+           <input type="hidden" name="action" id="txn-action" value="fn_save_transaction">
+            <input type="hidden" name="_ajax_nonce" value="<?php echo $nonce; ?>">
+            <button type="submit" class="bntm-btn-primary">Add</button>
+            <div id="fn-txn-msg" style="margin-top:8px;"></div>
         </form>
     </div>
-    
-    <div class="bntm-form-section" style="margin-top: 30px;">
-        <h3>Transaction History</h3>
-        <?php echo bntm_fn_render_transaction_history(); ?>
+
+    <!-- Filter bar -->
+    <div style="display:flex;gap:8px;margin:16px 0;flex-wrap:wrap;align-items:center;">
+        <form method="GET" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+            <input type="hidden" name="type" value="transactions">
+            <select name="ft" class="fn-input" style="padding:5px 8px;font-size:12px;width:auto;">
+                <option value="">All types</option>
+                <option value="income"  <?php selected($filter_type,'income'); ?>>Income</option>
+                <option value="expense" <?php selected($filter_type,'expense'); ?>>Expense</option>
+            </select>
+            <input type="text" name="fc" value="<?php echo esc_attr($filter_cat); ?>" class="fn-input" style="padding:5px 8px;font-size:12px;width:140px;" placeholder="Filter category">
+            <button type="submit" class="bntm-btn-primary bntm-btn-small">Filter</button>
+            <?php if ($filter_type||$filter_cat) : ?><a href="<?php echo add_query_arg('type','transactions',get_permalink()); ?>" class="bntm-btn-secondary bntm-btn-small">Clear</a><?php endif; ?>
+        </form>
+        <a href="<?php echo admin_url('admin-ajax.php?action=fn_export_csv&_ajax_nonce='.$nonce); ?>" class="bntm-btn-secondary bntm-btn-small" target="_blank">Export CSV</a>
+        <span style="margin-left:auto;font-size:13px;color:var(--color-text-secondary);"><?php echo $total; ?> record(s)</span>
     </div>
-    
-    <style>
-    .bntm-type-badge {
-        padding: 4px 12px;
-        border-radius: 12px;
-        font-size: 12px;
-        font-weight: 600;
-    }
-    .bntm-type-income {
-        background: #d1fae5;
-        color: #065f46;
-    }
-    .bntm-type-expense {
-        background: #fee2e2;
-        color: #991b1b;
-    }
-    </style>
-    
+
+    <div class="bntm-form-section">
+        <table class="fn-table">
+            <thead><tr><th>Date</th><th>Type</th><th>Category</th><th>Amount</th><th>Notes</th><th></th></tr></thead>
+            <tbody>
+            <?php if (empty($rows)) : ?>
+            <tr><td colspan="6" style="text-align:center;color:var(--color-text-secondary);">No transactions found.</td></tr>
+            <?php else: foreach ($rows as $tx) : ?>
+            <tr>
+                <td><?php echo date('M d, Y',strtotime($tx->created_at)); ?></td>
+                <td><span class="fn-badge fn-badge-<?php echo $tx->type; ?>"><?php echo ucfirst($tx->type); ?></span></td>
+                <td><?php echo esc_html($tx->category); ?></td>
+                <td style="font-weight:500;color:<?php echo $tx->type==='income'?'#10b981':'#ef4444'; ?>;"><?php echo fn_fmt($tx->amount); ?></td>
+                <td style="font-size:12px;color:var(--color-text-secondary);"><?php echo esc_html(mb_strimwidth($tx->notes??'',0,50,'…')); ?></td>
+                <td>
+                    <button class="bntm-btn-small fn-edit-txn" data-tx='<?php echo json_encode($tx); ?>'>Edit</button>
+                    <button class="bntm-btn-small bntm-btn-danger fn-del-txn" data-id="<?php echo $tx->id; ?>">Del</button>
+                </td>
+            </tr>
+            <?php endforeach; endif; ?>
+            </tbody>
+        </table>
+
+        <?php if ($total_pages>1) : ?>
+        <div style="display:flex;gap:6px;margin-top:14px;flex-wrap:wrap;align-items:center;">
+            <?php $base=remove_query_arg('fn_page');
+            if ($pg>1): ?><a href="<?php echo esc_url(add_query_arg('fn_page',$pg-1,$base)); ?>" class="bntm-btn-secondary bntm-btn-small">← Prev</a><?php endif; ?>
+            <span style="font-size:13px;color:var(--color-text-secondary);">Page <?php echo $pg; ?> of <?php echo $total_pages; ?></span>
+            <?php if ($pg<$total_pages): ?><a href="<?php echo esc_url(add_query_arg('fn_page',$pg+1,$base)); ?>" class="bntm-btn-secondary bntm-btn-small">Next →</a><?php endif; ?>
+        </div>
+        <?php endif; ?>
+    </div>
+
     <script>
-    var ajaxurl = '<?php echo admin_url('admin-ajax.php'); ?>';
-    
-    // Toggle categories based on type
-    document.getElementById('fn_type').addEventListener('change', function() {
-        const incomeOpts = document.getElementById('income_opts');
-        const expenseOpts = document.getElementById('expense_opts');
-        
-        if (this.value === 'income') {
-            incomeOpts.style.display = '';
-            expenseOpts.style.display = 'none';
-            document.querySelector('#income_opts option').selected = true;
-        } else {
-            incomeOpts.style.display = 'none';
-            expenseOpts.style.display = '';
-            document.querySelector('#expense_opts option').selected = true;
-        }
+    document.getElementById('txn-type').addEventListener('change', function(){
+        var isInc = this.value === 'income';
+        document.getElementById('txn-income-opts').style.display  = isInc ? '' : 'none';
+        document.getElementById('txn-expense-opts').style.display = isInc ? 'none' : '';
+        var firstOpt = document.getElementById(isInc ? 'txn-income-opts' : 'txn-expense-opts').querySelector('option');
+        if (firstOpt) firstOpt.selected = true;
     });
-    
-    // Submit transaction
-    document.getElementById('bntm-fn-transaction-form').addEventListener('submit', function(e) {
+    document.getElementById('fn-txn-form').addEventListener('submit', function(e){
         e.preventDefault();
-        
-        const form = this;
-        const msg = document.getElementById('fn-transaction-message');
-        const btn = form.querySelector('button[type="submit"]');
-        
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
-        
-        const data = new FormData();
-        data.append('action', 'bntm_fn_save_transaction');
-        data.append('type', form.type.value);
-        data.append('amount', form.amount.value);
-        data.append('category', form.category.value);
-        data.append('notes', form.notes.value);
-        data.append('_ajax_nonce', '<?php echo $nonce; ?>');
-        
-        fetch(ajaxurl, {method: 'POST', body: data})
-        .then(r => r.json())
-        .then(json => {
-            msg.innerHTML = '<div class="bntm-notice bntm-notice-' + (json.success ? 'success' : 'error') + '">' + json.data + '</div>';
-            btn.disabled = false;
-            btn.textContent = 'Add Transaction';
-            
-            if (json.success) {
-                form.reset();
-                setTimeout(() => location.reload(), 1000);
+        var btn = this.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = 'Adding...';
+        fetch(ajaxurl, {method:'POST', body:new FormData(this)}).then(r=>r.json()).then(j=>{
+            document.getElementById('fn-txn-msg').innerHTML = '<div class="bntm-notice bntm-notice-'+(j.success?'success':'error')+'">'+j.data+'</div>';
+            btn.disabled = false; btn.textContent = 'Add';
+           if (j.success) { 
+                this.reset(); 
+                document.getElementById('txn-id').value = '';
+                document.getElementById('txn-action').value = 'fn_save_transaction';
+                setTimeout(()=>location.reload(), 900); 
             }
         });
     });
+    document.querySelectorAll('.fn-edit-txn').forEach(function(btn){
+        btn.addEventListener('click', function(){
+            var tx = JSON.parse(this.dataset.tx);
     
-    // Keyboard shortcuts
-    document.addEventListener('keydown', function(e) {
-        // Check if we're typing in a text input or textarea
-        const activeElement = document.activeElement;
-        const isTypingInText = (activeElement.tagName === 'INPUT' && activeElement.type === 'text') || 
-                               activeElement.tagName === 'TEXTAREA';
-        
-        if (isTypingInText) return; // Don't interfere with actual typing
-        
-        const typeSelect = document.getElementById('fn_type');
-        const amountInput = document.getElementById('fn_amount');
-        
-        if (!typeSelect || !amountInput) return; // Elements don't exist yet
-        
-        // E for Expense
-        if ((e.key === 'e' || e.key === 'E') && !e.ctrlKey && !e.metaKey) {
-            e.preventDefault();
-            typeSelect.value = 'expense';
-            typeSelect.dispatchEvent(new Event('change'));
-            setTimeout(() => {
-                amountInput.focus();
-                amountInput.select();
-            }, 100);
-            
-            // Show notification
-            bntmShowNotification('Expense mode activated. Ready to enter amount.', 'success', 2000);
-        }
-        
-        // S for Sales/Income
-        if ((e.key === 's' || e.key === 'S') && !e.ctrlKey && !e.metaKey) {
-            e.preventDefault();
-            typeSelect.value = 'income';
-            typeSelect.dispatchEvent(new Event('change'));
-            setTimeout(() => {
-                amountInput.focus();
-                amountInput.select();
-            }, 100);
-            
-            // Show notification
-            bntmShowNotification('Sales/Income mode activated. Ready to enter amount.', 'success', 2000);
-        }
+            document.querySelector('[name="type"]').value = tx.type;
+            document.querySelector('[name="amount"]').value = tx.amount;
+            document.querySelector('[name="category"]').value = tx.category;
+            document.querySelector('[name="notes"]').value = tx.notes || '';
+            document.querySelector('[name="created_at"]').value = tx.created_at.split(' ')[0];
+    
+            document.getElementById('txn-id').value = tx.id;
+            document.getElementById('txn-action').value = 'fn_update_transaction';
+    
+            window.scrollTo({top:0, behavior:'smooth'});
+        });
     });
-    
-    // Notification function
-    function bntmShowNotification(message, type, duration) {
-        const notification = document.createElement('div');
-        notification.style.cssText = 'position: fixed; top: 20px; right: 20px; background: ' + 
-            (type === 'success' ? '#10b981' : '#ef4444') + 
-            '; color: white; padding: 12px 20px; border-radius: 6px; z-index: 9999; font-weight: 600;';
-        notification.textContent = message;
-        document.body.appendChild(notification);
-        
-        setTimeout(() => notification.remove(), duration);
-    }
-    
-    // Delete transaction
-    document.querySelectorAll('.bntm-delete-txn').forEach(btn => {
-        btn.addEventListener('click', function() {
+    document.querySelectorAll('.fn-del-txn').forEach(function(btn){
+        btn.addEventListener('click', function(){
             if (!confirm('Delete this transaction?')) return;
-            
-            const data = new FormData();
-            data.append('action', 'bntm_fn_delete_transaction');
-            data.append('id', this.dataset.id);
-            data.append('_ajax_nonce', this.dataset.nonce);
-            
-            fetch(ajaxurl, {method: 'POST', body: data})
-            .then(r => r.json())
-            .then(json => {
-                alert(json.data);
-                if (json.success) location.reload();
+            var fd = new FormData();
+            fd.append('action','fn_delete_transaction');
+            fd.append('id', this.dataset.id);
+            fd.append('_ajax_nonce', fnNonce);
+            fetch(ajaxurl, {method:'POST', body:fd}).then(r=>r.json()).then(j=>{
+                if (j.success) location.reload(); else alert(j.data);
             });
         });
     });
     </script>
-    <?php
-    return ob_get_clean();
+    <?php return ob_get_clean();
 }
 
-/* ---------- TRANSACTION HISTORY WITH PAGINATION ---------- */
-function bntm_fn_render_transaction_history($limit = 10) {
-    global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    $currency = bntm_get_setting('ec_currency', 'PHP');
-    $nonce = wp_create_nonce('bntm_fn_action');
-    
-    // Get current page from URL parameter
-    $current_page = isset($_GET['fn_page']) ? max(1, intval($_GET['fn_page'])) : 1;
-    $offset = ($current_page - 1) * $limit;
-    
-    // Get total count for pagination
-    $total_transactions = $wpdb->get_var(
-        "SELECT COUNT(*) FROM $table"
-    );
-    
-    $total_pages = ceil($total_transactions / $limit);
-    
-    // Get transactions for current page
-    $transactions = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM $table ORDER BY created_at DESC LIMIT %d OFFSET %d",
-        $limit, $offset
-    ));
-    
-    if (empty($transactions) && $current_page == 1) {
-        return '<p>No transactions yet.</p>';
-    }
-    
-    ob_start();
-    ?>
-    
-   <div class="bntm-table-wrapper">
-    <table class="bntm-table">
-        <thead>
-            <tr>
-                <th>Date</th>
-                <th>Type</th>
-                <th>Category</th>
-                <th>Amount</th>
-                <th>Notes</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php if (!empty($transactions)): ?>
-                <?php foreach ($transactions as $txn): ?>
-                <tr>
-                    <td><?php echo date('M d, Y', strtotime($txn->created_at)); ?></td>
-                    <td><span class="bntm-type-badge bntm-type-<?php echo $txn->type; ?>"><?php echo ucfirst($txn->type); ?></span></td>
-                    <td><?php echo esc_html($txn->category); ?></td>
-                    <td class="<?php echo $txn->type === 'income' ? 'bntm-stat-income' : 'bntm-stat-expense'; ?>"><?php echo $currency ?><?php echo number_format($txn->amount, 2); ?></td>
-                    <td><?php echo esc_html($txn->notes); ?></td>
-                    <td>
-                        <?php if (!$txn->reference_type): ?>
-                        <button class="bntm-btn-small bntm-btn-danger bntm-delete-txn" data-id="<?php echo $txn->id; ?>" data-nonce="<?php echo $nonce; ?>">Delete</button>
-                        <?php else: ?>
-                        <span style="color:#999;">Imported</span>
-                        <?php endif; ?>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-            <?php else: ?>
-                <tr>
-                    <td colspan="6" style="text-align: center;">No transactions found on this page.</td>
-                </tr>
-            <?php endif; ?>
-        </tbody>
-    </table>
-    </div>
-    <?php if ($total_pages > 1): ?>
-        <div class="fn-pagination">
-            <?php
-            $base_url = remove_query_arg('fn_page');
-            
-            // Previous button
-            if ($current_page > 1): ?>
-                <a href="<?php echo esc_url(add_query_arg('fn_page', $current_page - 1, $base_url)); ?>" class="fn-page-btn">
-                    &laquo; Previous
-                </a>
-            <?php endif; ?>
-            
-            <!-- Page numbers -->
-            <div class="fn-page-numbers">
-                <?php
-                // Show first page
-                if ($current_page > 3) {
-                    echo '<a href="' . esc_url(add_query_arg('fn_page', 1, $base_url)) . '" class="fn-page-num">1</a>';
-                    if ($current_page > 4) {
-                        echo '<span class="fn-page-dots">...</span>';
-                    }
-                }
-                
-                // Show pages around current page
-                for ($i = max(1, $current_page - 2); $i <= min($total_pages, $current_page + 2); $i++) {
-                    $active_class = ($i == $current_page) ? ' active' : '';
-                    echo '<a href="' . esc_url(add_query_arg('fn_page', $i, $base_url)) . '" class="fn-page-num' . $active_class . '">' . $i . '</a>';
-                }
-                
-                // Show last page
-                if ($current_page < $total_pages - 2) {
-                    if ($current_page < $total_pages - 3) {
-                        echo '<span class="fn-page-dots">...</span>';
-                    }
-                    echo '<a href="' . esc_url(add_query_arg('fn_page', $total_pages, $base_url)) . '" class="fn-page-num">' . $total_pages . '</a>';
-                }
-                ?>
-            </div>
-            
-            <!-- Next button -->
-            <?php if ($current_page < $total_pages): ?>
-                <a href="<?php echo esc_url(add_query_arg('fn_page', $current_page + 1, $base_url)); ?>" class="fn-page-btn">
-                    Next &raquo;
-                </a>
-            <?php endif; ?>
-            
-            <div class="fn-page-info">
-                Page <?php echo $current_page; ?> of <?php echo $total_pages; ?>
-                (<?php echo $total_transactions; ?> total transactions)
-            </div>
-        </div>
-    <?php endif; ?>
-    
-    <style>
-    .fn-pagination { display: flex; align-items: center; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
-    .fn-page-numbers { display: flex; gap: 5px; }
-    .fn-page-btn, .fn-page-num { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; text-decoration: none; color: #333; }
-    .fn-page-btn:hover, .fn-page-num:hover { background: var(--bntm-primary-hover); color: white; }
-    .fn-page-num.active { background: var(--bntm-primary); color: white; border-color: var(--bntm-primary); }
-    .fn-page-dots { padding: 6px; color: #999; }
-    .fn-page-info { margin-left: auto; color: #666; font-size: 14px; }
-    </style>
-    <?php
-    return ob_get_clean();
-}
-function bntm_fn_reports_tab() {
-    $year = isset($_GET['year']) ? intval($_GET['year']) : date('Y');
-    $month = isset($_GET['month']) ? intval($_GET['month']) : date('m');
-    
-    $currency = bntm_get_setting('ec_currency', 'PHP');
-    $monthly_data = bntm_fn_get_monthly_report($year, $month);
-    $category_breakdown = bntm_fn_get_category_breakdown($year, $month);
-    $nonce = wp_create_nonce('bntm_fn_action');
-    
-    // Calculate start and end dates for the selected month
-    $start_date = date('Y-m-01', strtotime("$year-$month-01"));
-    $end_date = date('Y-m-t', strtotime("$year-$month-01"));
-    
-    ob_start();
-    ?>
+/* ============================================================
+   TAB: REPORTS
+   ============================================================ */
+function fn_reports_tab() {
+    $currency = fn_currency();
+    $y        = isset($_GET['year'])  ? intval($_GET['year'])  : date('Y');
+    $m        = isset($_GET['month']) ? intval($_GET['month']) : date('m');
+    $nonce    = wp_create_nonce('bntm_fn_action');
+
+    $monthly   = fn_get_stats($y,$m);
+    $breakdown = fn_get_category_breakdown('income',$y,$m);
+    $exp_bdown = fn_get_category_breakdown('expense',$y,$m);
+
+    ob_start(); ?>
+    <?php echo fn_js_head(); ?>
     <div class="bntm-form-section">
-        <div style="text-align: center; display: flex ; justify-content: space-between;">
-           <h3>Financial Reports</h3>
-            <button class="bntm-btn-primary" id="generate-pdf-report" data-month="<?php echo $month; ?>" data-year="<?php echo $year; ?>" data-nonce="<?php echo $nonce; ?>">
-                Generate PDF Financial Statement
-            </button>
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:20px;">
+            <h3>Financial reports — <?php echo date('F Y',mktime(0,0,0,$m,1,$y)); ?></h3>
+            <button class="bntm-btn-primary bntm-btn-small" onclick="window.open('<?php echo admin_url('admin-ajax.php?action=fn_generate_pdf&month='.$m.'&year='.$y.'&_ajax_nonce='.$nonce); ?>','_blank')">Generate PDF</button>
         </div>
-        <div class="bntm-form-row" style="margin-bottom: 20px;">
-            <div class="bntm-form-group">
-                <label for="report_month">Month</label>
-                <select id="report_month" onchange="updateReport()">
-                    <?php for ($m = 1; $m <= 12; $m++): ?>
-                    <option value="<?php echo $m; ?>" <?php echo $m == $month ? 'selected' : ''; ?>><?php echo date('F', mktime(0,0,0,$m,1)); ?></option>
-                    <?php endfor; ?>
-                </select>
-            </div>
-            <div class="bntm-form-group">
-                <label for="report_year">Year</label>
-                <select id="report_year" onchange="updateReport()">
-                    <?php for ($y = date('Y'); $y >= date('Y') - 5; $y--): ?>
-                    <option value="<?php echo $y; ?>" <?php echo $y == $year ? 'selected' : ''; ?>><?php echo $y; ?></option>
-                    <?php endfor; ?>
-                </select>
-            </div>
-        </div>
-        
-        <div class="bntm-stats-grid">
-            <div class="bntm-stat-card">
-                <div class="bntm-stat-label">Total Income</div>
-                <div class="bntm-stat-value bntm-stat-income"><?php echo $currency ?><?php echo number_format($monthly_data['income'], 2); ?></div>
-            </div>
-            <div class="bntm-stat-card">
-                <div class="bntm-stat-label">Total Expenses</div>
-                <div class="bntm-stat-value bntm-stat-expense"><?php echo $currency ?><?php echo number_format($monthly_data['expense'], 2); ?></div>
-            </div>
-            <div class="bntm-stat-card">
-                <div class="bntm-stat-label">Net Profit/Loss</div>
-                <div class="bntm-stat-value <?php echo $monthly_data['balance'] >= 0 ? 'bntm-stat-income' : 'bntm-stat-expense'; ?>"><?php echo $currency ?><?php echo number_format($monthly_data['balance'], 2); ?></div>
-            </div>
-        </div>
-        
-        
-        
-        <h4 style="margin-top: 30px;">Income Statement - <?php echo date('F Y', strtotime("$year-$month-01")); ?></h4>
-        
-        <div class="bntm-financial-statement bntm-table-wrapper">
-            <table class="bntm-table bntm-financial-table">
-                <thead>
-                    <tr>
-                        <th style="text-align: left; width: 70%;">Particulars</th>
-                        <th style="text-align: right; width: 30%;">Amount (<?php echo $currency ?>)</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <!-- REVENUE SECTION -->
-                    <tr class="bntm-section-header">
-                        <td colspan="2"><strong>REVENUE</strong></td>
-                    </tr>
-                    <?php 
-                    $income_items = array_filter($category_breakdown, function($item) {
-                        return $item->type === 'income';
-                    });
-                    
-                    if (empty($income_items)): ?>
-                    <tr>
-                        <td style="padding-left: 20px;">No revenue recorded</td>
-                        <td style="text-align: right;">0.00</td>
-                    </tr>
-                    <?php else:
-                        foreach ($income_items as $item): ?>
-                    <tr>
-                        <td style="padding-left: 20px;"><?php echo esc_html($item->category); ?></td>
-                        <td style="text-align: right;"><?php echo number_format($item->total, 2); ?></td>
-                    </tr>
-                    <?php endforeach; endif; ?>
-                    
-                    <tr class="bntm-subtotal">
-                        <td style="padding-left: 20px;"><strong>Total Revenue</strong></td>
-                        <td style="text-align: right;"><strong><?php echo number_format($monthly_data['income'], 2); ?></strong></td>
-                    </tr>
-                    
-                    <!-- EXPENSES SECTION -->
-                    <tr class="bntm-section-header">
-                        <td colspan="2"><strong>EXPENSES</strong></td>
-                    </tr>
-                    <?php 
-                    $expense_items = array_filter($category_breakdown, function($item) {
-                        return $item->type === 'expense';
-                    });
-                    
-                    if (empty($expense_items)): ?>
-                    <tr>
-                        <td style="padding-left: 20px;">No expenses recorded</td>
-                        <td style="text-align: right;">0.00</td>
-                    </tr>
-                    <?php else:
-                        foreach ($expense_items as $item): ?>
-                    <tr>
-                        <td style="padding-left: 20px;"><?php echo esc_html($item->category); ?></td>
-                        <td style="text-align: right;"><?php echo number_format($item->total, 2); ?></td>
-                    </tr>
-                    <?php endforeach; endif; ?>
-                    
-                    <tr class="bntm-subtotal">
-                        <td style="padding-left: 20px;"><strong>Total Expenses</strong></td>
-                        <td style="text-align: right;"><strong><?php echo number_format($monthly_data['expense'], 2); ?></strong></td>
-                    </tr>
-                    
-                    <!-- NET INCOME -->
-                    <tr class="bntm-total">
-                        <td><strong>NET INCOME (LOSS)</strong></td>
-                        <td style="text-align: right; <?php echo $monthly_data['balance'] >= 0 ? 'color: #059669;' : 'color: #dc2626;'; ?>">
-                            <strong><?php echo $monthly_data['balance'] >= 0 ? '' : '('; ?><?php echo $currency ?><?php echo number_format(abs($monthly_data['balance']), 2); ?><?php echo $monthly_data['balance'] >= 0 ? '' : ')'; ?></strong>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    
-    <style>
-    .bntm-financial-statement {
-        margin-top: 20px;
-        background: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-    }
-    
-    .bntm-financial-table {
-        margin: 0;
-    }
-    
-    .bntm-financial-table thead th {
-        background: #f9fafb;
-        padding: 16px 12px;
-        font-weight: 700;
-        border-bottom: 2px solid #d1d5db;
-    }
-    
-    .bntm-financial-table tbody td {
-        padding: 10px 12px;
-        border-bottom: 1px solid #f3f4f6;
-    }
-    
-    .bntm-section-header td {
-        background: #f9fafb;
-        padding: 12px !important;
-        font-weight: 700;
-        border-top: 2px solid #d1d5db;
-        border-bottom: 1px solid #d1d5db;
-    }
-    
-    .bntm-subtotal td {
-        padding: 12px !important;
-        border-top: 1px solid #d1d5db;
-        background: #fefefe;
-    }
-    
-    .bntm-total td {
-        padding: 16px 12px !important;
-        border-top: 3px double #1f2937;
-        background: #f9fafb;
-        font-size: 16px;
-    }
-    </style>
-    
-    <script>
-    var ajaxurl = '<?php echo admin_url('admin-ajax.php'); ?>';
-    
-    function updateReport() {
-        const month = document.getElementById('report_month').value;
-        const year = document.getElementById('report_year').value;
-        window.location.href = '?type=reports&month=' + month + '&year=' + year;
-    }
-    
-    // Generate PDF Report
-    document.getElementById('generate-pdf-report').addEventListener('click', function() {
-        const btn = this;
-        const month = btn.dataset.month;
-        const year = btn.dataset.year;
-        const nonce = btn.dataset.nonce;
-        
-        btn.disabled = true;
-        btn.textContent = '⏳ Generating PDF...';
-        
-        const params = new URLSearchParams({
-            action: 'bntm_fn_generate_pdf',
-            month: month,
-            year: year,
-            _ajax_nonce: nonce
-        });
-        
-        // Open PDF in new tab
-        window.open(ajaxurl + '?' + params.toString(), '_blank');
-        
-        setTimeout(() => {
-            btn.disabled = false;
-            btn.textContent = 'Generate PDF Financial Statement';
-        }, 2000);
-    });
-    </script>
-    <?php
-    return ob_get_clean();
-}
 
-// Add AJAX handler for PDF generation
-add_action('wp_ajax_bntm_fn_generate_pdf', 'bntm_ajax_fn_generate_pdf');
-
-function bntm_ajax_fn_generate_pdf() {
-    check_ajax_referer('bntm_fn_action');
-    
-    if (!is_user_logged_in()) {
-        wp_die('Unauthorized access');
-    }
-    $currency = bntm_get_setting('ec_currency', 'PHP');
-    $year = intval($_GET['year']);
-    $month = intval($_GET['month']);
-    
-    $monthly_data = bntm_fn_get_monthly_report($year, $month);
-    $category_breakdown = bntm_fn_get_category_breakdown($year, $month);
-    
-    // Get company info
-    $company_name = bntm_get_setting('site_title', get_bloginfo('name'));
-    $admin_email = bntm_get_setting('admin_email', get_option('admin_email'));
-    
-    $month_name = date('F', mktime(0, 0, 0, $month, 1));
-    $period = "$month_name $year";
-    
-    // Generate HTML for PDF
-    ob_start();
-    ?>
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <style>
-            @page {
-                margin: 2cm;
-            }
-            body {
-                font-family: 'Arial', sans-serif;
-                font-size: 11pt;
-                color: #000;
-                line-height: 1.4;
-            }
-            .header {
-                text-align: center;
-                margin-bottom: 30px;
-                border-bottom: 2px solid #000;
-                padding-bottom: 15px;
-            }
-            .header h1 {
-                margin: 0 0 5px 0;
-                font-size: 18pt;
-                font-weight: bold;
-            }
-            .header h2 {
-                margin: 0 0 5px 0;
-                font-size: 14pt;
-                font-weight: normal;
-            }
-            .header p {
-                margin: 3px 0;
-                font-size: 10pt;
-            }
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                margin: 20px 0;
-            }
-            th {
-                background: #f0f0f0;
-                padding: 10px;
-                text-align: left;
-                border-bottom: 2px solid #000;
-                font-weight: bold;
-            }
-            th.amount {
-                text-align: right;
-            }
-            td {
-                padding: 8px 10px;
-                border-bottom: 1px solid #ddd;
-            }
-            td.amount {
-                text-align: right;
-                font-family: 'Courier New', monospace;
-            }
-            .indent {
-                padding-left: 30px;
-            }
-            .section-header {
-                background: #f5f5f5;
-                font-weight: bold;
-                border-top: 2px solid #000;
-                border-bottom: 1px solid #000;
-            }
-            .subtotal {
-                background: #fafafa;
-                font-weight: bold;
-                border-top: 1px solid #000;
-            }
-            .total {
-                background: #f0f0f0;
-                font-weight: bold;
-                font-size: 12pt;
-                border-top: 3px double #000;
-                border-bottom: 3px double #000;
-            }
-            .footer {
-                margin-top: 50px;
-                padding-top: 20px;
-                border-top: 1px solid #ddd;
-            }
-            .signature-section {
-                margin-top: 60px;
-                display: table;
-                width: 100%;
-            }
-            .signature-box {
-                display: table-cell;
-                width: 50%;
-                text-align: center;
-                padding: 0 20px;
-            }
-            .signature-line {
-                border-top: 1px solid #000;
-                margin-top: 50px;
-                padding-top: 5px;
-            }
-            .notes {
-                margin-top: 30px;
-                font-size: 9pt;
-                color: #666;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <h1><?php echo esc_html($company_name); ?></h1>
-            <h2>INCOME STATEMENT</h2>
-            <p>For the Month of <?php echo esc_html($period); ?></p>
-            <?php 
-                if (($currency ==='PHP')): ?>
-                <p style="font-size: 9pt; color: #666;">
-                   Prepared in accordance with Philippine Financial Reporting Standards (PFRS)<br>
-                   All amounts are in Philippine Pesos (<?php echo $currency ?>)
-               </p>
-                <?php  endif; ?>
-            
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+            <form method="GET" style="display:flex;gap:6px;">
+                <input type="hidden" name="type" value="reports">
+                <select name="month" class="fn-input" style="padding:5px 8px;font-size:12px;width:auto;">
+                    <?php for($i=1;$i<=12;$i++): ?><option value="<?php echo $i; ?>" <?php selected($m,$i); ?>><?php echo date('F',mktime(0,0,0,$i,1)); ?></option><?php endfor; ?>
+                </select>
+                <select name="year" class="fn-input" style="padding:5px 8px;font-size:12px;width:auto;">
+                    <?php for($yi=date('Y');$yi>=date('Y')-5;$yi--): ?><option value="<?php echo $yi; ?>" <?php selected($y,$yi); ?>><?php echo $yi; ?></option><?php endfor; ?>
+                </select>
+                <button type="submit" class="bntm-btn-primary bntm-btn-small">View</button>
+            </form>
         </div>
-        
-        <table>
-            <thead>
-                <tr>
-                    <th style="width: 70%;">Particulars</th>
-                    <th class="amount" style="width: 30%;">Amount (<?php echo $currency ?>)</th>
-                </tr>
-            </thead>
+
+        <div class="fn-kpi-grid" style="margin-bottom:20px;">
+            <div class="fn-kpi"><div class="fn-kpi-label">Total Revenue</div><div class="fn-kpi-value" style="color:#10b981;"><?php echo fn_fmt($monthly['month_income']); ?></div></div>
+            <div class="fn-kpi"><div class="fn-kpi-label">Total Expenses</div><div class="fn-kpi-value" style="color:#ef4444;"><?php echo fn_fmt($monthly['month_expense']); ?></div></div>
+            <div class="fn-kpi"><div class="fn-kpi-label">Net Income</div><div class="fn-kpi-value" style="color:<?php echo $monthly['month_net']>=0?'#10b981':'#ef4444'; ?>;"><?php echo fn_fmt($monthly['month_net']); ?></div></div>
+        </div>
+
+        <h4 style="margin:0 0 12px;">Income statement — <?php echo date('F Y',mktime(0,0,0,$m,1,$y)); ?></h4>
+        <table class="fn-table" style="border:1px solid var(--color-border-tertiary);border-radius:8px;overflow:hidden;">
+            <thead><tr><th style="width:70%;">Particulars</th><th style="text-align:right;">Amount (<?php echo $currency; ?>)</th></tr></thead>
             <tbody>
-                <!-- REVENUE SECTION -->
-                <tr class="section-header">
-                    <td colspan="2">REVENUE</td>
-                </tr>
-                
-                <?php 
-                $income_items = array_filter($category_breakdown, function($item) {
-                    return $item->type === 'income';
-                });
-                
-                if (empty($income_items)): ?>
-                <tr>
-                    <td class="indent">No revenue recorded</td>
-                    <td class="amount">-</td>
-                </tr>
-                <?php else:
-                    foreach ($income_items as $item): ?>
-                <tr>
-                    <td class="indent"><?php echo esc_html($item->category); ?></td>
-                    <td class="amount"><?php echo number_format($item->total, 2); ?></td>
-                </tr>
-                <?php endforeach; endif; ?>
-                
-                <tr class="subtotal">
-                    <td class="indent">Total Revenue</td>
-                    <td class="amount"><?php echo number_format($monthly_data['income'], 2); ?></td>
-                </tr>
-                
-                <!-- EXPENSES SECTION -->
-                <tr class="section-header">
-                    <td colspan="2">EXPENSES</td>
-                </tr>
-                
-                <?php 
-                $expense_items = array_filter($category_breakdown, function($item) {
-                    return $item->type === 'expense';
-                });
-                
-                if (empty($expense_items)): ?>
-                <tr>
-                    <td class="indent">No expenses recorded</td>
-                    <td class="amount">-</td>
-                </tr>
-                <?php else:
-                    foreach ($expense_items as $item): ?>
-                <tr>
-                    <td class="indent"><?php echo esc_html($item->category); ?></td>
-                    <td class="amount"><?php echo number_format($item->total, 2); ?></td>
-                </tr>
-                <?php endforeach; endif; ?>
-                
-                <tr class="subtotal">
-                    <td class="indent">Total Expenses</td>
-                    <td class="amount"><?php echo number_format($monthly_data['expense'], 2); ?></td>
-                </tr>
-                
-                <!-- NET INCOME -->
-                <tr class="total">
-                    <td>NET INCOME <?php echo $monthly_data['balance'] < 0 ? '(LOSS)' : ''; ?></td>
-                    <td class="amount" style="<?php echo $monthly_data['balance'] >= 0 ? 'color: #000;' : 'color: #000;'; ?>">
-                        <?php echo $monthly_data['balance'] >= 0 ? '' : '('; ?><?php echo number_format(abs($monthly_data['balance']), 2); ?><?php echo $monthly_data['balance'] >= 0 ? '' : ')'; ?>
-                    </td>
-                </tr>
+            <tr style="background:var(--color-background-secondary);"><td colspan="2" style="font-weight:600;padding:10px 12px;">REVENUE</td></tr>
+            <?php if (empty($breakdown)): ?>
+            <tr><td style="padding-left:24px;color:var(--color-text-secondary);">No revenue recorded</td><td style="text-align:right;">—</td></tr>
+            <?php else: foreach ($breakdown as $r): ?>
+            <tr><td style="padding-left:24px;"><?php echo esc_html($r->category); ?></td><td style="text-align:right;font-family:monospace;"><?php echo number_format($r->total,2); ?></td></tr>
+            <?php endforeach; endif; ?>
+            <tr style="border-top:1px solid var(--color-border-secondary);font-weight:600;"><td style="padding-left:24px;">Total Revenue</td><td style="text-align:right;font-family:monospace;"><?php echo number_format($monthly['month_income'],2); ?></td></tr>
+
+            <tr style="background:var(--color-background-secondary);"><td colspan="2" style="font-weight:600;padding:10px 12px;">EXPENSES</td></tr>
+            <?php if (empty($exp_bdown)): ?>
+            <tr><td style="padding-left:24px;color:var(--color-text-secondary);">No expenses recorded</td><td style="text-align:right;">—</td></tr>
+            <?php else: foreach ($exp_bdown as $r): ?>
+            <tr><td style="padding-left:24px;"><?php echo esc_html($r->category); ?></td><td style="text-align:right;font-family:monospace;"><?php echo number_format($r->total,2); ?></td></tr>
+            <?php endforeach; endif; ?>
+            <tr style="border-top:1px solid var(--color-border-secondary);font-weight:600;"><td style="padding-left:24px;">Total Expenses</td><td style="text-align:right;font-family:monospace;"><?php echo number_format($monthly['month_expense'],2); ?></td></tr>
+
+            <tr style="border-top:3px double var(--color-border-primary);font-size:15px;font-weight:700;">
+                <td style="padding:14px 12px;">NET INCOME <?php echo $monthly['month_net']<0?'(LOSS)':''; ?></td>
+                <td style="text-align:right;font-family:monospace;color:<?php echo $monthly['month_net']>=0?'#10b981':'#ef4444'; ?>;">
+                    <?php echo $monthly['month_net']<0?'(':''; ?><?php echo $currency; ?><?php echo number_format(abs($monthly['month_net']),2); ?><?php echo $monthly['month_net']<0?')':''; ?>
+                </td>
+            </tr>
             </tbody>
         </table>
-        
-        <div class="signature-section">
-            <div class="signature-box">
-                <div class="signature-line">
-                    Prepared by
-                </div>
-            </div>
-            <div class="signature-box">
-                <div class="signature-line">
-                    Approved by
-                </div>
-            </div>
+
+        <div style="margin-top:32px;display:grid;grid-template-columns:1fr 1fr;gap:40px;">
+            <div style="text-align:center;"><div style="border-top:1px solid var(--color-border-primary);padding-top:8px;margin-top:50px;font-size:12px;">Prepared by</div></div>
+            <div style="text-align:center;"><div style="border-top:1px solid var(--color-border-primary);padding-top:8px;margin-top:50px;font-size:12px;">Approved by</div></div>
         </div>
-        
-        <div class="footer">
-            <p style="font-size: 9pt; margin: 5px 0;"><strong>Report Details:</strong></p>
-            <p style="font-size: 9pt; margin: 3px 0;">Generated: <?php echo date('F d, Y h:i A'); ?></p>
-            <p style="font-size: 9pt; margin: 3px 0;">Contact: <?php echo esc_html($admin_email); ?></p>
-        </div>
-        
-        <div class="notes">
-            <p><strong>Notes:</strong></p>
-            <p>1. This financial statement is prepared for internal management purposes.</p>
-            <p>2. All figures are subject to audit and verification.</p>
-            <p>3. This document is auto-generated by BNTM Hub Financial Management System.</p>
-        </div>
-    </body>
-    </html>
-    <?php
-    $html = ob_get_clean();
-    
-    // Check if we can use TCPDF or mPDF
-    // For now, we'll use browser's print-to-PDF capability with proper formatting
-    
-    header('Content-Type: text/html; charset=UTF-8');
-    echo $html;
-    
-    // Add auto-print script
-    echo '<script>window.print();</script>';
-    exit;
+    </div>
+    <?php return ob_get_clean();
 }
-function bntm_fn_export_tab() {
-    $nonce = wp_create_nonce('bntm_fn_action');
-    $currency = bntm_get_setting('ec_currency', 'PHP');
-    
-    ob_start();
-    ?>
+
+/* ============================================================
+   TAB: SETTINGS
+   ============================================================ */
+function fn_settings_tab() {
+    $nonce        = wp_create_nonce('bntm_fn_action');
+    $business_id  = fn_get_current_business_id();
+    $income_cats  = fn_get_categories_for_business('income', $business_id);
+    $expense_cats = fn_get_categories_for_business('expense', $business_id);
+    ob_start(); ?>
+    <?php echo fn_js_head(); ?>
     <div class="bntm-form-section">
-        <h3>Export Transactions</h3>
-        <p>Download transaction data in CSV format for accounting or BIR compliance</p>
-        
-        <form id="bntm-fn-export-form" class="bntm-form">
+        <h3>Transaction categories</h3>
+        <p style="font-size:13px;color:var(--color-text-secondary);margin-bottom:16px;">These categories apply only to the current business across Transactions, Recurring Expenses, and Budgets.</p>
+        <form id="fn-cat-form" class="bntm-form">
             <div class="bntm-form-row">
                 <div class="bntm-form-group">
-                    <label for="export_start">Start Date</label>
-                    <input type="date" id="export_start" name="start_date" required>
+                    <label>Income categories (one per line)</label>
+                    <textarea name="income_categories" class="fn-input" rows="6" style="resize:vertical;"><?php echo implode("\n",$income_cats); ?></textarea>
                 </div>
                 <div class="bntm-form-group">
-                    <label for="export_end">End Date</label>
-                    <input type="date" id="export_end" name="end_date" required>
+                    <label>Expense categories (one per line)</label>
+                    <textarea name="expense_categories" class="fn-input" rows="6" style="resize:vertical;"><?php echo implode("\n",$expense_cats); ?></textarea>
                 </div>
             </div>
-            
-            <div class="bntm-form-group">
-                <label for="export_type">Transaction Type</label>
-                <select id="export_type" name="export_type">
-                    <option value="all">All Transactions</option>
-                    <option value="income">Income Only</option>
-                    <option value="expense">Expenses Only</option>
-                </select>
-            </div>
-            
-            <button type="submit" class="bntm-btn-primary">Download CSV</button>
+            <input type="hidden" name="action" value="fn_save_categories">
+            <input type="hidden" name="_ajax_nonce" value="<?php echo $nonce; ?>">
+            <button type="submit" class="bntm-btn-primary">Save categories</button>
+            <div id="fn-cat-msg" style="margin-top:8px;"></div>
         </form>
     </div>
-    
     <script>
-    document.getElementById('bntm-fn-export-form').addEventListener('submit', function(e) {
+    document.getElementById('fn-cat-form').addEventListener('submit', function(e){
         e.preventDefault();
-        
-        const params = new URLSearchParams({
-            action: 'bntm_fn_export_csv',
-            start_date: this.start_date.value,
-            end_date: this.end_date.value,
-            export_type: this.export_type.value,
-            _ajax_nonce: '<?php echo $nonce; ?>'
-        });
-        
-        window.location.href = ajaxurl + '?' + params.toString();
-    });
-    </script>
-    <?php
-    return ob_get_clean();
-}
-
-function bntm_fn_settings_tab() {
-    $current_user = wp_get_current_user();
-    $is_wp_admin = current_user_can('manage_options');
-    $current_role = bntm_get_user_role($current_user->ID);
-    
-    if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) {
-        return '<div class="bntm-notice bntm-notice-error">Only Admins, Owners, and Managers can access settings.</div>';
-    }
-    
-    $currency = bntm_get_setting('ec_currency', 'PHP');
-    $income_cats = json_decode(bntm_get_setting('fn_categories_income', '[]'), true);
-    $expense_cats = json_decode(bntm_get_setting('fn_categories_expense', '[]'), true);
-    $nonce = wp_create_nonce('bntm_fn_action');
-    
-    ob_start();
-    ?>
-    
-    
-    <div class="bntm-form-section" style="margin-top: 30px;">
-        <h3>Transaction Categories</h3>
-        
-        <form id="bntm-fn-categories-form" class="bntm-form">
-            <div class="bntm-form-group">
-                <label for="income_categories">Income Categories (one per line)</label>
-                <textarea id="income_categories" name="income_categories" rows="6"><?php echo implode("\n", $income_cats); ?></textarea>
-            </div>
-            
-            <div class="bntm-form-group">
-                <label for="expense_categories">Expense Categories (one per line)</label>
-                <textarea id="expense_categories" name="expense_categories" rows="6"><?php echo implode("\n", $expense_cats); ?></textarea>
-            </div>
-            
-            <button type="submit" class="bntm-btn-primary">Save Categories</button>
-            <div id="categories-message"></div>
-        </form>
-    </div>
-    
-    <script>
-    var ajaxurl = '<?php echo admin_url('admin-ajax.php'); ?>';
-    
-    
-    // Save categories
-    document.getElementById('bntm-fn-categories-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        
-        const form = this;
-        const msg = document.getElementById('categories-message');
-        const btn = form.querySelector('button[type="submit"]');
-        
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
-        
-        const data = new FormData();
-        data.append('action', 'bntm_fn_save_categories');
-        data.append('income_categories', form.income_categories.value);
-        data.append('expense_categories', form.expense_categories.value);
-        data.append('_ajax_nonce', '<?php echo $nonce; ?>');
-        
-        fetch(ajaxurl, {method: 'POST', body: data})
-        .then(r => r.json())
-        .then(json => {
-            msg.innerHTML = '<div class="bntm-notice bntm-notice-' + (json.success ? 'success' : 'error') + '">' + json.data + '</div>';
-            btn.disabled = false;
-            btn.textContent = 'Save Categories';
-            
-            if (json.success) {
-                setTimeout(() => location.reload(), 1500);
-            }
+        var btn = this.querySelector('button[type="submit"]'); btn.disabled = true; btn.textContent = 'Saving...';
+        fetch(ajaxurl, {method:'POST', body:new FormData(this)}).then(r=>r.json()).then(j=>{
+            document.getElementById('fn-cat-msg').innerHTML = '<div class="bntm-notice bntm-notice-'+(j.success?'success':'error')+'">'+j.data+'</div>';
+            btn.disabled = false; btn.textContent = 'Save categories';
         });
     });
     </script>
-    <?php
-    return ob_get_clean();
+    <?php return ob_get_clean();
 }
 
-/* ---------- HELPER FUNCTIONS ---------- */
+/* ============================================================
+   AJAX HANDLERS
+   ============================================================ */
 
-function bntm_fn_get_transactions($limit = 50) {
-    global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    
-    return $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM {$table} ORDER BY created_at DESC LIMIT %d",
-        $limit
-    ));
-}
-
-function bntm_fn_get_monthly_report($year, $month) {
-    global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    
-    $stats = $wpdb->get_row($wpdb->prepare("
-        SELECT 
-            SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as income,
-            SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as expense,
-            SUM(CASE WHEN type='income' THEN amount ELSE -amount END) as balance
-        FROM {$table}
-        WHERE YEAR(created_at) = %d AND MONTH(created_at) = %d
-    ", $year, $month));
-    
-    return [
-        'income' => $stats->income ?? 0,
-        'expense' => $stats->expense ?? 0,
-        'balance' => $stats->balance ?? 0
-    ];
-}
-
-function bntm_fn_get_category_breakdown($year, $month) {
-    global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    
-    return $wpdb->get_results($wpdb->prepare("
-        SELECT category, type, SUM(amount) as total
-        FROM {$table}
-        WHERE YEAR(created_at) = %d AND MONTH(created_at) = %d
-        GROUP BY category, type
-        ORDER BY total DESC
-    ", $year, $month));
-}
-
-function bntm_fn_update_cashflow_summary() {
-    global $wpdb;
-    $txn_table = $wpdb->prefix . 'fn_transactions';
-    $summary_table = $wpdb->prefix . 'fn_cashflow_summary';
-    
-    // Get current month period
-    $period = date('Y-m');
-    
-    $stats = $wpdb->get_row("
-        SELECT 
-            SUM(CASE WHEN type='income' THEN amount ELSE 0 END) as total_income,
-            SUM(CASE WHEN type='expense' THEN amount ELSE 0 END) as total_expense,
-            SUM(CASE WHEN type='income' THEN amount ELSE -amount END) as balance
-        FROM {$txn_table}
-        WHERE DATE_FORMAT(created_at, '%Y-%m') = '{$period}'
-    ");
-    
-    // Check if summary exists
-    $exists = $wpdb->get_var($wpdb->prepare(
-        "SELECT id FROM {$summary_table} WHERE period = %s ",
-        $period
-    ));
-    
-    $data = [
-        'period' => $period,
-        'business_id' => 0,
-        'total_income' => $stats->total_income ?? 0,
-        'total_expense' => $stats->total_expense ?? 0,
-        'balance' => $stats->balance ?? 0
-    ];
-    
-    if ($exists) {
-        $wpdb->update($summary_table, $data, ['id' => $exists]);
-    } else {
-        $data['rand_id'] = bntm_rand_id();
-        $wpdb->insert($summary_table, $data);
-    }
-}
-
-/* ---------- AJAX HANDLERS ---------- */
 function bntm_ajax_fn_save_transaction() {
     check_ajax_referer('bntm_fn_action');
-    
-    if (!is_user_logged_in()) {
-        wp_send_json_error('Please log in.');
-    }
-    
+    if (!is_user_logged_in()) { wp_send_json_error('Please log in.'); }
     global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    
-    $data = [
-        'rand_id' => bntm_rand_id(),
-        'business_id' => 0,
-        'type' => sanitize_text_field($_POST['type']),
-        'amount' => floatval($_POST['amount']),
-        'category' => sanitize_text_field($_POST['category']),
-        'notes' => sanitize_textarea_field($_POST['notes'])
-    ];
-    
-    $result = $wpdb->insert($table, $data);
-    
-    if ($result) {
-        bntm_fn_update_cashflow_summary();
-        wp_send_json_success('Transaction added successfully!');
+    $business_id = fn_get_current_business_id();
+    if ($business_id <= 0) { wp_send_json_error('Business context unavailable.'); }
+    $result = $wpdb->insert($wpdb->prefix.'fn_transactions', [
+        'rand_id'     => bntm_rand_id(),
+        'business_id' => $business_id,
+        'type'        => sanitize_text_field($_POST['type']),
+        'amount'      => floatval($_POST['amount']),
+        'category'    => sanitize_text_field($_POST['category']),
+        'notes'       => sanitize_textarea_field($_POST['notes'] ?? ''),
+        'created_at'  => !empty($_POST['created_at']) 
+            ? sanitize_text_field($_POST['created_at']) . ' ' . current_time('H:i:s')
+            : current_time('mysql'),
+    ]);
+    if ($result) { fn_update_cashflow_summary($business_id); wp_send_json_success('Transaction added!'); }
+    else wp_send_json_error('Failed to save.');
+}
+
+function bntm_ajax_fn_update_transaction() {
+    check_ajax_referer('bntm_fn_action');
+    if (!is_user_logged_in()) wp_send_json_error('Unauthorized');
+
+    global $wpdb;
+    $id = intval($_POST['id']);
+    $business_id = fn_get_current_business_id();
+
+    if ($business_id <= 0) {
+        wp_send_json_error('Business context unavailable.');
+    }
+
+    $existing = $wpdb->get_var($wpdb->prepare(
+        "SELECT id FROM {$wpdb->prefix}fn_transactions WHERE id = %d AND business_id = %d",
+        $id,
+        $business_id
+    ));
+
+    if (!$existing) {
+        wp_send_json_error('Transaction not found.');
+    }
+
+    $updated = $wpdb->update(
+        $wpdb->prefix.'fn_transactions',
+        [
+            'type'       => sanitize_text_field($_POST['type']),
+            'amount'     => floatval($_POST['amount']),
+            'category'   => sanitize_text_field($_POST['category']),
+            'notes'      => sanitize_textarea_field($_POST['notes'] ?? ''),
+            'created_at' => sanitize_text_field($_POST['created_at']) . ' ' . current_time('H:i:s'),
+        ],
+        ['id' => $id, 'business_id' => $business_id]
+    );
+
+    if ($updated !== false) {
+        fn_update_cashflow_summary($business_id);
+        wp_send_json_success('Transaction updated!');
     } else {
-        wp_send_json_error('Failed to add transaction.');
+        wp_send_json_error('Update failed.');
     }
 }
 
 function bntm_ajax_fn_delete_transaction() {
     check_ajax_referer('bntm_fn_action');
-    
-    if (!is_user_logged_in()) {
-        wp_send_json_error('Please log in.');
-    }
-    
+    if (!is_user_logged_in()) { wp_send_json_error('Unauthorized'); }
     global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    $id = intval($_POST['id']);
-    
-    // Don't allow deleting imported transactions
-    $txn = $wpdb->get_row($wpdb->prepare("SELECT reference_type FROM {$table} WHERE id = %d", $id));
-    if ($txn && $txn->reference_type) {
-        wp_send_json_error('Cannot delete imported transactions. Use revert instead.');
-    }
-    
-    $result = $wpdb->delete($table, ['id' => $id]);
-    
-    if ($result) {
-        bntm_fn_update_cashflow_summary();
-        wp_send_json_success('Transaction deleted.');
-    } else {
-        wp_send_json_error('Failed to delete transaction.');
-    }
+    $t   = $wpdb->prefix.'fn_transactions';
+    $id  = intval($_POST['id']);
+    $business_id = fn_get_current_business_id();
+    if ($business_id <= 0) { wp_send_json_error('Business context unavailable.'); }
+    $row = $wpdb->get_row($wpdb->prepare("SELECT reference_type FROM {$t} WHERE id=%d AND business_id=%d", $id, $business_id));
+    if (!$row) { wp_send_json_error('Transaction not found.'); return; }
+    if ($row && $row->reference_type) { wp_send_json_error('Cannot delete imported transactions.'); return; }
+    $wpdb->delete($t, ['id'=>$id, 'business_id'=>$business_id], ['%d', '%d']);
+    fn_update_cashflow_summary($business_id);
+    wp_send_json_success('Deleted.');
 }
-
 
 function bntm_ajax_fn_save_categories() {
     check_ajax_referer('bntm_fn_action');
-    
-    if (!is_user_logged_in()) {
-        wp_send_json_error('Please log in.');
+    if (!is_user_logged_in()) { wp_send_json_error('Unauthorized'); }
+    $business_id = fn_get_current_business_id();
+    fn_update_setting_for_business(
+        'fn_income_categories',
+        wp_json_encode(array_values(array_filter(array_map('trim', explode("\n", $_POST['income_categories'] ?? ''))))),
+        $business_id
+    );
+    fn_update_setting_for_business(
+        'fn_expense_categories',
+        wp_json_encode(array_values(array_filter(array_map('trim', explode("\n", $_POST['expense_categories'] ?? ''))))),
+        $business_id
+    );
+    wp_send_json_success('Categories saved!');
+}
+
+function bntm_ajax_fn_save_recurring() {
+    check_ajax_referer('bntm_fn_action');
+    if (!is_user_logged_in()) { wp_send_json_error('Unauthorized'); }
+    global $wpdb;
+    $t   = $wpdb->prefix.'fn_recurring_expenses';
+    $bid = fn_get_current_business_id();
+    $eid = intval($_POST['expense_id']??0);
+    if ($bid <= 0) { wp_send_json_error('Business context unavailable.'); }
+    $data = [
+        'business_id' => $bid,
+        'name'        => sanitize_text_field($_POST['name']),
+        'amount'      => floatval($_POST['amount']),
+        'category'    => sanitize_text_field($_POST['category']??'Other Expense'),
+        'frequency'   => sanitize_text_field($_POST['frequency']??'monthly'),
+        'is_active'   => 1,
+    ];
+    if ($eid > 0) {
+        $existing = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$t} WHERE id = %d AND business_id = %d", $eid, $bid));
+        if (!$existing) { wp_send_json_error('Recurring expense not found.'); }
+        $wpdb->update($t, $data, ['id'=>$eid, 'business_id'=>$bid], null, ['%d', '%d']);
+        wp_send_json_success('Updated!');
+    } else {
+        $data['rand_id'] = bntm_rand_id();
+        $wpdb->insert($t, $data);
+        wp_send_json_success('Added!');
     }
-    
-    $current_user = wp_get_current_user();
-    $is_wp_admin = current_user_can('manage_options');
-    $current_role = bntm_get_user_role($current_user->ID);
-    
-    if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) {
-        wp_send_json_error('Unauthorized.');
+}
+
+function bntm_ajax_fn_delete_recurring() {
+    check_ajax_referer('bntm_fn_action');
+    if (!is_user_logged_in()) { wp_send_json_error('Unauthorized'); }
+    global $wpdb;
+    $business_id = fn_get_current_business_id();
+    if ($business_id <= 0) { wp_send_json_error('Business context unavailable.'); }
+    $wpdb->delete($wpdb->prefix.'fn_recurring_expenses', [
+        'id'          => intval($_POST['expense_id']),
+        'business_id' => $business_id,
+    ], ['%d', '%d']);
+    wp_send_json_success('Deleted.');
+}
+
+function bntm_ajax_fn_save_budget() {
+    check_ajax_referer('bntm_fn_action');
+    if (!is_user_logged_in()) { wp_send_json_error('Unauthorized'); }
+    global $wpdb;
+    $t      = $wpdb->prefix.'fn_budgets';
+    $bid    = fn_get_current_business_id();
+    $period = sanitize_text_field($_POST['period']);
+    $cat    = sanitize_text_field($_POST['category']);
+    $type   = sanitize_text_field($_POST['budget_type']);
+    $amt    = floatval($_POST['budgeted_amount']);
+    if ($bid <= 0) { wp_send_json_error('Business context unavailable.'); }
+    $exists = $wpdb->get_var($wpdb->prepare(
+        "SELECT id FROM {$t} WHERE business_id=%d AND period=%s AND category=%s AND budget_type=%s",
+        $bid, $period, $cat, $type));
+    if ($exists) {
+        $wpdb->update($t, ['budgeted_amount'=>$amt], ['id'=>$exists, 'business_id'=>$bid], null, ['%d', '%d']);
+        wp_send_json_success('Budget updated!');
+    } else {
+        $wpdb->insert($t, ['rand_id'=>bntm_rand_id(),'business_id'=>$bid,'period'=>$period,'category'=>$cat,'budget_type'=>$type,'budgeted_amount'=>$amt]);
+        wp_send_json_success('Budget saved!');
     }
-    
-    $income_cats = array_filter(array_map('trim', explode("\n", $_POST['income_categories'])));
-    $expense_cats = array_filter(array_map('trim', explode("\n", $_POST['expense_categories'])));
-    
-    bntm_set_setting('fn_categories_income', json_encode($income_cats));
-    bntm_set_setting('fn_categories_expense', json_encode($expense_cats));
-    
-    wp_send_json_success('Categories saved successfully!');
+}
+
+function bntm_ajax_fn_delete_budget() {
+    check_ajax_referer('bntm_fn_action');
+    if (!is_user_logged_in()) { wp_send_json_error('Unauthorized'); }
+    global $wpdb;
+    $business_id = fn_get_current_business_id();
+    if ($business_id <= 0) { wp_send_json_error('Business context unavailable.'); }
+    $wpdb->delete($wpdb->prefix.'fn_budgets', [
+        'id'          => intval($_POST['budget_id']),
+        'business_id' => $business_id,
+    ], ['%d', '%d']);
+    wp_send_json_success('Deleted.');
+}
+
+function bntm_ajax_fn_generate_pdf() {
+    check_ajax_referer('bntm_fn_action');
+    if (!is_user_logged_in()) wp_die('Unauthorized');
+    $y       = intval($_GET['year']??date('Y'));
+    $m       = intval($_GET['month']??date('m'));
+    $stats   = fn_get_stats($y,$m);
+    $bdown   = fn_get_category_breakdown('income',$y,$m);
+    $edown   = fn_get_category_breakdown('expense',$y,$m);
+    $company = bntm_get_setting('fn_biz_name', get_bloginfo('name'));
+    $currency= fn_currency();
+    $period  = date('F Y',mktime(0,0,0,$m,1,$y));
+    ob_start(); ?>
+<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+@page{margin:2cm}body{font-family:Arial,sans-serif;font-size:11pt;color:#000}
+.hdr{text-align:center;margin-bottom:24px;padding-bottom:12px;border-bottom:2px solid #000}
+.hdr h1{margin:0 0 4px;font-size:18pt}table{width:100%;border-collapse:collapse;margin:16px 0}
+th{background:#f0f0f0;padding:9px;text-align:left;border-bottom:2px solid #000;font-weight:700}
+td{padding:7px 9px;border-bottom:1px solid #ddd}.amt{text-align:right;font-family:'Courier New',monospace}
+.sh{background:#f5f5f5;font-weight:700;border-top:2px solid #bbb;border-bottom:1px solid #bbb}
+.sub td{font-weight:700;border-top:1px solid #bbb}.tot td{font-size:13pt;font-weight:700;border-top:3px double #000;border-bottom:3px double #000}
+.sigs{display:table;width:100%;margin-top:50px}.sc{display:table-cell;width:50%;text-align:center}.sl{border-top:1px solid #000;margin-top:50px;padding-top:6px;font-size:10pt}
+.ftr{margin-top:30px;padding-top:10px;border-top:1px solid #ddd;font-size:9pt;color:#777}
+</style></head><body>
+<div class="hdr"><h1><?php echo esc_html($company); ?></h1><h2 style="font-size:14pt;font-weight:normal;">INCOME STATEMENT</h2>
+<p>For the Month of <?php echo $period; ?></p><?php if($currency==='PHP'):?><p style="font-size:9pt;color:#666;">In accordance with Philippine Financial Reporting Standards (PFRS)<br>All amounts in Philippine Pesos (PHP)</p><?php endif;?></div>
+<table>
+<thead><tr><th style="width:70%;">Particulars</th><th class="amt">Amount (<?php echo $currency;?>)</th></tr></thead>
+<tbody>
+<tr class="sh"><td colspan="2">REVENUE</td></tr>
+<?php if(empty($bdown)):?><tr><td style="padding-left:20px;color:#888;">No revenue recorded</td><td class="amt">—</td></tr>
+<?php else:foreach($bdown as $r):?><tr><td style="padding-left:20px;"><?php echo esc_html($r->category);?></td><td class="amt"><?php echo number_format($r->total,2);?></td></tr><?php endforeach;endif;?>
+<tr class="sub"><td style="padding-left:20px;">Total Revenue</td><td class="amt"><?php echo number_format($stats['month_income'],2);?></td></tr>
+<tr class="sh"><td colspan="2">EXPENSES</td></tr>
+<?php if(empty($edown)):?><tr><td style="padding-left:20px;color:#888;">No expenses recorded</td><td class="amt">—</td></tr>
+<?php else:foreach($edown as $r):?><tr><td style="padding-left:20px;"><?php echo esc_html($r->category);?></td><td class="amt"><?php echo number_format($r->total,2);?></td></tr><?php endforeach;endif;?>
+<tr class="sub"><td style="padding-left:20px;">Total Expenses</td><td class="amt"><?php echo number_format($stats['month_expense'],2);?></td></tr>
+<tr class="tot"><td>NET INCOME <?php echo $stats['month_net']<0?'(LOSS)':'';?></td><td class="amt"><?php echo $stats['month_net']<0?'(':'';?><?php echo number_format(abs($stats['month_net']),2);?><?php echo $stats['month_net']<0?')':'';?></td></tr>
+</tbody></table>
+<div class="sigs"><div class="sc"><div class="sl">Prepared by</div></div><div class="sc"><div class="sl">Approved by</div></div></div>
+<div class="ftr"><p>Generated: <?php echo date('F d, Y h:i A');?></p><p>BNTM Hub Finance Management System</p></div>
+<script>window.print();</script></body></html>
+    <?php
+    $html = ob_get_clean();
+    header('Content-Type:text/html;charset=UTF-8');
+    echo $html;
+    exit;
 }
 
 function bntm_ajax_fn_export_csv() {
     check_ajax_referer('bntm_fn_action');
-    
-    if (!is_user_logged_in()) {
-        wp_die('Unauthorized');
-    }
-    
+    if (!is_user_logged_in()) wp_die('Unauthorized');
     global $wpdb;
-    $table = $wpdb->prefix . 'fn_transactions';
-    
-    $start_date = sanitize_text_field($_GET['start_date']);
-    $end_date = sanitize_text_field($_GET['end_date']);
-    $export_type = sanitize_text_field($_GET['export_type']);
-    
-    $where = "created_at BETWEEN '{$start_date}' AND '{$end_date}'";
-    
-    if ($export_type === 'income') {
-        $where .= " AND type='income'";
-    } elseif ($export_type === 'expense') {
-        $where .= " AND type='expense'";
-    }
-    
-    $transactions = $wpdb->get_results("SELECT * FROM {$table} WHERE {$where} ORDER BY created_at DESC");
-    
-    // Generate CSV
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename=finance_export_' . date('Y-m-d') . '.csv');
-    
-    $output = fopen('php://output', 'w');
-    
-    // CSV headers
-    fputcsv($output, ['Date', 'Type', 'Category', 'Amount', 'Notes', 'Reference']);
-    
-    foreach ($transactions as $txn) {
-        fputcsv($output, [
-            date('Y-m-d H:i:s', strtotime($txn->created_at)),
-            ucfirst($txn->type),
-            $txn->category,
-            number_format($txn->amount, 2),
-            $txn->notes,
-            $txn->reference_type ? $txn->reference_type . ' #' . $txn->reference_id : ''
+    $bid  = fn_get_current_business_id();
+    if ($bid <= 0) wp_die('Business context unavailable');
+    $rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$wpdb->prefix}fn_transactions WHERE business_id=%d ORDER BY created_at DESC", $bid));
+    header('Content-Type:text/csv;charset=utf-8');
+    header('Content-Disposition:attachment;filename=finance_export_'.date('Y-m-d').'.csv');
+    $out = fopen('php://output','w');
+    fputcsv($out,['Date','Type','Category','Amount','Notes','Reference']);
+    foreach ($rows as $tx) {
+        fputcsv($out,[
+            date('Y-m-d H:i:s',strtotime($tx->created_at)),
+            ucfirst($tx->type),
+            $tx->category,
+            number_format($tx->amount,2),
+            $tx->notes,
+            $tx->reference_type ? $tx->reference_type.'#'.$tx->reference_id : '',
         ]);
     }
-    
-    fclose($output);
+    fclose($out);
     exit;
 }
 
-
-// Cron job to update cashflow summary (run nightly)
-add_action('bntm_fn_update_summary_cron', 'bntm_fn_update_cashflow_summary');
-
-// Schedule cron on activation
-register_activation_hook(__FILE__, 'bntm_fn_activate');
-function bntm_fn_activate() {
-    if (!wp_next_scheduled('bntm_fn_update_summary_cron')) {
-        wp_schedule_event(time(), 'daily', 'bntm_fn_update_summary_cron');
-    }
+/* ============================================================
+   CRON
+   ============================================================ */
+add_action('bntm_fn_update_summary_cron','fn_update_cashflow_summary');
+register_activation_hook(__FILE__,'bntm_fn_activate');
+function bntm_fn_activate(){
+    if(!wp_next_scheduled('bntm_fn_update_summary_cron'))
+        wp_schedule_event(time(),'daily','bntm_fn_update_summary_cron');
 }
-
-// Clear cron on deactivation
-register_deactivation_hook(__FILE__, 'bntm_fn_deactivate');
-function bntm_fn_deactivate() {
+register_deactivation_hook(__FILE__,'bntm_fn_deactivate');
+function bntm_fn_deactivate(){
     wp_clear_scheduled_hook('bntm_fn_update_summary_cron');
 }

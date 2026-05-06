@@ -4,7 +4,7 @@
  * Module Slug: bk
  * Description: Appointment booking system with calendar, time slots, and payment integration
  * Version: 1.0.2
- * Author: James Mocorro
+ * Author: Your Name
  * Icon: 📅
  */
 
@@ -166,6 +166,57 @@ function bntm_bk_initialize_operating_hours() {
     }
 }
 
+function bk_get_closed_dates() {
+    $closed_dates = json_decode(bntm_get_setting('bk_closed_dates', '[]'), true);
+
+    if (!is_array($closed_dates)) {
+        return [];
+    }
+
+    $normalized = [];
+
+    foreach ($closed_dates as $entry) {
+        $date = sanitize_text_field($entry['date'] ?? '');
+        $reason = sanitize_text_field($entry['reason'] ?? '');
+        $date_obj = DateTime::createFromFormat('Y-m-d', $date);
+
+        if (!$date_obj || $date_obj->format('Y-m-d') !== $date) {
+            continue;
+        }
+
+        $normalized[] = [
+            'date' => $date,
+            'reason' => $reason
+        ];
+    }
+
+    usort($normalized, function($a, $b) {
+        return strcmp($a['date'], $b['date']);
+    });
+
+    return $normalized;
+}
+
+function bk_is_closed_date($date) {
+    foreach (bk_get_closed_dates() as $entry) {
+        if ($entry['date'] === $date) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function bk_get_closed_date_reason($date) {
+    foreach (bk_get_closed_dates() as $entry) {
+        if ($entry['date'] === $date) {
+            return $entry['reason'];
+        }
+    }
+
+    return '';
+}
+
 
 // AJAX handlers
 add_action('wp_ajax_bk_get_available_slots', 'bntm_ajax_bk_get_available_slots');
@@ -173,6 +224,37 @@ add_action('wp_ajax_nopriv_bk_get_available_slots', 'bntm_ajax_bk_get_available_
 add_action('wp_ajax_bk_book_appointment', 'bntm_ajax_bk_book_appointment');
 add_action('wp_ajax_nopriv_bk_book_appointment', 'bntm_ajax_bk_book_appointment');
 add_action('wp_ajax_bk_update_booking_status', 'bntm_ajax_bk_update_booking_status');
+add_action('wp_ajax_bk_add_closed_date', 'bntm_ajax_bk_add_closed_date');
+add_action('wp_ajax_bk_remove_closed_date', 'bntm_ajax_bk_remove_closed_date');
+
+function bk_get_current_access_role() {
+    if (!is_user_logged_in()) {
+        return 'guest';
+    }
+
+    if (current_user_can('manage_options')) {
+        return 'admin';
+    }
+
+    $current_user = wp_get_current_user();
+    $current_role = bntm_get_user_role($current_user->ID);
+
+    return $current_role ? $current_role : 'user';
+}
+
+function bk_current_user_can_manage_all() {
+    return in_array(bk_get_current_access_role(), ['admin', 'owner'], true);
+}
+
+function bk_current_user_can_access_staff_booking_tools() {
+    return in_array(bk_get_current_access_role(), ['admin', 'owner', 'manager', 'staff'], true);
+}
+
+function bk_get_allowed_dashboard_tabs() {
+    return bk_current_user_can_manage_all()
+        ? ['overview', 'services', 'calendar', 'bookings', 'hours', 'import', 'settings']
+        : ['calendar', 'bookings'];
+}
 
 /* ---------- MAIN DASHBOARD SHORTCODE ---------- */
 
@@ -181,13 +263,14 @@ function bntm_shortcode_bk_dashboard() {
         return '<div class="bntm-notice">Please log in to access the Booking dashboard.</div>';
     }
     
-    $is_admin_user = current_user_can('manage_options');
-    
     $business_id = get_current_user_id();
-    $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'overview';
-    
-    if (!$is_admin_user && !in_array($active_tab, ['calendar', 'bookings'], true)) {
-        $active_tab = 'calendar';
+    $allowed_tabs = bk_get_allowed_dashboard_tabs();
+    $default_tab = bk_current_user_can_manage_all() ? 'overview' : 'calendar';
+    $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : $default_tab;
+    $dashboard_url = get_permalink();
+
+    if (!in_array($active_tab, $allowed_tabs, true)) {
+        $active_tab = $default_tab;
     }
     
     ob_start();
@@ -218,18 +301,26 @@ function bntm_shortcode_bk_dashboard() {
     </style>
     <div class="bntm-booking-container">
         <div class="bntm-tabs">
-            <?php if ($is_admin_user): ?>
-            <a href="?tab=overview" class="bntm-tab <?php echo $active_tab === 'overview' ? 'active' : ''; ?>">Overview</a>
-            <a href="?tab=services" class="bntm-tab <?php echo $active_tab === 'services' ? 'active' : ''; ?>">Services</a>
+            <?php if (in_array('overview', $allowed_tabs, true)): ?>
+            <a href="<?php echo esc_url(add_query_arg('tab', 'overview', $dashboard_url)); ?>" class="bntm-tab <?php echo $active_tab === 'overview' ? 'active' : ''; ?>">Overview</a>
             <?php endif; ?>
-            <a href="?tab=calendar" class="bntm-tab <?php echo $active_tab === 'calendar' ? 'active' : ''; ?>">Calendar</a>
-            <a href="?tab=bookings" class="bntm-tab <?php echo $active_tab === 'bookings' ? 'active' : ''; ?>">All Bookings</a>
-            <?php if ($is_admin_user): ?>
-            <a href="?tab=hours" class="bntm-tab <?php echo $active_tab === 'hours' ? 'active' : ''; ?>">Operating Hours</a>
-             <?php if (bntm_is_module_enabled('fn') && bntm_is_module_visible('fn')): ?>
-            <a href="?tab=import" class="bntm-tab <?php echo $active_tab === 'import' ? 'active' : ''; ?>">Import to Finance</a>
-              <?php endif; ?>
-            <a href="?tab=settings" class="bntm-tab <?php echo $active_tab === 'settings' ? 'active' : ''; ?>">Settings</a>
+            <?php if (in_array('services', $allowed_tabs, true)): ?>
+            <a href="<?php echo esc_url(add_query_arg('tab', 'services', $dashboard_url)); ?>" class="bntm-tab <?php echo $active_tab === 'services' ? 'active' : ''; ?>">Services</a>
+            <?php endif; ?>
+            <?php if (in_array('calendar', $allowed_tabs, true)): ?>
+            <a href="<?php echo esc_url(add_query_arg('tab', 'calendar', $dashboard_url)); ?>" class="bntm-tab <?php echo $active_tab === 'calendar' ? 'active' : ''; ?>">Calendar</a>
+            <?php endif; ?>
+            <?php if (in_array('bookings', $allowed_tabs, true)): ?>
+            <a href="<?php echo esc_url(add_query_arg('tab', 'bookings', $dashboard_url)); ?>" class="bntm-tab <?php echo $active_tab === 'bookings' ? 'active' : ''; ?>">All Bookings</a>
+            <?php endif; ?>
+            <?php if (in_array('hours', $allowed_tabs, true)): ?>
+            <a href="<?php echo esc_url(add_query_arg('tab', 'hours', $dashboard_url)); ?>" class="bntm-tab <?php echo $active_tab === 'hours' ? 'active' : ''; ?>">Operating Hours</a>
+            <?php endif; ?>
+            <?php if (in_array('import', $allowed_tabs, true) && bntm_is_module_enabled('fn') && bntm_is_module_visible('fn')): ?>
+            <a href="<?php echo esc_url(add_query_arg('tab', 'import', $dashboard_url)); ?>" class="bntm-tab <?php echo $active_tab === 'import' ? 'active' : ''; ?>">Import to Finance</a>
+            <?php endif; ?>
+            <?php if (in_array('settings', $allowed_tabs, true)): ?>
+            <a href="<?php echo esc_url(add_query_arg('tab', 'settings', $dashboard_url)); ?>" class="bntm-tab <?php echo $active_tab === 'settings' ? 'active' : ''; ?>">Settings</a>
             <?php endif; ?>
         </div>
         
@@ -258,7 +349,6 @@ function bntm_shortcode_bk_dashboard() {
 }
 
 /* ---------- TAB FUNCTIONS ---------- */
-
 function bk_overview_tab($business_id) {
     $stats = bk_get_dashboard_stats($business_id);
     $booking_page = get_page_by_path('book-appointment');
@@ -266,74 +356,274 @@ function bk_overview_tab($business_id) {
     
     ob_start();
     ?>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script>
     var ajaxurl = '<?php echo admin_url('admin-ajax.php'); ?>';
     </script>
     
     <?php if ($booking_url): ?>
-    <div class="bntm-form-section" style="background: #eff6ff; border-left: 4px solid #3b82f6;">
-        <h3>Your Booking Page</h3>
-        <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-            <input type="text" id="booking-url" value="<?php echo esc_url($booking_url); ?>" readonly style="flex: 1; min-width: 300px; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; background: white;">
+    <div class="bntm-booking-page-card">
+        <div class="bntm-booking-header">
+            <h3>Your Booking Page</h3>
+            <span class="bntm-status-badge">Active</span>
+        </div>
+        <div class="bntm-booking-actions">
+            <input type="text" id="booking-url" value="<?php echo esc_url($booking_url); ?>" readonly class="bntm-url-input">
             <button class="bntm-btn-secondary" id="copy-booking-url">Copy Link</button>
-            <a href="<?php echo esc_url($booking_url); ?>" target="_blank" class="bntm-btn-primary">View Booking</a>
+            <a href="<?php echo esc_url($booking_url); ?>" target="_blank" class="bntm-btn-primary">View Booking Page</a>
         </div>
     </div>
     <?php endif; ?>
     
     <div class="bntm-dashboard-stats">
         <div class="bntm-stat-card">
-            <h3>Total Services</h3>
-            <p class="bntm-stat-number"><?php echo esc_html($stats['total_services']); ?></p>
+            <div class="bntm-stat-icon bntm-stat-icon-primary">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7"></rect>
+                    <rect x="14" y="3" width="7" height="7"></rect>
+                    <rect x="14" y="14" width="7" height="7"></rect>
+                    <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
+            </div>
+            <div class="bntm-stat-content">
+                <h3>Total Services</h3>
+                <p class="bntm-stat-number"><?php echo esc_html($stats['total_services']); ?></p>
+            </div>
         </div>
+        
         <div class="bntm-stat-card">
-            <h3>Total Bookings</h3>
-            <p class="bntm-stat-number"><?php echo esc_html($stats['total_bookings']); ?></p>
+            <div class="bntm-stat-icon bntm-stat-icon-primary">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+                    <line x1="16" y1="2" x2="16" y2="6"></line>
+                    <line x1="8" y1="2" x2="8" y2="6"></line>
+                    <line x1="3" y1="10" x2="21" y2="10"></line>
+                </svg>
+            </div>
+            <div class="bntm-stat-content">
+                <h3>Total Bookings</h3>
+                <p class="bntm-stat-number"><?php echo esc_html($stats['total_bookings']); ?></p>
+            </div>
         </div>
+        
         <div class="bntm-stat-card">
-            <h3>Revenue (This Month)</h3>
-            <p class="bntm-stat-number"><?php echo bk_format_price($stats['monthly_revenue']); ?></p>
+            <div class="bntm-stat-icon bntm-stat-icon-primary">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="1" x2="12" y2="23"></line>
+                    <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
+                </svg>
+            </div>
+            <div class="bntm-stat-content">
+                <h3>Monthly Revenue</h3>
+                <p class="bntm-stat-number"><?php echo bk_format_price($stats['monthly_revenue']); ?></p>
+            </div>
         </div>
+        
         <div class="bntm-stat-card">
-            <h3>Pending Bookings</h3>
-            <p class="bntm-stat-number"><?php echo esc_html($stats['pending_bookings']); ?></p>
+            <div class="bntm-stat-icon bntm-stat-icon-primary">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                </svg>
+            </div>
+            <div class="bntm-stat-content">
+                <h3>Pending Bookings</h3>
+                <p class="bntm-stat-number"><?php echo esc_html($stats['pending_bookings']); ?></p>
+            </div>
         </div>
     </div>
 
-    <div class="bntm-form-section">
+    <div class="bntm-charts-grid">
+        <div class="bntm-chart-card bntm-chart-large">
+            <h3>Bookings Overview</h3>
+            <canvas id="bookingsChart"></canvas>
+        </div>
+        
+        <div class="bntm-chart-card">
+            <h3>Top Services by Bookings</h3>
+            <canvas id="servicesChart"></canvas>
+        </div>
+        
+        <div class="bntm-chart-card">
+            <h3>Booking Status</h3>
+            <canvas id="statusChart"></canvas>
+        </div>
+    </div>
+
+    <div class="bntm-recent-bookings-section">
         <h3>Recent Bookings</h3>
         <?php echo bk_render_recent_bookings($business_id, 10); ?>
     </div>
 
     <style>
+    .bntm-booking-page-card {
+        background: #f8f9fa;
+        padding: 24px;
+        border-radius: 12px;
+        margin-bottom: 30px;
+        border: 1px solid #e5e7eb;
+    }
+    
+    .bntm-booking-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
+    }
+    
+    .bntm-booking-header h3 {
+        margin: 0;
+        color: #111827;
+        font-size: 18px;
+        font-weight: 600;
+    }
+    
+    .bntm-status-badge {
+        background: #10b981;
+        color: #ffffff;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+    }
+    
+    .bntm-booking-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    
+    .bntm-url-input {
+        flex: 1;
+        min-width: 300px;
+        padding: 12px 16px;
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #374151;
+        font-size: 14px;
+        font-family: monospace;
+        transition: all 0.2s ease;
+    }
+    
+    .bntm-url-input:focus {
+        outline: none;
+        border-color: #9ca3af;
+    }
+    
     .bntm-dashboard-stats {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         gap: 20px;
         margin-bottom: 30px;
     }
+    
     .bntm-stat-card {
-        background: #f9fafb;
-        padding: 20px;
-        border-radius: 8px;
-        text-align: center;
+        background: #ffffff;
+        padding: 24px;
+        border-radius: 12px;
+        display: flex;
+        align-items: flex-start;
+        gap: 16px;
+        border: 1px solid #e5e7eb;
+        transition: all 0.2s ease;
     }
-    .bntm-stat-card h3 {
-        margin: 0 0 10px 0;
-        font-size: 14px;
+    
+    .bntm-stat-card:hover {
+        border-color: #d1d5db;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    }
+    
+    .bntm-stat-icon {
+        width: 48px;
+        height: 48px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+    
+    .bntm-stat-icon-primary {
+        background: var(--bntm-primary, #374151);
+        color: #ffffff;
+    }
+    
+    .bntm-stat-content {
+        flex: 1;
+    }
+    
+    .bntm-stat-content h3 {
+        margin: 0 0 8px 0;
+        font-size: 13px;
         color: #6b7280;
         font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
+    
     .bntm-stat-number {
-        font-size: 32px;
+        font-size: 28px;
         font-weight: 700;
-        color: #1f2937;
+        color: #111827;
         margin: 0;
+        line-height: 1;
+    }
+    
+    .bntm-charts-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+        margin-bottom: 30px;
+    }
+    
+    .bntm-chart-card {
+        background: #ffffff;
+        padding: 24px;
+        border-radius: 12px;
+        border: 1px solid #e5e7eb;
+    }
+    
+    .bntm-chart-large {
+        grid-column: 1 / -1;
+    }
+    
+    .bntm-chart-card h3 {
+        margin: 0 0 20px 0;
+        font-size: 16px;
+        font-weight: 600;
+        color: #111827;
+    }
+    
+    .bntm-chart-card canvas {
+        max-height: 300px;
+    }
+    
+    .bntm-recent-bookings-section {
+        background: #ffffff;
+        padding: 24px;
+        border-radius: 12px;
+        border: 1px solid #e5e7eb;
+    }
+    
+    .bntm-recent-bookings-section h3 {
+        margin: 0 0 20px 0;
+        font-size: 18px;
+        font-weight: 600;
+        color: #111827;
+    }
+    
+    @media (max-width: 768px) {
+        .bntm-chart-card {
+            grid-column: 1 / -1;
+        }
     }
     </style>
     
     <script>
     (function() {
+        // Copy URL functionality
         const copyBtn = document.getElementById('copy-booking-url');
         if (copyBtn) {
             copyBtn.addEventListener('click', function() {
@@ -341,15 +631,373 @@ function bk_overview_tab($business_id) {
                 urlInput.select();
                 document.execCommand('copy');
                 
+                const originalText = this.textContent;
                 this.textContent = 'Copied!';
+                this.style.background = '#10b981';
+                this.style.color = '#ffffff';
+                this.style.borderColor = '#10b981';
+                
                 setTimeout(() => {
-                    this.textContent = 'Copy Link';
+                    this.textContent = originalText;
+                    this.style.background = '';
+                    this.style.color = '';
+                    this.style.borderColor = '';
                 }, 2000);
+            });
+        }
+        
+        // Chart.js configuration
+        const primaryColor = getComputedStyle(document.documentElement)
+            .getPropertyValue('--bntm-primary').trim() || '#374151';
+        
+        // Bookings Overview Chart (Line Chart)
+        const bookingsCtx = document.getElementById('bookingsChart');
+        if (bookingsCtx) {
+            new Chart(bookingsCtx, {
+                type: 'line',
+                data: {
+                    labels: <?php echo json_encode(array_column($stats['monthly_bookings_data'], 'month')); ?>,
+                    datasets: [{
+                        label: 'Bookings',
+                        data: <?php echo json_encode(array_column($stats['monthly_bookings_data'], 'total')); ?>,
+                        borderColor: primaryColor,
+                        backgroundColor: primaryColor + '20',
+                        tension: 0.4,
+                        fill: true,
+                        pointBackgroundColor: primaryColor,
+                        pointBorderColor: '#fff',
+                        pointBorderWidth: 2,
+                        pointRadius: 5,
+                        pointHoverRadius: 7
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            backgroundColor: '#111827',
+                            padding: 12,
+                            titleFont: { size: 14, weight: '600' },
+                            bodyFont: { size: 13 },
+                            cornerRadius: 8
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: {
+                                color: '#f3f4f6'
+                            },
+                            ticks: {
+                                color: '#6b7280',
+                                font: { size: 12 },
+                                precision: 0
+                            }
+                        },
+                        x: {
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                color: '#6b7280',
+                                font: { size: 12 }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Services Chart (Doughnut Chart)
+        const servicesCtx = document.getElementById('servicesChart');
+        if (servicesCtx) {
+            new Chart(servicesCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: <?php echo json_encode(array_column($stats['service_bookings_data'], 'name')); ?>,
+                    datasets: [{
+                        data: <?php echo json_encode(array_column($stats['service_bookings_data'], 'total')); ?>,
+                        backgroundColor: [
+                            primaryColor,
+                            '#6b7280',
+                            '#9ca3af',
+                            '#d1d5db',
+                            '#e5e7eb'
+                        ],
+                        borderWidth: 2,
+                        borderColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 15,
+                                font: { size: 12 },
+                                color: '#374151'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#111827',
+                            padding: 12,
+                            titleFont: { size: 14, weight: '600' },
+                            bodyFont: { size: 13 },
+                            cornerRadius: 8,
+                            callbacks: {
+                                label: function(context) {
+                                    const label = context.label || '';
+                                    const value = context.parsed || 0;
+                                    return label + ': ' + value + ' bookings';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Status Chart (Pie Chart)
+        const statusCtx = document.getElementById('statusChart');
+        if (statusCtx) {
+            new Chart(statusCtx, {
+                type: 'pie',
+                data: {
+                    labels: <?php echo json_encode(array_column($stats['status_data'], 'status')); ?>,
+                    datasets: [{
+                        data: <?php echo json_encode(array_column($stats['status_data'], 'count')); ?>,
+                        backgroundColor: [
+                            '#10b981',
+                            '#f59e0b',
+                            '#ef4444',
+                            '#6b7280'
+                        ],
+                        borderWidth: 2,
+                        borderColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                padding: 15,
+                                font: { size: 12 },
+                                color: '#374151'
+                            }
+                        },
+                        tooltip: {
+                            backgroundColor: '#111827',
+                            padding: 12,
+                            titleFont: { size: 14, weight: '600' },
+                            bodyFont: { size: 13 },
+                            cornerRadius: 8
+                        }
+                    }
+                }
             });
         }
     })();
     </script>
     <?php
+    return ob_get_clean();
+}
+
+function bk_get_dashboard_stats($business_id) {
+    global $wpdb;
+    $services_table = $wpdb->prefix . 'bk_services';
+    $bookings_table = $wpdb->prefix . 'bk_bookings';
+    
+    // Total services
+    $total_services = $wpdb->get_var("SELECT COUNT(*) FROM $services_table");
+    
+    // Total bookings
+    $total_bookings = $wpdb->get_var("SELECT COUNT(*) FROM $bookings_table");
+    
+    // Monthly revenue
+    $monthly_revenue = $wpdb->get_var(
+        "SELECT COALESCE(SUM(total), 0) FROM $bookings_table 
+         WHERE payment_status IN ('paid', 'verified')
+         AND MONTH(created_at) = MONTH(CURRENT_DATE()) 
+         AND YEAR(created_at) = YEAR(CURRENT_DATE())"
+    );
+    
+    // Pending bookings
+    $pending_bookings = $wpdb->get_var(
+        "SELECT COUNT(*) FROM $bookings_table 
+         WHERE status = 'pending'"
+    );
+    
+    // Monthly bookings data (last 6 months) - each month independent
+    $monthly_bookings_data = $wpdb->get_results(
+        "SELECT DATE_FORMAT(created_at, '%b %Y') as month, COUNT(*) as total
+        FROM $bookings_table
+        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+        GROUP BY YEAR(created_at), MONTH(created_at)
+        ORDER BY YEAR(created_at), MONTH(created_at)",
+        ARRAY_A
+    );
+    
+    // If no data, create empty months
+    if (empty($monthly_bookings_data)) {
+        $monthly_bookings_data = [];
+        for ($i = 5; $i >= 0; $i--) {
+            $monthly_bookings_data[] = [
+                'month' => date('M Y', strtotime("-$i months")),
+                'total' => 0
+            ];
+        }
+    }
+    
+    // Service bookings data (Top 5 services)
+    $service_bookings_data = $wpdb->get_results(
+        "SELECT s.name, COUNT(b.id) as total
+        FROM $bookings_table b
+        JOIN $services_table s ON b.service_id = s.id
+        GROUP BY b.service_id, s.name
+        ORDER BY total DESC
+        LIMIT 5",
+        ARRAY_A
+    );
+    
+    // Status data
+    $status_data = $wpdb->get_results(
+        "SELECT status, COUNT(*) as count
+        FROM $bookings_table
+        GROUP BY status",
+        ARRAY_A
+    );
+    
+    return [
+        'total_services' => intval($total_services),
+        'total_bookings' => intval($total_bookings),
+        'monthly_revenue' => floatval($monthly_revenue),
+        'pending_bookings' => intval($pending_bookings),
+        'monthly_bookings_data' => $monthly_bookings_data,
+        'service_bookings_data' => $service_bookings_data ?: [],
+        'status_data' => $status_data ?: []
+    ];
+}
+
+function bk_render_closed_dates_manager($nonce, $section_title = 'Holiday / Closed Dates', $section_description = 'Block specific dates such as holidays, maintenance days, or special events.') {
+    $closed_dates = bk_get_closed_dates();
+
+    ob_start();
+    ?>
+    <div class="bntm-form-section" style="background: #fff7ed;">
+        <h3><?php echo esc_html($section_title); ?></h3>
+        <p><?php echo esc_html($section_description); ?></p>
+
+        <form class="bntm-form bk-closed-date-form">
+            <div class="bntm-form-row">
+                <div class="bntm-form-group">
+                    <label>Holiday Date *</label>
+                    <input type="date" name="closed_date" required>
+                </div>
+                <div class="bntm-form-group">
+                    <label>Reason</label>
+                    <input type="text" name="closed_reason" placeholder="e.g., Christmas Day">
+                </div>
+            </div>
+            <button type="submit" class="bntm-btn-primary">Add Holiday</button>
+            <div class="bk-closed-date-message"></div>
+        </form>
+
+        <div class="bk-closed-dates-list" style="margin-top: 18px;">
+            <?php if (empty($closed_dates)): ?>
+                <p style="color: #6b7280;">No holiday dates set.</p>
+            <?php else: ?>
+                <?php foreach ($closed_dates as $entry): ?>
+                    <div class="bk-closed-date-item" style="display:flex; justify-content:space-between; gap:12px; align-items:center; padding:12px 14px; background:#fff; border:1px solid #fed7aa; border-radius:10px; margin-bottom:10px;">
+                        <div>
+                            <strong><?php echo esc_html(date('F j, Y', strtotime($entry['date']))); ?></strong>
+                            <?php if (!empty($entry['reason'])): ?>
+                                <div style="color:#6b7280; margin-top:4px;"><?php echo esc_html($entry['reason']); ?></div>
+                            <?php endif; ?>
+                        </div>
+                        <button type="button" class="bntm-btn-small bntm-btn-danger bk-remove-closed-date" data-date="<?php echo esc_attr($entry['date']); ?>">Remove</button>
+                    </div>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php
+
+    return ob_get_clean();
+}
+
+function bk_render_closed_dates_manager_script($nonce) {
+    ob_start();
+    ?>
+    <script>
+    (function() {
+        document.querySelectorAll('.bk-closed-date-form').forEach(form => {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+
+                const formData = new FormData(this);
+                formData.append('action', 'bk_add_closed_date');
+                formData.append('nonce', '<?php echo esc_js($nonce); ?>');
+
+                const btn = this.querySelector('button[type="submit"]');
+                const originalText = btn.textContent;
+                const messageBox = this.querySelector('.bk-closed-date-message');
+
+                btn.disabled = true;
+                btn.textContent = 'Adding...';
+
+                fetch(ajaxurl, {method: 'POST', body: formData})
+                .then(r => r.json())
+                .then(json => {
+                    messageBox.innerHTML = '<div class="bntm-notice bntm-notice-' + (json.success ? 'success' : 'error') + '">' + json.data.message + '</div>';
+
+                    if (json.success) {
+                        setTimeout(() => location.reload(), 1000);
+                    } else {
+                        btn.disabled = false;
+                        btn.textContent = originalText;
+                    }
+                })
+                .catch(err => {
+                    messageBox.innerHTML = '<div class="bntm-notice bntm-notice-error">Error: ' + err.message + '</div>';
+                    btn.disabled = false;
+                    btn.textContent = originalText;
+                });
+            });
+        });
+
+        document.querySelectorAll('.bk-remove-closed-date').forEach(btn => {
+            btn.addEventListener('click', function() {
+                if (!confirm('Remove this holiday date?')) return;
+
+                const formData = new FormData();
+                formData.append('action', 'bk_remove_closed_date');
+                formData.append('closed_date', this.dataset.date);
+                formData.append('nonce', '<?php echo esc_js($nonce); ?>');
+
+                fetch(ajaxurl, {method: 'POST', body: formData})
+                .then(r => r.json())
+                .then(json => {
+                    if (json.success) {
+                        location.reload();
+                    } else {
+                        alert(json.data.message || 'Failed to remove holiday date');
+                    }
+                });
+            });
+        });
+    })();
+    </script>
+    <?php
+
     return ob_get_clean();
 }
 
@@ -382,6 +1030,8 @@ function bk_services_tab($business_id) {
         <?php if (empty($services)): ?>
             <p>No services yet. Add your first service to get started.</p>
         <?php else: ?>
+        
+        <div class="bntm-table-wrapper">
             <table class="bntm-table">
                 <thead>
                     <tr>
@@ -417,6 +1067,7 @@ function bk_services_tab($business_id) {
                     <?php endforeach; ?>
                 </tbody>
             </table>
+         </div>
         <?php endif; ?>
     </div>
 
@@ -458,6 +1109,8 @@ function bk_services_tab($business_id) {
             <div id="service-message"></div>
         </form>
     </div>
+
+    <?php echo bk_render_closed_dates_manager($nonce, 'Holiday Dates', 'Pick the dates you want to mark as holidays so customers cannot book on those days.'); ?>
 
     <!-- Edit Service Modal -->
     <div id="edit-service-modal" class="bk-modal">
@@ -778,6 +1431,7 @@ document.getElementById('add-service-form').addEventListener('submit', function(
         });
     })();
     </script>
+    <?php echo bk_render_closed_dates_manager_script($nonce); ?>
     <?php
     return ob_get_clean();
 }
@@ -786,16 +1440,31 @@ function bk_bookings_tab($business_id) {
     global $wpdb;
     $bookings_table = $wpdb->prefix . 'bk_bookings';
     $services_table = $wpdb->prefix . 'bk_services';
-    
-    $bookings = $wpdb->get_results($wpdb->prepare(
-        "SELECT b.*, s.name as service_name 
-         FROM $bookings_table b
-         LEFT JOIN $services_table s ON b.service_id = s.id
-         ORDER BY b.booking_date DESC, b.start_time DESC",
-         
-         
+    $dashboard_url = get_permalink();
+    $filter_scope = isset($_GET['bk_filter_scope']) ? sanitize_text_field($_GET['bk_filter_scope']) : '';
+    $filter_month = isset($_GET['bk_filter_month']) ? sanitize_text_field($_GET['bk_filter_month']) : '';
+    $query = "
+        SELECT b.*, s.name as service_name
+        FROM $bookings_table b
+        LEFT JOIN $services_table s ON b.service_id = s.id
+    ";
+    $query_args = [];
 
-    ));
+    if ($filter_scope === 'today') {
+        $query .= " WHERE b.booking_date = %s";
+        $query_args[] = current_time('Y-m-d');
+    } elseif ($filter_month && preg_match('/^\d{4}-\d{2}$/', $filter_month)) {
+        $query .= " WHERE DATE_FORMAT(b.booking_date, '%%Y-%%m') = %s";
+        $query_args[] = $filter_month;
+    }
+
+    $query .= " ORDER BY b.booking_date DESC, b.start_time DESC";
+    
+    if (empty($query_args)) {
+        $bookings = $wpdb->get_results($query);
+    } else {
+        $bookings = $wpdb->get_results($wpdb->prepare($query, ...$query_args));
+    }
     
     $nonce = wp_create_nonce('bk_nonce');
     
@@ -807,9 +1476,24 @@ function bk_bookings_tab($business_id) {
     
     <div class="bntm-form-section">
         <h3>All Bookings (<?php echo count($bookings); ?>)</h3>
+        <form method="get" class="bntm-form" style="margin-bottom: 20px;">
+            <input type="hidden" name="tab" value="bookings">
+            <div class="bntm-form-row">
+                <div class="bntm-form-group">
+                    <label for="bk-filter-month">Filter by Month</label>
+                    <input type="month" id="bk-filter-month" name="bk_filter_month" value="<?php echo esc_attr($filter_scope === 'today' ? '' : $filter_month); ?>">
+                </div>
+                <div class="bntm-form-group" style="display:flex; align-items:flex-end; gap:10px; flex-wrap: wrap;">
+                    <button type="submit" class="bntm-btn-primary">Apply Filter</button>
+                    <a href="<?php echo esc_url(add_query_arg(['tab' => 'bookings', 'bk_filter_scope' => 'today'], $dashboard_url)); ?>" class="bntm-btn-secondary">Today</a>
+                    <a href="<?php echo esc_url(add_query_arg('tab', 'bookings', $dashboard_url)); ?>" class="bntm-btn-secondary">Reset</a>
+                </div>
+            </div>
+        </form>
         <?php if (empty($bookings)): ?>
             <p>No bookings yet.</p>
         <?php else: ?>
+        <div class="bntm-table-wrapper">
             <table class="bntm-table">
                 <thead>
                     <tr>
@@ -857,6 +1541,7 @@ function bk_bookings_tab($business_id) {
                     <?php endforeach; ?>
                 </tbody>
             </table>
+         </div>
         <?php endif; ?>
     </div>
 
@@ -923,7 +1608,6 @@ function bk_operating_hours_tab($business_id) {
         "SELECT * FROM $table ORDER BY day_of_week ASC",
         $business_id
     ));
-    
     $days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     $nonce = wp_create_nonce('bk_nonce');
     
@@ -933,6 +1617,7 @@ function bk_operating_hours_tab($business_id) {
         <h3>Operating Hours</h3>
         <p>Set your business operating hours for each day of the week.</p>
         
+        <div class="bntm-table-wrapper">
         <table class="bntm-table" style="margin-top: 20px;">
             <thead>
                 <tr>
@@ -984,6 +1669,7 @@ function bk_operating_hours_tab($business_id) {
                 <?php endforeach; ?>
             </tbody>
         </table>
+         </div>
     </div>
 
     <div class="bntm-form-section" style="background: #f9fafb;">
@@ -1023,6 +1709,8 @@ function bk_operating_hours_tab($business_id) {
             <div id="booking-settings-message"></div>
         </form>
     </div>
+
+    <?php echo bk_render_closed_dates_manager($nonce); ?>
 
     <script>
     var ajaxurl = '<?php echo admin_url('admin-ajax.php'); ?>';
@@ -1088,8 +1776,10 @@ function bk_operating_hours_tab($business_id) {
                 btn.textContent = 'Save Booking Settings';
             });
         });
+
     })();
     </script>
+    <?php echo bk_render_closed_dates_manager_script($nonce); ?>
     <?php
     return ob_get_clean();
 }
@@ -1112,13 +1802,13 @@ function bk_settings_tab($business_id) {
        
        <div class="bntm-form-group">
            <label>Booking Description</label>
-           <textarea name="bk_description" id="bk-description" rows="3" placeholder="Brief description shown on booking page"><?php echo esc_textarea(bntm_get_bk_description()); ?></textarea>
+           <textarea name="bk_description" id="bk-description" rows="3" placeholder="Brief description shown on booking page"><?php echo esc_textarea( bntm_get_setting('bk_terms', '')); ?></textarea>
            <small>This appears below the title on your booking calendar.</small>
        </div>
        
        <div class="bntm-form-group">
            <label>Booking Terms & Conditions</label>
-           <textarea name="bk_terms" id="bk-terms" rows="6" placeholder="Enter your booking terms and conditions"><?php echo esc_textarea(bntm_get_bk_terms()); ?></textarea>
+           <textarea name="bk_terms" id="bk-terms" rows="6" placeholder="Enter your booking terms and conditions"><?php echo esc_textarea(bntm_get_setting('bk_description', '')); ?></textarea>
            <small>These terms appear at the bottom of the booking calendar.</small>
        </div>
        
@@ -2364,6 +3054,10 @@ function bntm_shortcode_bk_calendar() {
     function updateCalendarColors() {
       document.querySelectorAll('.bk-calendar-day:not(.other-month)').forEach(day => {
           const date = day.dataset.date;
+          const existingBadge = day.querySelector('.bk-slot-badge');
+          if (existingBadge) {
+              existingBadge.remove();
+          }
           
           // Check if date has availability data
           if (dateAvailability[date]) {
@@ -2373,13 +3067,10 @@ function bntm_shortcode_bk_calendar() {
               
               day.classList.remove('availability-low', 'availability-medium', 'availability-full', 'no-operating-hours');
               
-              // Check if there are any slots available
-              if (data.total_slots === 0 || available === 0) {
-                  // No operating hours or fully booked
+              if (!data.has_operating_hours || data.total_slots === 0) {
                   day.classList.add('no-operating-hours');
               } else {
-                  // Has available slots - apply color coding
-                  if (percentage >= 100) {
+                  if (available <= 0 || percentage >= 100) {
                       day.classList.add('availability-full');
                   } else if (percentage >= 50) {
                       day.classList.add('availability-medium');
@@ -2387,15 +3078,9 @@ function bntm_shortcode_bk_calendar() {
                       day.classList.add('availability-low');
                   }
                   
-                  // Add slot count display
-                  const existingBadge = day.querySelector('.bk-slot-badge');
-                  if (existingBadge) {
-                      existingBadge.remove();
-                  }
-                  
                   const badge = document.createElement('div');
                   badge.className = 'bk-slot-badge';
-                  badge.textContent = available + '/' + data.total_slots;
+                  badge.textContent = Math.max(0, available) + '/' + data.total_slots;
                   day.appendChild(badge);
               }
           } else {
@@ -2631,7 +3316,8 @@ function bntm_shortcode_bk_calendar() {
             if (json.success && json.data.slots && json.data.slots.length > 0) {
                 renderSlotsTable(json.data);
             } else {
-                // Show "No operating hours" message
+                const message = json.data?.message || 'There are no available time slots for this date. Please select another date.';
+                const title = json.data?.is_closed_date ? 'Date Closed' : 'No Operating Hours';
                 const msg = document.getElementById('slots-message');
                 msg.style.display = 'block';
                 msg.className = 'bntm-notice bntm-notice-warning';
@@ -2640,10 +3326,10 @@ function bntm_shortcode_bk_calendar() {
                         <svg style="width: 24px; height: 24px; color: #f59e0b;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                         </svg>
-                        <strong style="font-size: 16px;">No Operating Hours</strong>
+                        <strong style="font-size: 16px;">${title}</strong>
                     </div>
                     <p style="margin: 10px 0 0 0; text-align: center;">
-                        There are no available time slots for this date. Please select another date.
+                        ${message}
                     </p>
                 `;
             }
@@ -2949,6 +3635,22 @@ function bntm_ajax_bk_get_slots_table() {
     $dateObj = DateTime::createFromFormat('Y-m-d', $date);
     if (!$dateObj) {
         wp_send_json_error(['message' => 'Invalid date format']);
+    }
+
+    if (bk_is_closed_date($date)) {
+        $reason = bk_get_closed_date_reason($date);
+        $message = 'This date is closed.';
+        if (!empty($reason)) {
+            $message .= ' Reason: ' . $reason;
+        }
+
+        wp_send_json_success([
+            'slots' => [],
+            'services' => [],
+            'slots_by_service' => [],
+            'message' => $message,
+            'is_closed_date' => true
+        ]);
     }
     
     $services_table = $wpdb->prefix . 'bk_services';
@@ -4130,6 +4832,10 @@ function bk_bookings_calendar_tab($business_id) {
     function updateCalendarColors() {
       document.querySelectorAll('.bk-calendar-day:not(.other-month)').forEach(day => {
           const date = day.dataset.date;
+          const existingBadge = day.querySelector('.bk-slot-badge');
+          if (existingBadge) {
+              existingBadge.remove();
+          }
           
           // Check if date has availability data
           if (dateAvailability[date]) {
@@ -4139,13 +4845,10 @@ function bk_bookings_calendar_tab($business_id) {
               
               day.classList.remove('availability-low', 'availability-medium', 'availability-full', 'no-operating-hours');
               
-              // Check if there are any slots available
-              if (data.total_slots === 0 || available === 0) {
-                  // No operating hours or fully booked
+              if (!data.has_operating_hours || data.total_slots === 0) {
                   day.classList.add('no-operating-hours');
               } else {
-                  // Has available slots - apply color coding
-                  if (percentage >= 100) {
+                  if (available <= 0 || percentage >= 100) {
                       day.classList.add('availability-full');
                   } else if (percentage >= 50) {
                       day.classList.add('availability-medium');
@@ -4153,15 +4856,9 @@ function bk_bookings_calendar_tab($business_id) {
                       day.classList.add('availability-low');
                   }
                   
-                  // Add slot count display
-                  const existingBadge = day.querySelector('.bk-slot-badge');
-                  if (existingBadge) {
-                      existingBadge.remove();
-                  }
-                  
                   const badge = document.createElement('div');
                   badge.className = 'bk-slot-badge';
-                  badge.textContent = available + '/' + data.total_slots;
+                  badge.textContent = Math.max(0, available) + '/' + data.total_slots;
                   day.appendChild(badge);
               }
           } else {
@@ -4309,7 +5006,8 @@ function bk_bookings_calendar_tab($business_id) {
             if (json.success && json.data.slots && json.data.slots.length > 0) {
                 renderAdminSlotsTable(json.data);
             } else {
-                // Show "No operating hours" message
+                const message = json.data?.message || 'There are no time slots configured for this date. Please check your operating hours settings.';
+                const title = json.data?.is_closed_date ? 'Date Closed' : 'No Operating Hours';
                 const msg = document.getElementById('slots-message');
                 msg.style.display = 'block';
                 msg.className = 'bntm-notice bntm-notice-warning';
@@ -4318,10 +5016,10 @@ function bk_bookings_calendar_tab($business_id) {
                         <svg style="width: 24px; height: 24px; color: #f59e0b;" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                         </svg>
-                        <strong style="font-size: 16px;">No Operating Hours</strong>
+                        <strong style="font-size: 16px;">${title}</strong>
                     </div>
                     <p style="margin: 10px 0 0 0; text-align: center;">
-                        There are no time slots configured for this date. Please check your operating hours settings.
+                        ${message}
                     </p>
                 `;
                 document.getElementById('admin-slots-container').style.display = 'none';
@@ -4677,6 +5375,22 @@ function bntm_ajax_bk_get_admin_slots() {
     if (empty($date)) {
         wp_send_json_error(['message' => 'Missing date']);
     }
+
+    if (bk_is_closed_date($date)) {
+        $reason = bk_get_closed_date_reason($date);
+        $message = 'This date is marked closed.';
+        if (!empty($reason)) {
+            $message .= ' Reason: ' . $reason;
+        }
+
+        wp_send_json_success([
+            'slots' => [],
+            'services' => [],
+            'slots_by_service' => [],
+            'message' => $message,
+            'is_closed_date' => true
+        ]);
+    }
     
     $services_table = $wpdb->prefix . 'bk_services';
     $hours_table = $wpdb->prefix . 'bk_operating_hours';
@@ -4830,6 +5544,19 @@ if (!is_user_logged_in()) {
     while ($current <= $end) {
         $date_str = date('Y-m-d', $current);
         $day_of_week = date('w', $current);
+
+        if (bk_is_closed_date($date_str)) {
+            $availability_data[$date_str] = [
+                'total_slots' => 0,
+                'booked_slots' => 0,
+                'percentage' => 0,
+                'has_operating_hours' => false,
+                'is_closed_date' => true,
+                'closed_reason' => bk_get_closed_date_reason($date_str)
+            ];
+            $current = strtotime('+1 day', $current);
+            continue;
+        }
         
         // Get operating hours for this day
         $operating_hour = $wpdb->get_row($wpdb->prepare(
@@ -4879,7 +5606,9 @@ if (!is_user_logged_in()) {
                 'total_slots' => $total_slots,
                 'booked_slots' => $booked_slots,
                 'percentage' => round($percentage, 2),
-                'has_operating_hours' => true
+                'has_operating_hours' => true,
+                'is_closed_date' => false,
+                'closed_reason' => ''
             ];
         } else {
             // No operating hours or closed - return zero availability
@@ -4887,7 +5616,9 @@ if (!is_user_logged_in()) {
                 'total_slots' => 0,
                 'booked_slots' => 0,
                 'percentage' => 0,
-                'has_operating_hours' => false
+                'has_operating_hours' => false,
+                'is_closed_date' => false,
+                'closed_reason' => ''
             ];
         }
         
@@ -4991,6 +5722,15 @@ function bntm_ajax_bk_update_admin_booking() {
     if (!$current_booking) {
         wp_send_json_error(['message' => 'Booking not found']);
     }
+
+    if (bk_is_closed_date($booking_date) && $booking_date !== $current_booking->booking_date) {
+        $reason = bk_get_closed_date_reason($booking_date);
+        $message = 'This date is marked closed.';
+        if (!empty($reason)) {
+            $message .= ' Reason: ' . $reason;
+        }
+        wp_send_json_error(['message' => $message]);
+    }
     
     // Check for conflicts if time/date changed
     $time_changed = ($current_booking->booking_date != $booking_date || 
@@ -5045,21 +5785,18 @@ function bntm_ajax_bk_update_admin_booking() {
     );
     
     if ($result !== false) {
-        // Send email notification if time changed
+        // Send email notification if schedule changed
         if ($time_changed) {
-            $customer_email = $current_booking->customer_email;
-            $customer_name = $current_booking->customer_name;
-            
-            $message = "Hello $customer_name,\n\n";
-            $message .= "Your booking has been updated.\n\n";
-            $message .= "New Date: " . date('F j, Y', strtotime($booking_date)) . "\n";
-            $message .= "New Time: " . date('g:i A', strtotime($start_time)) . " - " . date('g:i A', strtotime($end_time)) . "\n";
-            $message .= "Status: " . ucfirst($status) . "\n";
-            $message .= "Payment Status: " . ucfirst($payment_status) . "\n";
-            $message .= "Total Amount: " . bk_format_price($total) . "\n\n";
-            $message .= "Booking ID: " . $booking_id;
-            
-            wp_mail($customer_email, 'Booking Updated', $message);
+            bk_send_booking_update_email($current_booking->customer_email, [
+                'name' => $current_booking->customer_name,
+                'service' => $current_booking->service_id,
+                'date' => $booking_date,
+                'start_time' => $start_time,
+                'end_time' => $end_time,
+                'total' => $total,
+                'booking_id' => $booking_id,
+                'payment_status' => $payment_status
+            ], $service_id);
         }
         
         wp_send_json_success(['message' => 'Booking updated successfully']);
@@ -5100,6 +5837,15 @@ function bntm_ajax_bk_create_admin_booking() {
     // Validate quantity
     if ($quantity < 1) $quantity = 1;
     if ($quantity > 10) $quantity = 10;
+
+    if (bk_is_closed_date($booking_date)) {
+        $reason = bk_get_closed_date_reason($booking_date);
+        $message = 'This date is marked closed.';
+        if (!empty($reason)) {
+            $message .= ' Reason: ' . $reason;
+        }
+        wp_send_json_error(['message' => $message]);
+    }
     
     // Get service
     $service = $wpdb->get_row($wpdb->prepare(
@@ -5175,19 +5921,24 @@ function bntm_ajax_bk_create_admin_booking() {
     ]);
     
     if ($result) {
-        // Send confirmation email
-        $message = "Hello $customer_name,\n\n";
-        $message .= "A booking has been created for you.\n\n";
-        $message .= "Service: " . $service->name . "\n";
-        $message .= "Quantity: " . $quantity . " slot(s)\n";
-        $message .= "Duration: " . $total_duration . " minutes\n";
-        $message .= "Date: " . date('F j, Y', strtotime($booking_date)) . "\n";
-        $message .= "Time: " . date('g:i A', strtotime($start_time)) . " - " . date('g:i A', strtotime($calculated_end_time)) . "\n";
-        $message .= "Total: " . bk_format_price($total) . "\n";
-        $message .= "Payment Status: " . ucfirst($payment_status) . "\n\n";
-        $message .= "Booking ID: " . $booking_rand_id;
-        
-        wp_mail($customer_email, 'Booking Confirmation', $message);
+        bk_send_booking_confirmation_email($customer_email, [
+            'name' => $customer_name,
+            'service' => $service->name,
+            'quantity' => $quantity,
+            'duration' => $service->duration,
+            'total_duration' => $total_duration,
+            'date' => $booking_date,
+            'start_time' => $start_time,
+            'end_time' => $calculated_end_time,
+            'unit_price' => $quantity > 0 ? ($amount / $quantity) : $amount,
+            'subtotal' => $amount,
+            'tax' => $tax,
+            'tax_rate' => floatval(bntm_get_setting('bk_tax_rate', '0')),
+            'total' => $total,
+            'booking_id' => $booking_rand_id,
+            'payment_status' => $payment_status,
+            'payment_method' => $payment_method
+        ]);
         
         wp_send_json_success(['message' => 'Booking created successfully']);
     } else {
@@ -5220,6 +5971,11 @@ function bntm_shortcode_bk_transaction() {
     
     $payment_methods = json_decode(bntm_get_setting('bk_payment_methods', '[]'), true);
     $payment_method_data = null;
+    $is_dashboard_viewer = is_user_logged_in() && bk_current_user_can_access_staff_booking_tools();
+    $dashboard_page = get_page_by_path('booking');
+    $dashboard_bookings_url = $dashboard_page ? add_query_arg('tab', 'bookings', get_permalink($dashboard_page)) : '';
+    $booking_page = get_page_by_path('book-appointment');
+    $booking_page_url = $booking_page ? get_permalink($booking_page) : '';
     
     if (is_array($payment_methods) && !empty($booking->payment_method)) {
         foreach ($payment_methods as $method) {
@@ -5233,13 +5989,61 @@ function bntm_shortcode_bk_transaction() {
     ob_start();
     ?>
     <div class="bntm-container">
-        <div class="bntm-content">
-            <div class="bk-transaction-banner status-<?php echo esc_attr($booking->status); ?>">
-                <h2>Booking Status: <?php echo esc_html(ucfirst($booking->status)); ?></h2>
-                <p class="booking-id">Booking ID: #<?php echo esc_html($booking->rand_id); ?></p>
+        <div class="bntm-content bk-transaction-page">
+            <div class="bk-transaction-actions">
+                <?php if ($is_dashboard_viewer): ?>
+                    <?php if ($dashboard_bookings_url): ?>
+                    <a href="<?php echo esc_url($dashboard_bookings_url); ?>" class="bntm-btn-secondary">← Back to All Bookings</a>
+                    <?php else: ?>
+                    <button type="button" class="bntm-btn-secondary" onclick="window.history.back();">← Back</button>
+                    <?php endif; ?>
+                <?php endif; ?>
+
+                <?php if ($booking_page_url): ?>
+                <a href="<?php echo esc_url($booking_page_url); ?>" class="bntm-btn-primary">
+                    <?php echo $is_dashboard_viewer ? 'Open Booking Page' : 'Book Again'; ?>
+                </a>
+                <?php endif; ?>
             </div>
 
-            <div class="bntm-form-section">
+            <div class="bk-transaction-banner">
+                <div class="bk-transaction-banner-header">
+                    <div>
+                        <p class="bk-transaction-eyebrow">Booking Transaction</p>
+                        <h2>Booking Details</h2>
+                        <p class="booking-id">Reference No. #<?php echo esc_html($booking->rand_id); ?></p>
+                    </div>
+                    <div class="bk-transaction-badges">
+                        <span class="bk-status-badge status-<?php echo esc_attr($booking->status); ?>">
+                            <?php echo esc_html(ucfirst($booking->status)); ?>
+                        </span>
+                        <span class="bk-payment-badge payment-<?php echo esc_attr($booking->payment_status); ?>">
+                            <?php echo esc_html(ucfirst(str_replace('_', ' ', $booking->payment_status))); ?>
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bk-transaction-summary">
+                <div class="bk-summary-card">
+                    <span class="bk-summary-label">Service</span>
+                    <strong class="bk-summary-value"><?php echo esc_html($booking->service_name); ?></strong>
+                </div>
+                <div class="bk-summary-card">
+                    <span class="bk-summary-label">Appointment Date</span>
+                    <strong class="bk-summary-value"><?php echo date('F j, Y', strtotime($booking->booking_date)); ?></strong>
+                </div>
+                <div class="bk-summary-card">
+                    <span class="bk-summary-label">Time Schedule</span>
+                    <strong class="bk-summary-value"><?php echo date('g:i A', strtotime($booking->start_time)); ?> - <?php echo date('g:i A', strtotime($booking->end_time)); ?></strong>
+                </div>
+                <div class="bk-summary-card bk-summary-total">
+                    <span class="bk-summary-label">Total Amount</span>
+                    <strong class="bk-summary-value"><?php echo bk_format_price($booking->total); ?></strong>
+                </div>
+            </div>
+
+            <div class="bntm-form-section bk-transaction-section">
                 <h3>Booking Information</h3>
                 <table class="bk-transaction-table">
                     <tr>
@@ -5267,7 +6071,7 @@ function bntm_shortcode_bk_transaction() {
                 </table>
             </div>
 
-            <div class="bntm-form-section">
+            <div class="bntm-form-section bk-transaction-section">
                 <h3>Customer Details</h3>
                 <table class="bk-transaction-table">
                     <tr>
@@ -5291,7 +6095,7 @@ function bntm_shortcode_bk_transaction() {
                 </table>
             </div>
 
-            <div class="bntm-form-section">
+            <div class="bntm-form-section bk-transaction-section">
                 <h3>Payment Information</h3>
                 <table class="bk-transaction-table">
                     <tr>
@@ -5329,8 +6133,8 @@ function bntm_shortcode_bk_transaction() {
                 </table>
                 
                 <?php if ($payment_method_data && $booking->payment_status === 'unpaid'): ?>
-                <div style="margin-top: 20px; padding: 15px; background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px;">
-                    <strong>Payment Details:</strong><br>
+                <div class="bk-payment-instructions">
+                    <strong>Payment Instructions</strong><br>
                     <?php if (!empty($payment_method_data['account_name'])): ?>
                         Account Name: <strong><?php echo esc_html($payment_method_data['account_name']); ?></strong><br>
                     <?php endif; ?>
@@ -5338,74 +6142,157 @@ function bntm_shortcode_bk_transaction() {
                         Account Number: <strong><?php echo esc_html($payment_method_data['account_number']); ?></strong><br>
                     <?php endif; ?>
                     <?php if (!empty($payment_method_data['description'])): ?>
-                        <br><i> Comments: <?php echo nl2br(esc_html($payment_method_data['description'])); ?></i>
+                        <br><i>Instructions: <?php echo nl2br(esc_html($payment_method_data['description'])); ?></i>
                     <?php endif; ?>
                 </div>
                 <?php endif; ?>
-            </div>
-
-            <div style="margin-top: 30px; text-align: center;">
-                <a href="<?php echo get_permalink(get_page_by_path('book-appointment')); ?>" class="bntm-btn bntm-btn-primary">
-                    Book Another Appointment
-                </a>
             </div>
         </div>
     </div>
 
     <style>
+    .bk-transaction-actions {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 24px;
+        flex-wrap: wrap;
+    }
+
+    .bk-transaction-page {
+        max-width: 1024px;
+        margin: 0 auto;
+    }
+
     .bk-transaction-banner {
-        padding: 30px;
-        border-radius: 8px;
-        text-align: center;
-        margin-bottom: 30px;
+        padding: 28px 32px;
+        border-radius: 16px;
+        margin-bottom: 24px;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
     }
-    
-    .bk-transaction-banner.status-pending {
-        background: #fef3c7;
-        border: 2px solid #f59e0b;
+
+    .bk-transaction-banner-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
     }
-    
-    .bk-transaction-banner.status-confirmed,
-    .bk-transaction-banner.status-completed {
-        background: #d1fae5;
-        border: 2px solid #059669;
+
+    .bk-transaction-badges {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
     }
-    
-    .bk-transaction-banner.status-cancelled {
-        background: #fee2e2;
-        border: 2px solid #dc2626;
+
+    .bk-transaction-eyebrow {
+        margin: 0 0 8px 0;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #64748b;
+        font-weight: 700;
     }
     
     .bk-transaction-banner h2 {
-        margin: 0 0 10px 0;
+        margin: 0 0 8px 0;
         color: #1f2937;
+        font-size: 30px;
     }
     
     .booking-id {
-        font-size: 18px;
-        color: #6b7280;
+        font-size: 15px;
+        color: #64748b;
         margin: 0;
+    }
+
+    .bk-transaction-summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 16px;
+        margin-bottom: 24px;
+    }
+
+    .bk-summary-card {
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        padding: 18px 20px;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
+    }
+
+    .bk-summary-total {
+        background: #f0fdf4;
+        border-color: #86efac;
+    }
+
+    .bk-summary-label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+    }
+
+    .bk-summary-value {
+        display: block;
+        color: #111827;
+        font-size: 18px;
+        line-height: 1.4;
+    }
+
+    .bk-transaction-section {
+        border: 1px solid #e5e7eb;
+        border-radius: 16px;
+        padding: 0;
+        overflow: hidden;
+        margin-bottom: 20px;
+        background: #ffffff;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+    }
+
+    .bk-transaction-section h3 {
+        margin: 0;
+        padding: 18px 24px;
+        font-size: 16px;
+        font-weight: 700;
+        color: #0f172a;
+        background: #f8fafc;
+        border-bottom: 1px solid #e5e7eb;
     }
     
     .bk-transaction-table {
         width: 100%;
+        border-collapse: collapse;
     }
     
     .bk-transaction-table td {
-        padding: 12px 0;
+        padding: 16px 24px;
         border-bottom: 1px solid #e5e7eb;
+        vertical-align: top;
     }
     
     .bk-transaction-table td:first-child {
-        width: 200px;
-        color: #6b7280;
+        width: 220px;
+        color: #64748b;
+        background: #fcfcfd;
+        font-weight: 600;
+    }
+
+    .bk-transaction-table tr:last-child td {
+        border-bottom: none;
     }
     
     .bk-status-badge,
     .bk-payment-badge {
         display: inline-block;
-        padding: 6px 12px;
-        border-radius: 12px;
+        padding: 7px 12px;
+        border-radius: 999px;
         font-size: 12px;
         font-weight: 600;
     }
@@ -5423,15 +6310,60 @@ function bntm_shortcode_bk_transaction() {
         background: #d1fae5;
         color: #065f46;
     }
-    
-    .bk-status-badge.status-cancelled {
+
+    .bk-status-badge.status-cancelled,
+    .bk-payment-badge.payment-dropped {
         background: #fee2e2;
         color: #991b1b;
+    }
+
+    .bk-payment-badge.payment-pending,
+    .bk-payment-badge.payment-waiting_payment {
+        background: #dbeafe;
+        color: #1d4ed8;
+    }
+
+    .bk-payment-instructions {
+        margin: 20px 24px 24px;
+        padding: 16px 18px;
+        background: #fff7ed;
+        border: 1px solid #fdba74;
+        border-left: 4px solid #f59e0b;
+        border-radius: 10px;
+        color: #7c2d12;
+        line-height: 1.7;
+    }
+
+    @media (max-width: 768px) {
+        .bk-transaction-actions {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .bk-transaction-banner {
+            padding: 22px 20px;
+        }
+
+        .bk-transaction-banner h2 {
+            font-size: 24px;
+        }
+
+        .bk-transaction-table td {
+            display: block;
+            width: 100%;
+            padding: 12px 16px;
+        }
+
+        .bk-transaction-table td:first-child {
+            width: 100%;
+            border-bottom: none;
+            padding-bottom: 4px;
+        }
     }
     </style>
     <?php
     $content = ob_get_clean();
-    return bntm_universal_container('Booking Transaction', $content);
+    return $content;
 }
 
 add_shortcode('bk_transaction', 'bntm_shortcode_bk_transaction');
@@ -5455,6 +6387,15 @@ function bntm_ajax_bk_get_available_slots() {
     $dateObj = DateTime::createFromFormat('Y-m-d', $date);
     if (!$dateObj) {
         wp_send_json_error(['message' => 'Invalid date format']);
+    }
+
+    if (bk_is_closed_date($date)) {
+        $reason = bk_get_closed_date_reason($date);
+        $message = 'Business closed on this date';
+        if (!empty($reason)) {
+            $message .= ' (' . $reason . ')';
+        }
+        wp_send_json_success(['slots' => [], 'message' => $message]);
     }
     
     // Get service
@@ -5568,6 +6509,15 @@ function bntm_ajax_bk_book_appointment() {
     // Validation
     if (empty($service_id) || empty($booking_date) || empty($start_time) || empty($customer_name) || empty($customer_email)) {
         wp_send_json_error(['message' => 'Please fill in all required fields']);
+    }
+
+    if (bk_is_closed_date($booking_date)) {
+        $reason = bk_get_closed_date_reason($booking_date);
+        $message = 'This date is closed for booking.';
+        if (!empty($reason)) {
+            $message .= ' Reason: ' . $reason;
+        }
+        wp_send_json_error(['message' => $message]);
     }
     
     // Get service
@@ -6544,6 +7494,58 @@ function bntm_ajax_bk_update_service() {
     }
 }
 
+add_action('wp_ajax_bk_toggle_service_status', 'bntm_ajax_bk_toggle_service_status');
+
+function bntm_ajax_bk_toggle_service_status() {
+    check_ajax_referer('bk_nonce', 'nonce');
+    
+    if (!is_user_logged_in()) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+    
+    global $wpdb;
+    $table = $wpdb->prefix . 'bk_services';
+    $business_id = get_current_user_id();
+    
+    $service_id = intval($_POST['service_id'] ?? 0);
+    $status = sanitize_text_field($_POST['status'] ?? '');
+    
+    if (!$service_id) {
+        wp_send_json_error(['message' => 'Invalid service']);
+    }
+    
+    if (!in_array($status, ['active', 'inactive'], true)) {
+        wp_send_json_error(['message' => 'Invalid status']);
+    }
+    
+    $service = $wpdb->get_row($wpdb->prepare(
+        "SELECT id FROM $table WHERE id = %d AND business_id = %d",
+        $service_id,
+        $business_id
+    ));
+    
+    if (!$service) {
+        wp_send_json_error(['message' => 'Service not found']);
+    }
+    
+    $result = $wpdb->update(
+        $table,
+        ['status' => $status],
+        ['id' => $service_id, 'business_id' => $business_id],
+        ['%s'],
+        ['%d', '%d']
+    );
+    
+    if ($result === false) {
+        wp_send_json_error(['message' => 'Failed to update service status']);
+    }
+    
+    wp_send_json_success([
+        'message' => 'Service status updated successfully.',
+        'status' => $status
+    ]);
+}
+
 add_action('wp_ajax_bk_delete_service', 'bntm_ajax_bk_delete_service');
 
 function bntm_ajax_bk_delete_service() {
@@ -6777,44 +7779,60 @@ function bntm_ajax_bk_save_settings() {
     wp_send_json_success(['message' => 'Booking settings saved successfully!']);
 }
 
+function bntm_ajax_bk_add_closed_date() {
+    check_ajax_referer('bk_nonce', 'nonce');
+
+    if (!is_user_logged_in()) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $date = sanitize_text_field($_POST['closed_date'] ?? '');
+    $reason = sanitize_text_field($_POST['closed_reason'] ?? '');
+    $date_obj = DateTime::createFromFormat('Y-m-d', $date);
+
+    if (!$date_obj || $date_obj->format('Y-m-d') !== $date) {
+        wp_send_json_error(['message' => 'Invalid date']);
+    }
+
+    $closed_dates = bk_get_closed_dates();
+    foreach ($closed_dates as $entry) {
+        if ($entry['date'] === $date) {
+            wp_send_json_error(['message' => 'That date is already marked closed']);
+        }
+    }
+
+    $closed_dates[] = [
+        'date' => $date,
+        'reason' => $reason
+    ];
+
+    bntm_set_setting('bk_closed_dates', wp_json_encode($closed_dates));
+    wp_send_json_success(['message' => 'Closed date added successfully']);
+}
+
+function bntm_ajax_bk_remove_closed_date() {
+    check_ajax_referer('bk_nonce', 'nonce');
+
+    if (!is_user_logged_in()) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $date = sanitize_text_field($_POST['closed_date'] ?? '');
+    $closed_dates = bk_get_closed_dates();
+    $updated = array_values(array_filter($closed_dates, function($entry) use ($date) {
+        return $entry['date'] !== $date;
+    }));
+
+    if (count($updated) === count($closed_dates)) {
+        wp_send_json_error(['message' => 'Closed date not found']);
+    }
+
+    bntm_set_setting('bk_closed_dates', wp_json_encode($updated));
+    wp_send_json_success(['message' => 'Closed date removed successfully']);
+}
+
 /* ---------- HELPER FUNCTIONS ---------- */
 
-function bk_get_dashboard_stats($business_id) {
-    global $wpdb;
-    $services_table = $wpdb->prefix . 'bk_services';
-    $bookings_table = $wpdb->prefix . 'bk_bookings';
-    
-    $total_services = $wpdb->get_var($wpdb->prepare(
-        "SELECT COUNT(*) FROM $services_table ",
-        $business_id
-    ));
-    
-    $total_bookings = $wpdb->get_var($wpdb->prepare(
-        "SELECT COUNT(*) FROM $bookings_table ",
-        $business_id
-    ));
-    
-    $monthly_revenue = $wpdb->get_var($wpdb->prepare(
-        "SELECT SUM(total) FROM $bookings_table 
-         WHERE payment_status IN ('paid', 'verified')
-         AND MONTH(created_at) = MONTH(CURRENT_DATE()) 
-         AND YEAR(created_at) = YEAR(CURRENT_DATE())",
-        $business_id
-    ));
-    
-    $pending_bookings = $wpdb->get_var($wpdb->prepare(
-        "SELECT COUNT(*) FROM $bookings_table 
-         WHERE status = 'pending'",
-        $business_id
-    ));
-    
-    return [
-        'total_services' => intval($total_services),
-        'total_bookings' => intval($total_bookings),
-        'monthly_revenue' => floatval($monthly_revenue),
-        'pending_bookings' => intval($pending_bookings)
-    ];
-}
 function bk_render_recent_bookings($business_id, $limit = 10) {
     global $wpdb;
     $bookings_table = $wpdb->prefix . 'bk_bookings';
@@ -6850,6 +7868,8 @@ function bk_render_recent_bookings($business_id, $limit = 10) {
     
     ob_start();
     ?>
+    
+   <div class="bntm-table-wrapper">
     <table class="bntm-table">
         <thead>
             <tr>
@@ -6888,7 +7908,7 @@ function bk_render_recent_bookings($business_id, $limit = 10) {
             <?php endif; ?>
         </tbody>
     </table>
-    
+    </div>
     <?php if ($total_pages > 1): ?>
         <div class="bk-pagination">
             <?php
@@ -7072,6 +8092,20 @@ function bk_format_price($amount = '') {
     return $symbol . number_format($amount, 2);
 }
 
+function bk_get_booking_tracking_url($booking_id) {
+    $booking_id = trim((string) $booking_id);
+    if ($booking_id === '') {
+        return '';
+    }
+
+    $transaction_page = get_page_by_path('booking-transaction');
+    if (!$transaction_page) {
+        return '';
+    }
+
+    return add_query_arg('id', $booking_id, get_permalink($transaction_page));
+}
+
 /**
  * Send booking confirmation email
  */
@@ -7086,6 +8120,7 @@ function bk_send_booking_confirmation_email($email, $data) {
     $start_time_formatted = date('g:i A', strtotime($data['start_time']));
     $end_time_formatted = date('g:i A', strtotime($data['end_time']));
     $date_formatted = date('l, F j, Y', strtotime($data['date']));
+    $tracking_url = !empty($data['tracking_url']) ? $data['tracking_url'] : bk_get_booking_tracking_url($data['booking_id'] ?? '');
     
     $message = "Hello {$data['name']},\n\n";
     $message .= "Your booking has been received!\n\n";
@@ -7126,7 +8161,11 @@ function bk_send_booking_confirmation_email($email, $data) {
     $message .= "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
     $message .= "Booking ID: {$data['booking_id']}\n";
     $message .= "Payment Method: {$data['payment_method']}\n";
-    $message .= "Status: " . ucfirst(str_replace('_', ' ', $data['payment_status'])) . "\n\n";
+    $message .= "Status: " . ucfirst(str_replace('_', ' ', $data['payment_status'])) . "\n";
+    if ($tracking_url !== '') {
+        $message .= "Track Your Booking: {$tracking_url}\n";
+    }
+    $message .= "\n";
     
     if ($data['payment_status'] === 'unpaid' || $data['payment_status'] === 'pending') {
         $message .= "Please complete payment to confirm your booking.\n\n";
@@ -7136,28 +8175,55 @@ function bk_send_booking_confirmation_email($email, $data) {
     
     return wp_mail($email, $subject, $message);
 }
+
+function bk_send_booking_update_email($email, $data, $service_id = 0) {
+    global $wpdb;
+
+    $service_name = $data['service'] ?? '';
+    if ($service_id && (empty($service_name) || is_numeric($service_name))) {
+        $services_table = $wpdb->prefix . 'bk_services';
+        $resolved_service = $wpdb->get_var($wpdb->prepare(
+            "SELECT name FROM $services_table WHERE id = %d",
+            $service_id
+        ));
+
+        if ($resolved_service) {
+            $service_name = $resolved_service;
+        }
+    }
+
+    $start_time_formatted = date('g:i A', strtotime($data['start_time']));
+    $end_time_formatted = date('g:i A', strtotime($data['end_time']));
+    $date_formatted = date('l, F j, Y', strtotime($data['date']));
+    $payment_status = ucfirst(str_replace('_', ' ', $data['payment_status'] ?? 'pending'));
+    $tracking_url = !empty($data['tracking_url']) ? $data['tracking_url'] : bk_get_booking_tracking_url($data['booking_id'] ?? '');
+
+    $subject = 'Booking Updated - ' . ($service_name ?: 'Appointment');
+    $message = "Hello {$data['name']},\n\n";
+    $message .= "Your booking details have been updated.\n\n";
+    $message .= "Service: " . ($service_name ?: 'Appointment') . "\n";
+    $message .= "Date: {$date_formatted}\n";
+    $message .= "Time: {$start_time_formatted} - {$end_time_formatted}\n";
+    $message .= "Total Amount: " . bk_format_price($data['total']) . "\n";
+    $message .= "Payment Status: {$payment_status}\n";
+    $message .= "Booking ID: {$data['booking_id']}\n";
+    if ($tracking_url !== '') {
+        $message .= "Track Your Booking: {$tracking_url}\n";
+    }
+    $message .= "\n";
+    $message .= "Please keep this email for your reference.";
+
+    return wp_mail($email, $subject, $message);
+}
 /* ---------- BK BOOKINGS TAB FOR FINANCE IMPORT ---------- */
 function bntm_fn_bookings_tab() {
     global $wpdb;
     $bookings_table = $wpdb->prefix . 'bk_bookings';
     $services_table = $wpdb->prefix . 'bk_services';
     $txn_table = $wpdb->prefix . 'fn_transactions';
-    $current_month = current_time('Y-m');
-    $selected_month = isset($_GET['import_month']) ? sanitize_text_field($_GET['import_month']) : $current_month;
-    if ($selected_month !== 'all' && !preg_match('/^\d{4}-\d{2}$/', $selected_month)) {
-        $selected_month = $current_month;
-    }
-    
-    $available_months = $wpdb->get_col("
-        SELECT DISTINCT DATE_FORMAT(booking_date, '%Y-%m') as month_key
-        FROM {$bookings_table}
-        WHERE status IN ('confirmed', 'completed')
-        AND payment_status = 'paid'
-        ORDER BY month_key DESC
-    ");
     
     // Only fetch bookings that are confirmed/completed AND paid
-    $query = "
+    $bookings = $wpdb->get_results("
         SELECT b.*, 
         s.name as service_name,
         (SELECT COUNT(*) FROM {$txn_table} WHERE reference_type='booking' AND reference_id=b.id) as is_imported
@@ -7165,14 +8231,8 @@ function bntm_fn_bookings_tab() {
         LEFT JOIN {$services_table} s ON b.service_id = s.id
         WHERE b.status IN ('confirmed', 'completed')
         AND b.payment_status = 'paid'
-    ";
-    
-    if ($selected_month !== 'all') {
-        $query .= $wpdb->prepare(" AND DATE_FORMAT(b.booking_date, '%%Y-%%m') = %s", $selected_month);
-    }
-    
-    $query .= " ORDER BY b.created_at DESC";
-    $bookings = $wpdb->get_results($query);
+        ORDER BY b.created_at DESC
+    ");
     
     $nonce = wp_create_nonce('bntm_fn_action');
     
@@ -7181,18 +8241,6 @@ function bntm_fn_bookings_tab() {
     <div class="bntm-form-section">
         <h3>Booking Appointments</h3>
         <p>Import completed bookings as income transactions</p>
-        
-        <div style="margin-bottom: 15px;">
-            <label for="bk-import-month-filter" style="display:block; margin-bottom: 6px; font-weight: 600;">Filter by Month</label>
-            <select id="bk-import-month-filter" style="max-width: 260px;">
-                <option value="all" <?php selected($selected_month, 'all'); ?>>All Months</option>
-                <?php foreach ($available_months as $month_key): ?>
-                    <option value="<?php echo esc_attr($month_key); ?>" <?php selected($selected_month, $month_key); ?>>
-                        <?php echo esc_html(date_i18n('F Y', strtotime($month_key . '-01'))); ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
-        </div>
         
         <?php if (empty($bookings)): ?>
         <div style="padding: 40px; text-align: center; background: #f9fafb; border-radius: 8px;">
@@ -7223,7 +8271,8 @@ function bntm_fn_bookings_tab() {
             <span id="selected-count" style="margin-left: 15px; color: #6b7280;"></span>
         </div>
         
-        <div style="overflow-x: auto;">
+       
+        <div class="bntm-table-wrapper">
             <table class="bntm-table">
                 <thead>
                     <tr>
@@ -7302,16 +8351,6 @@ function bntm_fn_bookings_tab() {
     
     (function() {
         const nonce = '<?php echo $nonce; ?>';
-        const monthFilter = document.getElementById('bk-import-month-filter');
-        
-        if (monthFilter) {
-            monthFilter.addEventListener('change', function() {
-                const params = new URLSearchParams(window.location.search);
-                params.set('tab', 'import');
-                params.set('import_month', this.value);
-                window.location.search = params.toString();
-            });
-        }
         
         // Update selected count
         function updateSelectedCount() {
