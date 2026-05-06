@@ -123,10 +123,6 @@ function bntm_ec_create_tables() {
 
 // AJAX handlers
 add_action('wp_ajax_ec_update_order_status', 'bntm_ajax_ec_update_order_status');
-add_action('wp_ajax_ec_add_to_cart', 'bntm_ajax_ec_add_to_cart');
-add_action('wp_ajax_nopriv_ec_add_to_cart', 'bntm_ajax_ec_add_to_cart');
-add_action('wp_ajax_ec_process_checkout', 'bntm_ajax_ec_process_checkout');
-add_action('wp_ajax_nopriv_ec_process_checkout', 'bntm_ajax_ec_process_checkout');
 add_action('wp_ajax_ec_process_checkout_op', 'bntm_ajax_ec_process_checkout_op');
 add_action('wp_ajax_nopriv_ec_process_checkout_op', 'bntm_ajax_ec_process_checkout_op');
 

@@ -2058,6 +2058,95 @@ function bntm_ajax_fn_export_csv() {
     exit;
 }
 
+if ( ! function_exists( 'bntm_ajax_fn_import_order' ) ) {
+    function bntm_ajax_fn_import_order() {
+        check_ajax_referer('bntm_fn_action');
+
+        if (!is_user_logged_in()) {
+            wp_send_json_error('Please log in.');
+        }
+
+        global $wpdb;
+        $txn_table = $wpdb->prefix . 'fn_transactions';
+        $order_id  = intval($_POST['order_id'] ?? 0);
+        $amount    = floatval($_POST['amount'] ?? 0);
+        $business_id = fn_get_current_business_id();
+
+        if ($order_id <= 0 || $amount <= 0) {
+            wp_send_json_error('Invalid order payload.');
+        }
+
+        if ($business_id <= 0) {
+            wp_send_json_error('Business context unavailable.');
+        }
+
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$txn_table} WHERE reference_type='order' AND reference_id=%d AND business_id=%d",
+            $order_id,
+            $business_id
+        ));
+
+        if ($exists) {
+            wp_send_json_error('Order already imported.');
+        }
+
+        $result = $wpdb->insert($txn_table, [
+            'rand_id' => bntm_rand_id(),
+            'business_id' => $business_id,
+            'type' => 'income',
+            'amount' => $amount,
+            'category' => 'Sales',
+            'notes' => 'E-Commerce Order #' . $order_id,
+            'reference_type' => 'order',
+            'reference_id' => $order_id,
+            'created_at' => current_time('mysql')
+        ], ['%s','%d','%s','%f','%s','%s','%s','%d','%s']);
+
+        if ($result) {
+            fn_update_cashflow_summary();
+            wp_send_json_success('Order imported successfully!');
+        } else {
+            wp_send_json_error('Failed to import order.');
+        }
+    }
+}
+
+if ( ! function_exists( 'bntm_ajax_fn_revert_order' ) ) {
+    function bntm_ajax_fn_revert_order() {
+        check_ajax_referer('bntm_fn_action');
+
+        if (!is_user_logged_in()) {
+            wp_send_json_error('Please log in.');
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'fn_transactions';
+        $order_id = intval($_POST['order_id'] ?? 0);
+        $business_id = fn_get_current_business_id();
+
+        if ($order_id <= 0) {
+            wp_send_json_error('Invalid order ID.');
+        }
+
+        if ($business_id <= 0) {
+            wp_send_json_error('Business context unavailable.');
+        }
+
+        $result = $wpdb->delete($table, [
+            'reference_type' => 'order',
+            'reference_id' => $order_id,
+            'business_id' => $business_id
+        ], ['%s','%d','%d']);
+
+        if ($result) {
+            fn_update_cashflow_summary();
+            wp_send_json_success('Order reverted from transactions.');
+        } else {
+            wp_send_json_error('Failed to revert order.');
+        }
+    }
+}
+
 /* ============================================================
    CRON
    ============================================================ */

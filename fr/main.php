@@ -1988,6 +1988,60 @@ function bntm_ajax_forms_duplicate_form() {
         wp_send_json_error(['message' => 'Failed to duplicate form']);
     }
 }
+
+/**
+ * Toggle form visibility
+ */
+function bntm_ajax_forms_toggle_visibility() {
+    if (!is_user_logged_in()) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    global $wpdb;
+    $forms_table = $wpdb->prefix . 'forms_forms';
+
+    $form_id = intval($_POST['form_id'] ?? 0);
+    $business_id = get_current_user_id();
+
+    if ($form_id <= 0) {
+        wp_send_json_error(['message' => 'Invalid form ID']);
+    }
+
+    $form = $wpdb->get_row($wpdb->prepare(
+        "SELECT id, business_id, visibility FROM $forms_table WHERE id = %d",
+        $form_id
+    ));
+
+    if (!$form) {
+        wp_send_json_error(['message' => 'Form not found']);
+    }
+
+    if ((int) $form->business_id !== (int) $business_id) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $requested_visibility = sanitize_text_field($_POST['visibility'] ?? '');
+    if ($requested_visibility !== 'public' && $requested_visibility !== 'private') {
+        $requested_visibility = ($form->visibility === 'public') ? 'private' : 'public';
+    }
+
+    $updated = $wpdb->update(
+        $forms_table,
+        ['visibility' => $requested_visibility],
+        ['id' => $form_id],
+        ['%s'],
+        ['%d']
+    );
+
+    if ($updated === false) {
+        wp_send_json_error(['message' => 'Failed to update visibility']);
+    }
+
+    wp_send_json_success([
+        'message' => 'Form visibility updated',
+        'visibility' => $requested_visibility
+    ]);
+}
 /**
  * Get form entries
  */

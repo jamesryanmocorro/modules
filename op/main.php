@@ -3047,6 +3047,76 @@ function bntm_ajax_op_create_invoice() {
     }
 }
 
+function bntm_ajax_op_update_invoice() {
+    check_ajax_referer('op_nonce', 'nonce');
+
+    if (!is_user_logged_in()) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    global $wpdb;
+    $invoices_table = $wpdb->prefix . 'op_invoices';
+    $business_id = get_current_user_id();
+
+    $invoice_id = sanitize_text_field($_POST['invoice_id'] ?? '');
+    $customer_name = sanitize_text_field($_POST['customer_name'] ?? '');
+    $customer_email = sanitize_email($_POST['customer_email'] ?? '');
+    $customer_phone = sanitize_text_field($_POST['customer_phone'] ?? '');
+    $customer_address = sanitize_textarea_field($_POST['customer_address'] ?? '');
+    $description = sanitize_textarea_field($_POST['description'] ?? '');
+    $amount = floatval($_POST['amount'] ?? 0);
+    $due_date = sanitize_text_field($_POST['due_date'] ?? '');
+    $notes = sanitize_textarea_field($_POST['notes'] ?? '');
+
+    if (empty($invoice_id) || empty($customer_name) || empty($customer_email) || $amount <= 0 || empty($description)) {
+        wp_send_json_error(['message' => 'Please fill in all required fields']);
+    }
+
+    $invoice = $wpdb->get_row($wpdb->prepare(
+        "SELECT id FROM $invoices_table WHERE rand_id = %s AND business_id = %d",
+        $invoice_id,
+        $business_id
+    ));
+
+    if (!$invoice) {
+        wp_send_json_error(['message' => 'Invoice not found or access denied']);
+    }
+
+    $tax_rate = floatval(bntm_get_setting('op_tax_rate', '0'));
+    $tax = $amount * ($tax_rate / 100);
+    $total = $amount + $tax;
+
+    if (empty($due_date)) {
+        $payment_terms = intval(bntm_get_setting('op_payment_terms', '30'));
+        $due_date = date('Y-m-d', strtotime("+$payment_terms days"));
+    }
+
+    $result = $wpdb->update($invoices_table, [
+        'customer_name' => $customer_name,
+        'customer_email' => $customer_email,
+        'customer_phone' => $customer_phone,
+        'customer_address' => $customer_address,
+        'description' => $description,
+        'amount' => $amount,
+        'tax' => $tax,
+        'total' => $total,
+        'due_date' => $due_date,
+        'notes' => $notes
+    ], [
+        'id' => $invoice->id
+    ], [
+        '%s','%s','%s','%s','%s','%f','%f','%f','%s','%s'
+    ], [
+        '%d'
+    ]);
+
+    if ($result !== false) {
+        wp_send_json_success(['message' => 'Invoice updated successfully!']);
+    } else {
+        wp_send_json_error(['message' => 'Failed to update invoice.']);
+    }
+}
+
 function bntm_ajax_op_update_invoice_status() {
     check_ajax_referer('op_nonce', 'nonce');
     

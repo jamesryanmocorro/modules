@@ -2528,7 +2528,6 @@ function bntm_ajax_pos_add_staff() {
     wp_send_json_success(['message' => 'Staff member added successfully!']);
 }
 add_action('wp_ajax_pos_add_staff', 'bntm_ajax_pos_add_staff');
-add_action('wp_ajax_pos_add_staff', 'bntm_ajax_pos_add_staff');
 
 // Toggle staff status (activate/deactivate)
 function bntm_ajax_pos_toggle_staff_status() {
@@ -2726,15 +2725,6 @@ function bntm_ajax_pos_revert_transaction() {
 add_action('wp_ajax_pos_revert_transaction', 'bntm_ajax_pos_revert_transaction');
 
 
-// AJAX handlers
-add_action('wp_ajax_pos_search_product', 'bntm_ajax_pos_search_product');
-add_action('wp_ajax_pos_complete_sale', 'bntm_ajax_pos_complete_sale');
-add_action('wp_ajax_pos_import_products', 'bntm_ajax_pos_import_products');
-add_action('wp_ajax_pos_sync_product', 'bntm_ajax_pos_sync_product');
-add_action('wp_ajax_pos_toggle_product', 'bntm_ajax_pos_toggle_product');
-add_action('wp_ajax_pos_add_staff', 'bntm_ajax_pos_add_staff');
-add_action('wp_ajax_pos_remove_staff', 'bntm_ajax_pos_remove_staff');
-add_action('wp_ajax_pos_save_settings', 'bntm_ajax_pos_save_settings');
 /* ---------- POS CASHIER SHORTCODE ---------- */
 /* ---------- POS CASHIER SHORTCODE ---------- */
 function bntm_pos_shortcode_cashier() {
