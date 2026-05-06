@@ -14,10 +14,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 define( 'BNTM_WEIMOP_PATH',       dirname( __FILE__ ) . '/' );
 define( 'BNTM_WEIMOP_URL',        plugin_dir_url( __FILE__ ) );
 define( 'BNTM_WEIMOP_PFX_SUBDIR', 'pfx_folder' );
-define( 'BNTM_WEIMOP_CONF_SUBDIR','weimop_conf' );
 define( 'BNTM_WEIMOP_DB_SUBDIR',  'weimop' );
 define( 'BNTM_WEIMOP_DB_FILE',    'weimop.sqlite' );
-define( 'BNTM_WEIMOP_DEFAULT_EXPORT_CONF', 'D:/download/Dashboard_2025-09-08/Dashboard_2025-09-08/NMMS MPI Web Services Data Extract Guide/ExportResultsConf.xml' );
 define( 'BNTM_WEIMOP_VER',        '8.0.0' );
 
 /* -------------------------------------------------------
@@ -49,17 +47,6 @@ function bntm_weimop_pfx_dir() {
 function bntm_weimop_pem_dir() {
     $dir = bntm_weimop_pfx_dir() . '/pem';
     if ( ! file_exists( $dir ) ) wp_mkdir_p( $dir );
-    return $dir;
-}
-
-function bntm_weimop_conf_dir() {
-    $upload = wp_upload_dir();
-    $dir    = trailingslashit( $upload['basedir'] ) . BNTM_WEIMOP_CONF_SUBDIR;
-    if ( ! file_exists( $dir ) ) {
-        wp_mkdir_p( $dir );
-        file_put_contents( $dir . '/.htaccess', "Deny from all\n" );
-        file_put_contents( $dir . '/index.php',  '<?php // silence' );
-    }
     return $dir;
 }
 
@@ -158,7 +145,6 @@ add_action( 'wp_ajax_weimop_get_occ_series',      'bntm_ajax_weimop_get_occ_seri
 add_action( 'wp_ajax_weimop_connection_status',   'bntm_ajax_weimop_connection_status'   );
 add_action( 'wp_ajax_weimop_save_settings',       'bntm_ajax_weimop_save_settings'       );
 add_action( 'wp_ajax_weimop_upload_pfx',          'bntm_ajax_weimop_upload_pfx'          );
-add_action( 'wp_ajax_weimop_upload_export_conf',  'bntm_ajax_weimop_upload_export_conf'  );
 add_action( 'wp_ajax_weimop_fetch_historical',    'bntm_ajax_weimop_fetch_historical'    );
 add_action( 'wp_ajax_weimop_diag',               'bntm_ajax_weimop_diag'               );
 
@@ -573,14 +559,6 @@ function weimop_tab_settings( $uid, $s ) {
         <div class="weimop-card">
             <div class="weimop-card__header"><h3 class="weimop-card__title">NMMS MPI &mdash; Request Parameters</h3></div>
             <p class="weimop-muted">These values are sent in the SOAP exportResults request body to the IEMOP NMMS MPI service.</p>
-            <div class="weimop-pfx-controls" style="margin-bottom:10px;">
-                <div class="weimop-form-group" style="flex:1;">
-                    <label class="weimop-label">Upload ExportResultsConf.xml <span class="weimop-muted">(recommended instead of typing full path)</span></label>
-                    <input type="file" id="weimop-export-conf-file" accept=".xml" class="weimop-input">
-                </div>
-                <button type="button" class="weimop-btn weimop-btn--primary" id="weimop-upload-export-conf-btn">Upload ExportResultsConf</button>
-            </div>
-            <div id="weimop-export-conf-status" class="weimop-notice" style="display:none;margin-bottom:10px;"></div>
             <div class="weimop-form-grid">
                 <?php foreach ( [
                     'nmms_result_type'  => 'Result Type (e.g. RTD_LMP)',
@@ -708,31 +686,6 @@ function bntm_weimop_debug_log( $tag, $context = [] ) {
     @file_put_contents($file, $line, FILE_APPEND);
 }
 
-function bntm_weimop_nmms_build_urls( $s ) {
-    $request_urls = [];
-    if ( ! empty($s['nmms_url']) ) {
-        $request_urls[] = trim( (string) $s['nmms_url'] );
-    } else {
-        if ( ! empty($s['nmms_main_url']) ) $request_urls[] = trim( (string) $s['nmms_main_url'] );
-        if ( ! empty($s['nmms_backup_url']) && trim((string)$s['nmms_backup_url']) !== trim((string)($s['nmms_main_url'] ?? '')) ) {
-            $request_urls[] = trim( (string) $s['nmms_backup_url'] );
-        }
-    }
-
-    // IEMOP MPI commonly responds on HTTP; if HTTPS is saved, try HTTP first to avoid 30s timeout per attempt.
-    $expanded_urls = [];
-    foreach ( $request_urls as $u ) {
-        if ( stripos($u, 'https://') === 0 ) {
-            $expanded_urls[] = 'http://' . substr($u, 8);
-            $expanded_urls[] = $u;
-        } else {
-            $expanded_urls[] = $u;
-        }
-    }
-
-    return array_values(array_unique(array_filter($expanded_urls)));
-}
-
 function bntm_weimop_nmms_soap_request( $s, $result_type, $interval_end ) {
     if ( empty($s['nmms_cert_path']) || ! file_exists($s['nmms_cert_path']) )
         return [ 'error' => 'Certificate file not found: ' . $s['nmms_cert_path'] ];
@@ -776,7 +729,25 @@ function bntm_weimop_nmms_soap_request( $s, $result_type, $interval_end ) {
   </soapenv:Body>
 </soapenv:Envelope>';
 
-    $request_urls = bntm_weimop_nmms_build_urls( $s );
+    $request_urls = [];
+    if ( ! empty($s['nmms_url']) ) {
+        $request_urls[] = $s['nmms_url'];
+    } else {
+        if ( ! empty($s['nmms_main_url']) ) $request_urls[] = $s['nmms_main_url'];
+        if ( ! empty($s['nmms_backup_url']) && $s['nmms_backup_url'] !== ($s['nmms_main_url'] ?? '') ) {
+            $request_urls[] = $s['nmms_backup_url'];
+        }
+    }
+    // If a saved URL is HTTPS but endpoint is actually plain HTTP,
+    // add HTTP fallback attempt automatically.
+    $expanded_urls = [];
+    foreach ( $request_urls as $u ) {
+        $expanded_urls[] = $u;
+        if ( stripos($u, 'https://') === 0 ) {
+            $expanded_urls[] = 'http://' . substr($u, 8);
+        }
+    }
+    $request_urls = array_values(array_unique($expanded_urls));
     if ( empty($request_urls) ) return [ 'error' => 'NMMS URL is not configured.' ];
 
     $response = false;
@@ -814,8 +785,6 @@ function bntm_weimop_nmms_soap_request( $s, $result_type, $interval_end ) {
             ],
         ];
 
-        $is_https = stripos((string)$url, 'https://') === 0;
-
         if ( $use_native_pfx ) {
             // Method 3: cURL reads PFX directly — no PEM extraction needed
             // Works on OpenSSL 3.x without legacy flag
@@ -836,39 +805,6 @@ function bntm_weimop_nmms_soap_request( $s, $result_type, $interval_end ) {
         $conn_time_ms = (int) curl_getinfo($ch, CURLINFO_CONNECT_TIME_T);
         $total_time_ms = (int) curl_getinfo($ch, CURLINFO_TOTAL_TIME_T);
         curl_close($ch);
-
-        // Some NMMS environments use private/untrusted CA chains on HTTPS.
-        // If strict TLS verification fails, retry once with verification disabled.
-        if ( $is_https && ! empty($curl_err) ) {
-            $ssl_errnos = [35, 51, 58, 60, 77, 83, 90];
-            $is_ssl_trust_error = in_array((int)$curl_errno, $ssl_errnos, true)
-                || stripos($curl_err, 'certificate') !== false
-                || stripos($curl_err, 'schannel') !== false
-                || stripos($curl_err, 'untrusted') !== false;
-
-            if ( $is_ssl_trust_error ) {
-                $ch2 = curl_init();
-                $curl_opts[CURLOPT_SSL_VERIFYPEER] = false;
-                $curl_opts[CURLOPT_SSL_VERIFYHOST] = 0;
-                curl_setopt_array( $ch2, $curl_opts );
-                $response  = curl_exec($ch2);
-                $http_code = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
-                $curl_err  = curl_error($ch2);
-                $curl_errno = curl_errno($ch2);
-                $conn_time_ms = (int) curl_getinfo($ch2, CURLINFO_CONNECT_TIME_T);
-                $total_time_ms = (int) curl_getinfo($ch2, CURLINFO_TOTAL_TIME_T);
-                curl_close($ch2);
-
-                bntm_weimop_debug_log('soap_ssl_retry_insecure', [
-                    'url'           => $url,
-                    'http_code'     => $http_code,
-                    'curl_errno'    => $curl_errno,
-                    'curl_error'    => $curl_err,
-                    'connect_ms'    => $conn_time_ms,
-                    'total_ms'      => $total_time_ms,
-                ]);
-            }
-        }
 
         if ( ! empty($curl_err) ) {
             $last_error = 'cURL error: ' . $curl_err;
@@ -932,217 +868,17 @@ function bntm_weimop_nmms_soap_request( $s, $result_type, $interval_end ) {
     return [ 'xml' => $response, 'http_code' => $http_code ];
 }
 
-function bntm_weimop_nmms_result_type_candidates( $result_type ) {
-    $rt = strtoupper( trim( (string) $result_type ) );
-    if ( $rt === '' ) return [];
-
-    $candidates = [ $rt, str_replace('_', '', $rt) ];
-    $alias_map = [
-        'RTD_LMP'   => 'RTDLMP',
-        'HAP'       => 'DIPCLMP',
-        'DAP'       => 'TIPCLMP',
-        'OCC_COMP'  => 'OCCResourceComplianceDetail',
-        'OCC_COMPLIANCE' => 'OCCResourceComplianceDetail',
-    ];
-
-    if ( isset( $alias_map[ $rt ] ) ) {
-        $candidates[] = strtoupper( $alias_map[ $rt ] );
-    }
-
-    return array_values( array_unique( array_filter( $candidates ) ) );
-}
-
-function bntm_weimop_load_export_results_conf( $config_path, $result_type ) {
-    if ( trim( (string) $config_path ) === '' && defined('BNTM_WEIMOP_DEFAULT_EXPORT_CONF') ) {
-        $config_path = BNTM_WEIMOP_DEFAULT_EXPORT_CONF;
-    }
-    $config_path = trim( (string) $config_path );
-    $config_path = str_replace('\\', '/', $config_path);
-    if ( $config_path === '' ) return [ 'error' => 'ExportResultsConf path is not set.' ];
-    if ( ! file_exists( $config_path ) ) return [ 'error' => 'ExportResultsConf file not found: ' . $config_path ];
-    if ( ! class_exists( 'DOMDocument' ) ) return [ 'error' => 'PHP DOM extension is not available.' ];
-
-    libxml_use_internal_errors( true );
-    $doc = new DOMDocument();
-    if ( ! @$doc->load( $config_path ) ) {
-        libxml_clear_errors();
-        return [ 'error' => 'ExportResultsConf XML could not be loaded.' ];
-    }
-
-    $xp = new DOMXPath( $doc );
-    $type_nodes = $xp->query( "//*[local-name()='ExportResultsType']" );
-    if ( ! $type_nodes || $type_nodes->length === 0 ) {
-        return [ 'error' => 'No ExportResultsType nodes found in ExportResultsConf.' ];
-    }
-
-    $target_node = null;
-    $candidates = bntm_weimop_nmms_result_type_candidates( $result_type );
-    foreach ( $type_nodes as $node ) {
-        $name_attr = $node->attributes ? $node->attributes->getNamedItem('Name') : null;
-        if ( ! $name_attr ) continue;
-        $name = strtoupper( trim( (string) $name_attr->nodeValue ) );
-        if ( in_array( $name, $candidates, true ) ) {
-            $target_node = $node;
-            break;
-        }
-    }
-
-    if ( ! $target_node ) {
-        return [ 'error' => 'Result type not found in ExportResultsConf: ' . $result_type ];
-    }
-
-    $read_text_list = function ( $xpath ) use ( $xp, $target_node ) {
-        $out = [];
-        $nodes = $xp->query( $xpath, $target_node );
-        if ( ! $nodes ) return $out;
-        foreach ( $nodes as $n ) {
-            $out[] = trim( (string) $n->textContent );
-        }
-        return $out;
-    };
-
-    return [
-        'header_names'        => $read_text_list( ".//*[local-name()='ResultsSummary']/*[local-name()='Header']/*[local-name()='HeaderElement']/*[local-name()='Name']" ),
-        'header_data_types'   => $read_text_list( ".//*[local-name()='ResultsSummary']/*[local-name()='Header']/*[local-name()='HeaderElement']/*[local-name()='DataType']" ),
-        'header_data_lengths' => array_map( 'intval', $read_text_list( ".//*[local-name()='ResultsSummary']/*[local-name()='Header']/*[local-name()='HeaderElement']/*[local-name()='DataLength']" ) ),
-        'body_names'          => $read_text_list( ".//*[local-name()='ResultsSummary']/*[local-name()='Body']/*[local-name()='Column']/*[local-name()='Name']" ),
-        'body_data_types'     => $read_text_list( ".//*[local-name()='ResultsSummary']/*[local-name()='Body']/*[local-name()='Column']/*[local-name()='DataType']" ),
-        'body_data_lengths'   => array_map( 'intval', $read_text_list( ".//*[local-name()='ResultsSummary']/*[local-name()='Body']/*[local-name()='Column']/*[local-name()='DataLength']" ) ),
-        'path'                => $config_path,
-    ];
-}
-
-function bntm_weimop_decode_int32_le( $chunk ) {
-    $v = unpack( 'V', $chunk )[1];
-    return $v >= 0x80000000 ? $v - 0x100000000 : $v;
-}
-
-function bntm_weimop_decode_int64_le( $chunk ) {
-    $parts = unpack( 'V2', $chunk );
-    $value = ( (int) $parts[2] << 32 ) | (int) $parts[1];
-    if ( $parts[2] & 0x80000000 ) $value -= 18446744073709551616.0;
-    return (int) $value;
-}
-
-function bntm_weimop_decode_nmms_binary_rows( $binary, $result_type, $market_run, $conf ) {
-    if ( $binary === '' ) return [ 'rows' => [] ];
-
-    // The Siemens payload is read from the end of the byte array.
-    if ( pack('S', 1) === "\x01\x00" ) {
-        $binary = strrev( $binary );
-    }
-
-    $index = strlen( $binary );
-    $header_names = $conf['header_names'] ?? [];
-    $header_types = $conf['header_data_types'] ?? [];
-    $body_names   = $conf['body_names'] ?? [];
-    $body_types   = $conf['body_data_types'] ?? [];
-    $body_lengths = $conf['body_data_lengths'] ?? [];
-
-    $no_of_rows = 0;
-    if ( isset( $header_names[0], $header_types[0] )
-         && strcasecmp( $header_names[0], 'NoOfRows' ) === 0
-         && strtolower( $header_types[0] ) === 'int' ) {
-        if ( $index < 4 ) return [ 'rows' => [] ];
-        $index -= 4;
-        $no_of_rows = bntm_weimop_decode_int32_le( substr( $binary, $index, 4 ) );
-    }
-
-    if ( $no_of_rows <= 0 ) return [ 'rows' => [] ];
-
-    $no_of_columns = count( $body_names );
-    if ( isset( $header_names[1], $header_types[1] )
-         && strcasecmp( $header_names[1], 'NoOfColumns' ) === 0
-         && strtolower( $header_types[1] ) === 'int' ) {
-        if ( $index < 4 ) return [ 'rows' => [] ];
-        $index -= 4;
-        $no_of_columns = max( 0, bntm_weimop_decode_int32_le( substr( $binary, $index, 4 ) ) );
-    }
-
-    $rows = [];
-    $market_run_up = strtoupper( trim( (string) $market_run ) );
-    $result_type_up = strtoupper( trim( (string) $result_type ) );
-
-    for ( $i = 0; $i < $no_of_rows; $i++ ) {
-        $row = [];
-        for ( $j = 0; $j < $no_of_columns; $j++ ) {
-            $name   = $body_names[ $j ] ?? ('COL_' . $j);
-            $type   = strtolower( $body_types[ $j ] ?? '' );
-            $length = (int) ( $body_lengths[ $j ] ?? 0 );
-
-            if ( $type === 'long' ) {
-                if ( $index < 8 ) break 2;
-                $index -= 8;
-                $timestamp_ms = bntm_weimop_decode_int64_le( substr( $binary, $index, 8 ) );
-                $seconds = (int) floor( $timestamp_ms / 1000 );
-                $dt = date( 'Y-m-d H:i:s', $seconds );
-
-                if ( $name === 'TIME_INTERVAL' && ( $market_run_up === 'WAP' || $market_run_up === 'DAP' || $result_type_up === 'TIPCLMP' ) ) {
-                    $dt = date( 'Y-m-d H:i:s', strtotime( $dt ) + 3600 );
-                } elseif ( $name === 'TIME_INTERVAL' && $market_run_up === 'HAP' ) {
-                    $dt = date( 'Y-m-d H:i:s', strtotime( $dt ) + 300 );
-                }
-
-                $row[ $name ] = $dt;
-            } elseif ( $type === 'string' ) {
-                if ( $length < 0 || $index < $length ) break 2;
-                $index -= $length;
-                $raw = substr( $binary, $index, $length );
-                $row[ $name ] = trim( strrev( $raw ), "\0 \t\n\r\0\x0B" );
-            } elseif ( $type === 'double' ) {
-                if ( $index < 8 ) break 2;
-                $index -= 8;
-                $row[ $name ] = unpack( 'e', substr( $binary, $index, 8 ) )[1];
-            } elseif ( $type === 'int' ) {
-                if ( $index < 4 ) break 2;
-                $index -= 4;
-                $row[ $name ] = bntm_weimop_decode_int32_le( substr( $binary, $index, 4 ) );
-            }
-        }
-
-        if ( ! empty( $row ) ) $rows[] = $row;
-    }
-
-    return [ 'rows' => $rows ];
-}
-
-function bntm_weimop_parse_nmms_response( $xml_string, $result_type = '', $settings = [] ) {
+function bntm_weimop_parse_nmms_response( $xml_string ) {
     libxml_use_internal_errors(true);
     $xml = simplexml_load_string($xml_string);
     if ( ! $xml ) return [ 'error' => 'Invalid XML in NMMS response.' ];
-
-    $return_nodes = $xml->xpath('//*[local-name()="return"]');
-    if ( ! $return_nodes ) return [ 'rows' => [] ];
-
-    $first_return = $return_nodes[0];
-    if ( $first_return instanceof SimpleXMLElement && count( $first_return->children() ) > 0 ) {
-        $rows = [];
-        foreach ( $return_nodes as $row ) {
-            $r = [];
-            foreach ( $row->children() as $child ) $r[$child->getName()] = (string) $child;
-            if ( ! empty($r) ) $rows[] = $r;
-        }
-        return [ 'rows' => $rows ];
+    $rows = [];
+    foreach ( $xml->xpath('//*[local-name()="return"]') as $row ) {
+        $r = [];
+        foreach ($row->children() as $child) $r[$child->getName()] = (string)$child;
+        if ( ! empty($r) ) $rows[] = $r;
     }
-
-    // Mode B: SOAP return is base64-encoded binary payload.
-    $payload = trim( (string) $first_return );
-    if ( $payload === '' ) return [ 'rows' => [] ];
-
-    $binary = base64_decode( preg_replace( '/\s+/', '', $payload ), true );
-    if ( $binary === false ) return [ 'rows' => [] ];
-
-    $conf = bntm_weimop_load_export_results_conf( $settings['nmms_export_conf'] ?? '', $result_type );
-    if ( isset( $conf['error'] ) ) {
-        return [ 'error' => $conf['error'] ];
-    }
-
-    return bntm_weimop_decode_nmms_binary_rows(
-        $binary,
-        $result_type,
-        $settings['nmms_market_run'] ?? '',
-        $conf
-    );
+    return [ 'rows' => $rows ];
 }
 
 function bntm_weimop_insert_rows( $db, $table, $rows ) {
@@ -1229,7 +965,7 @@ function bntm_ajax_weimop_fetch_historical() {
                 $errors[] = $ft['type'] . ' @ ' . $interval_end . ': ' . $result['error'];
                 break;
             }
-            $parsed = bntm_weimop_parse_nmms_response($result['xml'], $ft['type'], $s);
+            $parsed = bntm_weimop_parse_nmms_response($result['xml']);
             if ( isset($parsed['error']) || empty($parsed['rows']) ) continue;
             $type_inserted += bntm_weimop_insert_rows($db, $ft['table'], $parsed['rows']);
         }
@@ -1452,87 +1188,29 @@ function bntm_ajax_weimop_diag() {
         }
     }
 
-    // NMMS URL reachability check across configured candidates (service/main/backup + HTTP fallback)
-    $urls = bntm_weimop_nmms_build_urls( $s );
-    if (!empty($urls) && function_exists('curl_init')) {
-        $reachable = false;
-        $details = [];
-        foreach ( $urls as $url ) {
-            $ch = curl_init();
-            curl_setopt_array($ch,[
-                CURLOPT_URL            => $url,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT        => 8,
-                CURLOPT_SSL_VERIFYPEER => false, // reachability probe only
-                CURLOPT_SSL_VERIFYHOST => 0,
-            ]);
-            $body = curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $err  = curl_error($ch);
-            curl_close($ch);
-
-            $ok = ($code > 0 && $code < 600);
-            if ( $ok ) {
-                $reachable = true;
-                $soap_hint = (is_string($body) && stripos($body, 'No such operation: null') !== false)
-                    ? ' (SOAP endpoint reachable via GET; use POST exportResults in app)'
-                    : '';
-                $details[] = 'OK HTTP '.$code.' from '.$url.$soap_hint;
-                break;
-            }
-
-            $details[] = 'Fail '.$url.($err ? ': '.$err : ($code ? ' HTTP '.$code : ' (timeout or DNS failure)'));
-        }
-
-        $chk('NMMS MPI URL reachable', $reachable, implode(' | ', $details));
+    // NMMS URL reachability (HEAD request, no cert needed)
+    $url = !empty($s['nmms_url']) ? $s['nmms_url'] : ($s['nmms_main_url'] ?? '');
+    if (!empty($url) && function_exists('curl_init')) {
+        $ch = curl_init();
+        curl_setopt_array($ch,[
+            CURLOPT_URL            => $url,
+            CURLOPT_NOBODY         => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 8,
+            CURLOPT_SSL_VERIFYPEER => false, // just checking reachability
+        ]);
+        curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err  = curl_error($ch);
+        curl_close($ch);
+        $reachable = ($code > 0 && $code < 600);
+        $chk('NMMS MPI URL reachable', $reachable,
+             $reachable ? 'HTTP '.$code.' from '.$url : 'Could not reach '.$url.($err ? ': '.$err : ' (timeout or DNS failure)'));
     } else {
-        $chk('NMMS MPI URL set', !empty($urls), !empty($urls) ? implode(' | ', $urls) : 'Not set');
+        $chk('NMMS MPI URL set', !empty($url), !empty($url) ? $url : 'Not set');
     }
 
-    // SOAP debug probe: capture raw XML/fault body for troubleshooting.
-    $soap_debug = [
-        'attempted'  => false,
-        'ok'         => false,
-        'resultType' => '',
-        'intervalEnd'=> '',
-        'httpCode'   => 0,
-        'xml'        => '',
-        'error'      => '',
-    ];
-
-    if ( ! empty($urls) && $pfx_readable && function_exists('curl_init') ) {
-        $diag_result_type = trim((string)($s['nmms_result_type'] ?? ''));
-        if ( $diag_result_type === '' ) $diag_result_type = 'RTD_LMP';
-
-        $ts = time();
-        $interval_end = date('Y-m-d H:i:s', $ts - ($ts % 300));
-
-        $s['_cert_pass_raw'] = $raw_pass;
-        $soap_debug['attempted']   = true;
-        $soap_debug['resultType']  = $diag_result_type;
-        $soap_debug['intervalEnd'] = $interval_end;
-
-        $soap_probe = bntm_weimop_nmms_soap_request( $s, $diag_result_type, $interval_end );
-        if ( isset($soap_probe['error']) ) {
-            $soap_debug['error'] = (string) $soap_probe['error'];
-            $chk('SOAP exportResults probe', false, $soap_debug['error']);
-        } else {
-            $soap_debug['ok'] = true;
-            $soap_debug['httpCode'] = (int)($soap_probe['http_code'] ?? 0);
-            $raw_xml = (string)($soap_probe['xml'] ?? '');
-            if ( strlen($raw_xml) > 12000 ) {
-                $raw_xml = substr($raw_xml, 0, 12000) . "\n... [truncated]";
-            }
-            $soap_debug['xml'] = $raw_xml;
-            $chk('SOAP exportResults probe', true, 'HTTP '.$soap_debug['httpCode'].' (raw XML captured)');
-        }
-    }
-
-    wp_send_json_success([
-        'report' => $report,
-        'all_pass' => $all_pass,
-        'soap_debug' => $soap_debug,
-    ]);
+    wp_send_json_success(['report'=>$report,'all_pass'=>$all_pass]);
 }
 
 function bntm_ajax_weimop_connection_status() {
@@ -1559,40 +1237,6 @@ function bntm_ajax_weimop_upload_pfx() {
     $settings['nmms_cert_path'] = $dest;
     update_user_meta($uid,'bntm_weimop_settings',$settings);
     wp_send_json_success(['path'=>$dest,'filename'=>$filename,'message'=>'Certificate uploaded and path saved.']);
-}
-
-function bntm_ajax_weimop_upload_export_conf() {
-    check_ajax_referer('weimop_nonce','nonce');
-    if (!is_user_logged_in()) wp_send_json_error(['message'=>'Unauthorized']);
-
-    if (empty($_FILES['export_conf_file']) || $_FILES['export_conf_file']['error'] !== UPLOAD_ERR_OK) {
-        wp_send_json_error(['message'=>'File upload failed (code: '.($_FILES['export_conf_file']['error']??'?').').']);
-    }
-
-    $file = $_FILES['export_conf_file'];
-    $ext  = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    if ($ext !== 'xml') {
-        wp_send_json_error(['message'=>'Only .xml files are allowed for ExportResultsConf.']);
-    }
-
-    $dir      = bntm_weimop_conf_dir();
-    $uid      = get_current_user_id();
-    $filename = 'export_conf_u' . $uid . '_' . sanitize_file_name($file['name']);
-    $dest     = trailingslashit($dir) . $filename;
-
-    if (!move_uploaded_file($file['tmp_name'], $dest)) {
-        wp_send_json_error(['message'=>'Could not write file. Check directory permissions on '.$dir]);
-    }
-
-    $settings = bntm_weimop_get_settings($uid);
-    $settings['nmms_export_conf'] = $dest;
-    update_user_meta($uid,'bntm_weimop_settings',$settings);
-
-    wp_send_json_success([
-        'path' => $dest,
-        'filename' => $filename,
-        'message' => 'ExportResultsConf uploaded and path saved.'
-    ]);
 }
 
 function bntm_ajax_weimop_save_settings() {
@@ -1717,7 +1361,7 @@ function bntm_weimop_default_settings(){
         'nmms_main_url'=>'http://mpiwebp.iemop.ph/SiemensServices/ExportResultsServiceImpl',
         'nmms_backup_url'=>'http://mpiwebb.iemop.ph/SiemensServices/ExportResultsServiceImpl',
         'nmms_url'=>'','nmms_cert_name'=>'','nmms_cert_path'=>'',
-        'nmms_cert_password'=>'','nmms_friendly_name'=>'','nmms_export_conf'=>BNTM_WEIMOP_DEFAULT_EXPORT_CONF,
+        'nmms_cert_password'=>'','nmms_friendly_name'=>'','nmms_export_conf'=>'',
         'nmms_result_type'=>'','nmms_market_run'=>'','nmms_region_name'=>'',
         'nmms_run_time'=>'','nmms_commodity'=>'','nmms_price_node'=>'',
         'nmms_interval_end'=>'','nmms_unit_id'=>'',
@@ -2195,60 +1839,6 @@ function showPS(msg,type){
     pfxStat.style.display='block';
 }
 
-/* upload ExportResultsConf.xml */
-var expConfFileEl = document.getElementById('weimop-export-conf-file');
-var expConfBtn    = document.getElementById('weimop-upload-export-conf-btn');
-var expConfStat   = document.getElementById('weimop-export-conf-status');
-
-function showExpConfStatus(msg, type) {
-    if (!expConfStat) return;
-    expConfStat.textContent = msg;
-    expConfStat.className = 'weimop-notice weimop-notice--' + (type === 'error' ? 'error' : type === 'ok' ? 'ok' : 'warn');
-    expConfStat.style.display = 'block';
-}
-
-if (expConfBtn) {
-    expConfBtn.addEventListener('click', function(){
-        if (!expConfFileEl || !expConfFileEl.files || !expConfFileEl.files[0]) {
-            showExpConfStatus('Select ExportResultsConf.xml first.', 'error');
-            return;
-        }
-
-        var file = expConfFileEl.files[0];
-        if (!/\.xml$/i.test(file.name)) {
-            showExpConfStatus('Only .xml files are allowed.', 'error');
-            return;
-        }
-
-        expConfBtn.disabled = true;
-        expConfBtn.textContent = 'Uploading...';
-        showExpConfStatus('Uploading ExportResultsConf.xml...', 'warn');
-
-        var fd = new FormData();
-        fd.append('action', 'weimop_upload_export_conf');
-        fd.append('nonce', NONCE);
-        fd.append('export_conf_file', file);
-
-        fetch(AJAX, {method:'POST', body:fd}).then(function(r){ return r.json(); }).then(function(j){
-            expConfBtn.disabled = false;
-            expConfBtn.textContent = 'Upload ExportResultsConf';
-
-            if (!j.success) {
-                showExpConfStatus((j.data && j.data.message) ? j.data.message : 'Upload failed.', 'error');
-                return;
-            }
-
-            var fld = document.querySelector('input[name="nmms_export_conf"]');
-            if (fld) fld.value = j.data.path || '';
-            showExpConfStatus('Upload complete. Path applied. Click Save Settings to persist with other changes.', 'ok');
-        }).catch(function(err){
-            expConfBtn.disabled = false;
-            expConfBtn.textContent = 'Upload ExportResultsConf';
-            showExpConfStatus('Upload failed: ' + err.message, 'error');
-        });
-    });
-}
-
 
 /* ---- diagnostics ---- */
 var diagBtn = document.getElementById('weimop-diag-btn');
@@ -2273,22 +1863,7 @@ if (diagBtn) {
             }).join('');
             if (res)  res.style.display = 'block';
             if (tbl)  tbl.innerHTML = html;
-            if (raw)  {
-                var sd = j.data && j.data.soap_debug ? j.data.soap_debug : null;
-                if (sd && sd.attempted) {
-                    var head = 'SOAP Probe\n'
-                        + 'resultType: ' + (sd.resultType || '') + '\n'
-                        + 'intervalEnd: ' + (sd.intervalEnd || '') + '\n'
-                        + 'httpCode: ' + (sd.httpCode || 0) + '\n\n';
-                    var body = sd.ok
-                        ? (sd.xml || '(empty XML response)')
-                        : ('Probe error: ' + (sd.error || 'Unknown error'));
-                    raw.textContent = head + body;
-                    raw.style.display = 'block';
-                } else {
-                    raw.style.display = 'none';
-                }
-            }
+            if (raw)  { raw.style.display='none'; }
         }).catch(function(err) {
             diagBtn.disabled = false; diagBtn.textContent = 'Run Diagnostics';
             if (res) { res.style.display='block'; tbl.innerHTML='<tr><td colspan="2" class="weimop-diag-fail">Request failed: '+esc(err.message)+'</td></tr>'; }
