@@ -15,6 +15,36 @@ if (!defined('ABSPATH')) exit;
 define('BNTM_POS_PATH', dirname(__FILE__) . '/');
 define('BNTM_POS_URL', plugin_dir_url(__FILE__));
 
+if (!function_exists('pos_get_current_business_id')) {
+    function pos_get_current_business_id() {
+        if (function_exists('bntm_get_current_business_id')) {
+            $business_id = absint(bntm_get_current_business_id());
+            if ($business_id > 0) {
+                return $business_id;
+            }
+        }
+        return absint(get_current_user_id());
+    }
+}
+
+if (!function_exists('pos_ensure_business_columns')) {
+    function pos_ensure_business_columns() {
+        global $wpdb;
+        $tables = [
+            $wpdb->prefix . 'pos_products',
+            $wpdb->prefix . 'pos_transactions',
+            $wpdb->prefix . 'pos_staff',
+        ];
+        foreach ($tables as $table) {
+            $has_col = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$table} LIKE %s", 'business_id'));
+            if (!$has_col) {
+                $wpdb->query("ALTER TABLE {$table} ADD COLUMN business_id BIGINT UNSIGNED NOT NULL DEFAULT 0");
+                $wpdb->query("ALTER TABLE {$table} ADD INDEX idx_business (business_id)");
+            }
+        }
+    }
+}
+
 /* ---------- MODULE CONFIGURATION ---------- */
 
 /**
@@ -41,6 +71,7 @@ function bntm_pos_get_tables() {
         'pos_products' => "CREATE TABLE {$prefix}pos_products (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             name VARCHAR(255) NOT NULL,
             sku VARCHAR(100) DEFAULT NULL,
             barcode VARCHAR(100) DEFAULT NULL,
@@ -56,12 +87,14 @@ function bntm_pos_get_tables() {
             INDEX idx_name (name),
             INDEX idx_sku (sku),
             INDEX idx_barcode (barcode),
+            INDEX idx_business (business_id),
             INDEX idx_status (status)
         ) {$charset};",
         
         'pos_transactions' => "CREATE TABLE {$prefix}pos_transactions (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             transaction_number VARCHAR(50) UNIQUE NOT NULL,
             staff_id BIGINT UNSIGNED DEFAULT NULL,
             staff_name VARCHAR(255) DEFAULT NULL,
@@ -76,6 +109,7 @@ function bntm_pos_get_tables() {
             notes TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_staff (staff_id),
+            INDEX idx_business (business_id),
             INDEX idx_transaction_number (transaction_number),
             INDEX idx_status (status),
             INDEX idx_created (created_at)
@@ -98,6 +132,7 @@ function bntm_pos_get_tables() {
         'pos_staff' => "CREATE TABLE {$prefix}pos_staff (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             user_id BIGINT UNSIGNED DEFAULT NULL,
             name VARCHAR(255) NOT NULL,
             email VARCHAR(255) DEFAULT NULL,
@@ -107,6 +142,7 @@ function bntm_pos_get_tables() {
             status VARCHAR(50) DEFAULT 'active',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_user (user_id),
+            INDEX idx_business (business_id),
             INDEX idx_pin (pin_code),
             INDEX idx_status (status)
         ) {$charset};"
@@ -150,6 +186,7 @@ function bntm_pos_shortcode_dashboard() {
         return '<div class="bntm-notice">Please log in to access the POS dashboard.</div>';
     }
     
+    pos_ensure_business_columns();
     $active_tab = isset($_GET['type']) ? sanitize_text_field($_GET['type']) : 'overview';
     
     ob_start();
@@ -906,6 +943,7 @@ function pos_overview_tab() {
 
 function pos_get_dashboard_stats() {
     global $wpdb;
+    $business_id = pos_get_current_business_id();
     $trans_table = $wpdb->prefix . 'pos_transactions';
     $items_table = $wpdb->prefix . 'pos_transaction_items';
     $prod_table = $wpdb->prefix . 'pos_products';
@@ -913,13 +951,13 @@ function pos_get_dashboard_stats() {
     // Sales today
     $sales_today = $wpdb->get_var(
         "SELECT COALESCE(SUM(total), 0) FROM {$trans_table} 
-        WHERE DATE(created_at) = CURDATE() AND status = 'completed'"
+        WHERE business_id = {$business_id} AND DATE(created_at) = CURDATE() AND status = 'completed'"
     );
     
     // Sales yesterday
     $sales_yesterday = $wpdb->get_var(
         "SELECT COALESCE(SUM(total), 0) FROM {$trans_table} 
-        WHERE DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND status = 'completed'"
+        WHERE business_id = {$business_id} AND DATE(created_at) = DATE_SUB(CURDATE(), INTERVAL 1 DAY) AND status = 'completed'"
     );
     
     // Calculate percentage change
@@ -930,7 +968,7 @@ function pos_get_dashboard_stats() {
     // Transactions today
     $transactions_today = $wpdb->get_var(
         "SELECT COUNT(*) FROM {$trans_table} 
-        WHERE DATE(created_at) = CURDATE() AND status = 'completed'"
+        WHERE business_id = {$business_id} AND DATE(created_at) = CURDATE() AND status = 'completed'"
     );
     
     // Average transaction value
@@ -941,7 +979,7 @@ function pos_get_dashboard_stats() {
     // Sales this month
     $sales_month = $wpdb->get_var(
         "SELECT COALESCE(SUM(total), 0) FROM {$trans_table} 
-        WHERE MONTH(created_at) = MONTH(CURDATE()) 
+        WHERE business_id = {$business_id} AND MONTH(created_at) = MONTH(CURDATE()) 
         AND YEAR(created_at) = YEAR(CURDATE()) 
         AND status = 'completed'"
     );
@@ -949,7 +987,7 @@ function pos_get_dashboard_stats() {
     // Transactions this month
     $transactions_month = $wpdb->get_var(
         "SELECT COUNT(*) FROM {$trans_table} 
-        WHERE MONTH(created_at) = MONTH(CURDATE()) 
+        WHERE business_id = {$business_id} AND MONTH(created_at) = MONTH(CURDATE()) 
         AND YEAR(created_at) = YEAR(CURDATE()) 
         AND status = 'completed'"
     );
@@ -957,19 +995,19 @@ function pos_get_dashboard_stats() {
     // Low stock count
     $low_stock = $wpdb->get_var(
         "SELECT COUNT(*) FROM {$prod_table} 
-        WHERE stock <= reorder_level AND status = 'active'"
+        WHERE business_id = {$business_id} AND stock <= reorder_level AND status = 'active'"
     );
     
     // Total products
     $total_products = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$prod_table} WHERE status = 'active'"
+        "SELECT COUNT(*) FROM {$prod_table} WHERE business_id = {$business_id} AND status = 'active'"
     );
     
     // Daily sales data (last 7 days)
     $daily_sales_data = $wpdb->get_results(
         "SELECT DATE_FORMAT(created_at, '%a') as date, COALESCE(SUM(total), 0) as total
         FROM {$trans_table}
-        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        WHERE business_id = {$business_id} AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
         AND status = 'completed'
         GROUP BY DATE(created_at)
         ORDER BY DATE(created_at)",
@@ -991,7 +1029,7 @@ function pos_get_dashboard_stats() {
     $payment_methods_data = $wpdb->get_results(
         "SELECT payment_method as method, COALESCE(SUM(total), 0) as total
         FROM {$trans_table}
-        WHERE DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        WHERE business_id = {$business_id} AND DATE(created_at) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
         AND status = 'completed'
         GROUP BY payment_method",
         ARRAY_A
@@ -1001,7 +1039,7 @@ function pos_get_dashboard_stats() {
     $hourly_sales_data = $wpdb->get_results(
         "SELECT DATE_FORMAT(created_at, '%h %p') as hour, COALESCE(SUM(total), 0) as total
         FROM {$trans_table}
-        WHERE DATE(created_at) = CURDATE()
+        WHERE business_id = {$business_id} AND DATE(created_at) = CURDATE()
         AND status = 'completed'
         GROUP BY HOUR(created_at)
         ORDER BY HOUR(created_at)",
@@ -1014,7 +1052,7 @@ function pos_get_dashboard_stats() {
         FROM {$items_table} ti
         JOIN {$prod_table} p ON ti.product_id = p.id
         JOIN {$trans_table} t ON ti.transaction_id = t.id
-        WHERE DATE(t.created_at) = CURDATE()
+        WHERE t.business_id = {$business_id} AND p.business_id = {$business_id} AND DATE(t.created_at) = CURDATE()
         AND t.status = 'completed'
         GROUP BY p.id, p.name
         ORDER BY total DESC
@@ -1028,10 +1066,10 @@ function pos_get_dashboard_stats() {
             DATE_FORMAT(created_at, '%h %p') as hour,
             COUNT(*) as transactions,
             (COUNT(*) * 100.0 / (SELECT COUNT(*) FROM {$trans_table} 
-                WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) 
+                WHERE business_id = {$business_id} AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) 
                 AND status = 'completed')) as percentage
         FROM {$trans_table}
-        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+        WHERE business_id = {$business_id} AND created_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
         AND status = 'completed'
         GROUP BY HOUR(created_at)
         ORDER BY transactions DESC
@@ -1063,6 +1101,7 @@ function pos_format_price($amount) {
 function pos_render_recent_transactions($limit = 10) {
     global $wpdb;
     $trans_table = $wpdb->prefix . 'pos_transactions';
+    $business_id = pos_get_current_business_id();
     
     // Get current page from URL parameter
     $current_page = isset($_GET['pos_page']) ? max(1, intval($_GET['pos_page'])) : 1;
@@ -1070,14 +1109,15 @@ function pos_render_recent_transactions($limit = 10) {
     
     // Get total count for pagination
     $total_transactions = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$trans_table}"
+        "SELECT COUNT(*) FROM {$trans_table} WHERE business_id = {$business_id}"
     );
     
     $total_pages = ceil($total_transactions / $limit);
     
     // Get transactions for current page
     $recent_transactions = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM {$trans_table} ORDER BY created_at DESC LIMIT %d OFFSET %d",
+        "SELECT * FROM {$trans_table} WHERE business_id = %d ORDER BY created_at DESC LIMIT %d OFFSET %d",
+        $business_id,
         $limit, $offset
     ));
     
@@ -1185,18 +1225,20 @@ function pos_render_recent_transactions($limit = 10) {
 /* ---------- PRODUCTS TAB ---------- */
 function pos_products_tab() {
     global $wpdb;
+    $business_id = pos_get_current_business_id();
     $pos_table = $wpdb->prefix . 'pos_products';
     $in_table = $wpdb->prefix . 'in_products';
     
     // Get all POS products with real-time stock from IN module
-    $products = $wpdb->get_results("
+    $products = $wpdb->get_results($wpdb->prepare("
         SELECT pos.*, 
                COALESCE(inprod.stock_quantity, pos.stock) as current_stock,
                inprod.image AS in_image
         FROM {$pos_table} AS pos
-        LEFT JOIN {$in_table} AS inprod ON pos.rand_id = inprod.rand_id
+        LEFT JOIN {$in_table} AS inprod ON pos.rand_id = inprod.rand_id AND inprod.business_id = %d
+        WHERE pos.business_id = %d
         ORDER BY pos.name ASC
-    ");
+    ", $business_id, $business_id));
     
     $nonce = wp_create_nonce('pos_products_nonce');
     
@@ -1648,16 +1690,17 @@ function pos_products_tab() {
 /* ---------- FINANCE TAB ---------- */
 function pos_finance_tab() {
     global $wpdb;
+    $business_id = pos_get_current_business_id();
     $trans_table = $wpdb->prefix . 'pos_transactions';
     $fn_table = $wpdb->prefix . 'fn_transactions';
     
-    $transactions = $wpdb->get_results("
+    $transactions = $wpdb->get_results($wpdb->prepare("
         SELECT t.*, 
-        (SELECT COUNT(*) FROM {$fn_table} WHERE reference_type='pos_sale' AND reference_id=t.id) as is_imported
+        (SELECT COUNT(*) FROM {$fn_table} WHERE business_id = %d AND reference_type='pos_sale' AND reference_id=t.id) as is_imported
         FROM {$trans_table} t
-        WHERE t.status = 'completed'
+        WHERE t.business_id = %d AND t.status = 'completed'
         ORDER BY t.created_at DESC
-    ");
+    ", $business_id, $business_id));
     
     $nonce = wp_create_nonce('pos_nonce');
     
@@ -1890,8 +1933,13 @@ function pos_finance_tab() {
 
 /* ---------- SETTINGS TAB ---------- */
 function pos_settings_tab() {
+    $business_id = pos_get_current_business_id();
     // Get all users with 'pos_cashier' role
-    $staff_members = get_users(['role' => 'pos_cashier']);
+    $staff_members = get_users([
+        'role' => 'pos_cashier',
+        'meta_key' => 'pos_business_id',
+        'meta_value' => $business_id
+    ]);
     
     // Get user limit
     $user_limit = get_option('bntm_user_limit', 0);
@@ -2144,6 +2192,7 @@ function bntm_ajax_pos_get_product_data() {
     }
     
     global $wpdb;
+    $business_id = pos_get_current_business_id();
     $pos_table = $wpdb->prefix . 'pos_products';
     $in_table = $wpdb->prefix . 'in_products';
     $product_id = intval($_POST['product_id']);
@@ -2155,8 +2204,9 @@ function bntm_ajax_pos_get_product_data() {
                 inprod.stock_quantity
          FROM $pos_table pos
          LEFT JOIN $in_table inprod ON pos.rand_id = inprod.rand_id
-         WHERE pos.id = %d",
-        $product_id
+         WHERE pos.id = %d AND pos.business_id = %d",
+        $product_id,
+        $business_id
     ));
     
     if (!$product) {
@@ -2175,6 +2225,7 @@ function bntm_ajax_pos_save_product() {
     }
     
     global $wpdb;
+    $business_id = pos_get_current_business_id();
     $pos_table = $wpdb->prefix . 'pos_products';
     $in_table = $wpdb->prefix . 'in_products';
     $batches_table = $wpdb->prefix . 'in_batches';
@@ -2210,8 +2261,9 @@ function bntm_ajax_pos_save_product() {
         if ($product_id > 0) {
             // UPDATE existing product
             $existing = $wpdb->get_row($wpdb->prepare(
-                "SELECT * FROM $pos_table WHERE id = %d",
-                $product_id
+                "SELECT * FROM $pos_table WHERE id = %d AND business_id = %d",
+                $product_id,
+                $business_id
             ));
             
             if (!$existing) {
@@ -2221,8 +2273,8 @@ function bntm_ajax_pos_save_product() {
             // Check if SKU changed and conflicts
             if ($sku !== $existing->sku) {
                 $sku_exists = $wpdb->get_var($wpdb->prepare(
-                    "SELECT id FROM $pos_table WHERE sku = %s AND id != %d",
-                    $sku, $product_id
+                    "SELECT id FROM $pos_table WHERE sku = %s AND id != %d AND business_id = %d",
+                    $sku, $product_id, $business_id
                 ));
                 
                 if ($sku_exists) {
@@ -2241,9 +2293,9 @@ function bntm_ajax_pos_save_product() {
                     'description' => $description,
                     'reorder_level' => $reorder_level
                 ],
-                ['id' => $product_id],
+                ['id' => $product_id, 'business_id' => $business_id],
                 ['%s', '%s', '%s', '%f', '%s', '%d'],
-                ['%d']
+                ['%d', '%d']
             );
             
             // Update IN product
@@ -2258,9 +2310,9 @@ function bntm_ajax_pos_save_product() {
                     'description' => $description,
                     'reorder_level' => $reorder_level
                 ],
-                ['rand_id' => $existing->rand_id],
+                ['rand_id' => $existing->rand_id, 'business_id' => $business_id],
                 ['%s', '%s', '%s', '%f', '%f', '%s', '%d'],
-                ['%s']
+                ['%s', '%d']
             );
             
             $message = 'Product updated successfully!';
@@ -2268,8 +2320,9 @@ function bntm_ajax_pos_save_product() {
         } else {
             // CREATE new product
             $sku_exists = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM $pos_table WHERE sku = %s",
-                $sku
+                "SELECT id FROM $pos_table WHERE sku = %s AND business_id = %d",
+                $sku,
+                $business_id
             ));
             
             if ($sku_exists) {
@@ -2277,11 +2330,10 @@ function bntm_ajax_pos_save_product() {
             }
             
             $rand_id = bntm_rand_id();
-            $business_id = get_current_user_id();
-            
             // Insert into POS
             $wpdb->insert($pos_table, [
                 'rand_id' => $rand_id,
+                'business_id' => $business_id,
                 'name' => $name,
                 'sku' => $sku,
                 'barcode' => $barcode,
@@ -2291,7 +2343,7 @@ function bntm_ajax_pos_save_product() {
                 'reorder_level' => $reorder_level,
                 'description' => $description,
                 'status' => 'active'
-            ], ['%s', '%s', '%s', '%s', '%f', '%f', '%d', '%d', '%s', '%s']);
+            ], ['%s', '%d', '%s', '%s', '%s', '%f', '%f', '%d', '%d', '%s', '%s']);
             
             if (!$wpdb->insert_id) {
                 throw new Exception('Failed to create POS product. Error: ' . $wpdb->last_error);
@@ -2356,14 +2408,16 @@ function bntm_ajax_pos_delete_product() {
     }
     
     global $wpdb;
+    $business_id = pos_get_current_business_id();
     $pos_table = $wpdb->prefix . 'pos_products';
     $in_table = $wpdb->prefix . 'in_products';
     $product_id = intval($_POST['product_id']);
     
     // Get product
     $product = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $pos_table WHERE id = %d",
-        $product_id
+        "SELECT * FROM $pos_table WHERE id = %d AND business_id = %d",
+        $product_id,
+        $business_id
     ));
     
     if (!$product) {
@@ -2376,15 +2430,15 @@ function bntm_ajax_pos_delete_product() {
         // Delete from IN module
         $wpdb->delete(
             $in_table,
-            ['rand_id' => $product->rand_id],
-            ['%s']
+            ['rand_id' => $product->rand_id, 'business_id' => $business_id],
+            ['%s', '%d']
         );
         
         // Delete from POS module
         $wpdb->delete(
             $pos_table,
-            ['id' => $product_id],
-            ['%d']
+            ['id' => $product_id, 'business_id' => $business_id],
+            ['%d', '%d']
         );
         
         $wpdb->query('COMMIT');
@@ -2405,6 +2459,7 @@ function bntm_ajax_pos_toggle_product_status() {
     }
     
     global $wpdb;
+    $business_id = pos_get_current_business_id();
     $table = $wpdb->prefix . 'pos_products';
     $product_id = intval($_POST['product_id']);
     $status = sanitize_text_field($_POST['status']);
@@ -2412,9 +2467,9 @@ function bntm_ajax_pos_toggle_product_status() {
     $result = $wpdb->update(
         $table,
         ['status' => $status],
-        ['id' => $product_id],
+        ['id' => $product_id, 'business_id' => $business_id],
         ['%s'],
-        ['%d']
+        ['%d', '%d']
     );
     
     if ($result !== false) {
@@ -2463,6 +2518,7 @@ function bntm_ajax_pos_add_staff() {
         pos_create_cashier_role();
     }
     
+    $business_id = pos_get_current_business_id();
     $name = sanitize_text_field($_POST['staff_name']);
     $username = sanitize_user($_POST['staff_username']);
     $email = sanitize_email($_POST['staff_email']);
@@ -2518,6 +2574,7 @@ function bntm_ajax_pos_add_staff() {
     update_user_meta($user_id, 'pos_phone', $phone);
     update_user_meta($user_id, 'pos_pin', $pin);
     update_user_meta($user_id, 'pos_status', 'active');
+    update_user_meta($user_id, 'pos_business_id', $business_id);
     
     // Add HR role meta if HR module exists
     if (function_exists('bntm_get_hr_roles')) {
@@ -2537,6 +2594,7 @@ function bntm_ajax_pos_toggle_staff_status() {
         wp_send_json_error(['message' => 'Unauthorized']);
     }
     
+    $business_id = pos_get_current_business_id();
     $staff_id = intval($_POST['staff_id']);
     $status = sanitize_text_field($_POST['status']);
     
@@ -2548,6 +2606,9 @@ function bntm_ajax_pos_toggle_staff_status() {
     
     if (!$user || !in_array('pos_cashier', $user->roles)) {
         wp_send_json_error(['message' => 'Invalid staff member']);
+    }
+    if ((int) get_user_meta($staff_id, 'pos_business_id', true) !== (int) $business_id) {
+        wp_send_json_error(['message' => 'Access denied']);
     }
     
     update_user_meta($staff_id, 'pos_status', $status);

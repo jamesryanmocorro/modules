@@ -15,6 +15,18 @@ if (!defined('ABSPATH')) exit;
 define('BNTM_OP_PATH', dirname(__FILE__) . '/');
 define('BNTM_OP_URL', plugin_dir_url(__FILE__));
 
+if (!function_exists('op_get_current_business_id')) {
+    function op_get_current_business_id() {
+        if (function_exists('bntm_get_current_business_id')) {
+            $business_id = absint(bntm_get_current_business_id());
+            if ($business_id > 0) {
+                return $business_id;
+            }
+        }
+        return absint(get_current_user_id());
+    }
+}
+
 /* ---------- MODULE CONFIGURATION ---------- */
 
 /**
@@ -112,12 +124,14 @@ function bntm_op_get_tables() {
          
          'op_imported_products' => "CREATE TABLE {$prefix}op_imported_products (
              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+             business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
              product_id BIGINT UNSIGNED NOT NULL,
              product_name VARCHAR(255) NOT NULL,
              sku VARCHAR(100),
              price DECIMAL(12,2) NOT NULL,
              stock INT DEFAULT 0,
              imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+             INDEX idx_business (business_id),
              INDEX idx_product (product_id)
          ) {$charset};",
         
@@ -192,8 +206,7 @@ function bntm_shortcode_op_dashboard() {
         return '<div class="bntm-notice">Please log in to access the Payments dashboard.</div>';
     }
     
-    $current_user = wp_get_current_user();
-    $business_id = $current_user->ID;
+    $business_id = op_get_current_business_id();
     $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'overview';
     
     ob_start();
@@ -637,39 +650,39 @@ function op_get_dashboard_stats($business_id) {
     $payments_table = $wpdb->prefix . 'op_payments';
     
     // Total invoices
-    $total_invoices = $wpdb->get_var("SELECT COUNT(*) FROM $invoices_table");
+    $total_invoices = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $invoices_table WHERE business_id = %d", $business_id));
     
     // Unpaid invoices
     $unpaid_invoices = $wpdb->get_var(
-        "SELECT COUNT(*) FROM $invoices_table WHERE payment_status = 'unpaid'"
+        $wpdb->prepare("SELECT COUNT(*) FROM $invoices_table WHERE business_id = %d AND payment_status = 'unpaid'", $business_id)
     );
     
     // Total revenue
     $total_revenue = $wpdb->get_var(
-        "SELECT COALESCE(SUM(total), 0) FROM $invoices_table WHERE payment_status = 'paid'"
+        $wpdb->prepare("SELECT COALESCE(SUM(total), 0) FROM $invoices_table WHERE business_id = %d AND payment_status = 'paid'", $business_id)
     );
     
     // Monthly revenue
     $monthly_revenue = $wpdb->get_var(
-        "SELECT COALESCE(SUM(total), 0) FROM $invoices_table 
-         WHERE payment_status = 'paid'
+        $wpdb->prepare("SELECT COALESCE(SUM(total), 0) FROM $invoices_table 
+         WHERE business_id = %d AND payment_status = 'paid'
          AND MONTH(paid_at) = MONTH(CURRENT_DATE()) 
-         AND YEAR(paid_at) = YEAR(CURRENT_DATE())"
+         AND YEAR(paid_at) = YEAR(CURRENT_DATE())", $business_id)
     );
     
     // Pending payments
     $pending_payments = $wpdb->get_var(
-        "SELECT COUNT(*) FROM $payments_table WHERE status = 'pending'"
+        $wpdb->prepare("SELECT COUNT(*) FROM $payments_table WHERE business_id = %d AND status = 'pending'", $business_id)
     );
     
     // Monthly revenue data (last 6 months)
     $monthly_revenue_data = $wpdb->get_results(
-        "SELECT DATE_FORMAT(paid_at, '%b %Y') as month, COALESCE(SUM(total), 0) as total
+        $wpdb->prepare("SELECT DATE_FORMAT(paid_at, '%b %Y') as month, COALESCE(SUM(total), 0) as total
         FROM $invoices_table
-        WHERE paid_at >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+        WHERE business_id = %d AND paid_at >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
         AND payment_status = 'paid'
         GROUP BY YEAR(paid_at), MONTH(paid_at)
-        ORDER BY YEAR(paid_at), MONTH(paid_at)",
+        ORDER BY YEAR(paid_at), MONTH(paid_at)", $business_id),
         ARRAY_A
     );
     
@@ -700,7 +713,7 @@ function op_invoices_tab($business_id) {
     $invoices_table = $wpdb->prefix . 'op_invoices';
     
     $invoices = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM $invoices_table ORDER BY created_at DESC",
+        "SELECT * FROM $invoices_table WHERE business_id = %d ORDER BY created_at DESC",
         $business_id
     ));
     
@@ -911,7 +924,7 @@ function op_invoices_tab($business_id) {
                   <div id="product-list-container">
                       <?php
                       global $wpdb;
-                      $imported_products = $wpdb->get_results("SELECT * FROM {$wpdb->prefix}op_imported_products ORDER BY product_name ASC");
+                      $imported_products = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$wpdb->prefix}op_imported_products WHERE business_id = %d ORDER BY product_name ASC", op_get_current_business_id()));
                       if (empty($imported_products)):
                       ?>
                           <p>No products imported yet. Go to Import Products tab to import products.</p>
@@ -1351,20 +1364,23 @@ function bntm_ajax_op_import_selected_products() {
     
     foreach ($product_ids as $product_id) {
         $product = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM $in_table WHERE id = %d",
-            $product_id
+            "SELECT * FROM $in_table WHERE id = %d AND business_id = %d",
+            $product_id,
+            $business_id
         ));
         
         if (!$product) continue;
         
         // Check if already imported
         $exists = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $op_products_table WHERE product_id = %d",
-            $product_id
+            "SELECT id FROM $op_products_table WHERE product_id = %d AND business_id = %d",
+            $product_id,
+            $business_id
         ));
         
         if (!$exists) {
             $result = $wpdb->insert($op_products_table, [
+                'business_id' => $business_id,
                 'product_id' => $product->id,
                 'product_name' => $product->name,
                 'sku' => $product->sku ?: '',
@@ -1397,6 +1413,7 @@ function bntm_ajax_op_sync_product() {
     }
     
     global $wpdb;
+    $business_id = op_get_current_business_id();
     $in_table = $wpdb->prefix . 'in_products';
     $op_products_table = $wpdb->prefix . 'op_imported_products';
     
@@ -1404,8 +1421,9 @@ function bntm_ajax_op_sync_product() {
     
     // Get imported product
     $imported_product = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $op_products_table WHERE id = %d",
-        $product_id
+        "SELECT * FROM $op_products_table WHERE id = %d AND business_id = %d",
+        $product_id,
+        $business_id
     ));
     
     if (!$imported_product) {
@@ -1414,8 +1432,9 @@ function bntm_ajax_op_sync_product() {
     
     // Get current inventory data
     $inventory_product = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $in_table WHERE id = %d",
-        $imported_product->product_id
+        "SELECT * FROM $in_table WHERE id = %d AND business_id = %d",
+        $imported_product->product_id,
+        $business_id
     ));
     
     if (!$inventory_product) {
@@ -1431,9 +1450,9 @@ function bntm_ajax_op_sync_product() {
             'price' => $inventory_product->selling_price,
             'stock' => $inventory_product->stock_quantity
         ],
-        ['id' => $product_id],
+        ['id' => $product_id, 'business_id' => $business_id],
         ['%s', '%s', '%f', '%d'],
-        ['%d']
+        ['%d', '%d']
     );
     
     if ($result !== false) {
@@ -1451,14 +1470,15 @@ function bntm_ajax_op_remove_imported_product() {
     }
     
     global $wpdb;
+    $business_id = op_get_current_business_id();
     $op_products_table = $wpdb->prefix . 'op_imported_products';
     
     $product_id = intval($_POST['product_id'] ?? 0);
     
     $result = $wpdb->delete(
         $op_products_table,
-        ['id' => $product_id],
-        ['%d']
+        ['id' => $product_id, 'business_id' => $business_id],
+        ['%d', '%d']
     );
     
     if ($result) {
@@ -1476,6 +1496,7 @@ function op_payments_tab($business_id) {
         "SELECT p.*, i.rand_id as invoice_id, i.total, i.customer_name 
          FROM $payments_table p
          LEFT JOIN $invoices_table i ON p.invoice_id = i.id
+         WHERE p.business_id = %d
          ORDER BY p.attempted_at DESC",
         $business_id
     ));
@@ -1534,10 +1555,11 @@ function op_import_finance_tab($business_id) {
     
     $invoices = $wpdb->get_results($wpdb->prepare(
         "SELECT i.*, 
-        (SELECT COUNT(*) FROM {$txn_table} WHERE reference_type='invoice' AND reference_id=i.id) as is_imported
+        (SELECT COUNT(*) FROM {$txn_table} WHERE business_id = %d AND reference_type='invoice' AND reference_id=i.id) as is_imported
         FROM {$invoices_table} i
-        WHERE i.payment_status = 'paid'
+        WHERE i.business_id = %d AND i.payment_status = 'paid'
         ORDER BY i.paid_at DESC",
+        $business_id,
         $business_id
     ));
     
@@ -1758,18 +1780,18 @@ function op_import_products_tab($business_id) {
     $op_products_table = $wpdb->prefix . 'op_imported_products';
     
     // Get all imported products
-    $imported_products = $wpdb->get_results("SELECT * FROM {$op_products_table} ORDER BY imported_at DESC");
+    $imported_products = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$op_products_table} WHERE business_id = %d ORDER BY imported_at DESC", $business_id));
     
     // Get all inventory products available for import
     // Only show products NOT yet imported
-    $available_imports = $wpdb->get_results("
+    $available_imports = $wpdb->get_results($wpdb->prepare("
         SELECT inprod.*
         FROM {$in_table} AS inprod
         LEFT JOIN {$op_products_table} AS opprod 
-            ON inprod.id = opprod.product_id
-        WHERE opprod.product_id IS NULL
+            ON inprod.id = opprod.product_id AND opprod.business_id = %d
+        WHERE inprod.business_id = %d AND opprod.product_id IS NULL
         ORDER BY inprod.name ASC
-    ");
+    ", $business_id, $business_id));
     
     $nonce = wp_create_nonce('op_import_nonce');
 
@@ -2058,7 +2080,7 @@ function op_settings_tab($business_id) {
     $methods_table = $wpdb->prefix . 'op_payment_methods';
     
     $payment_methods = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM $methods_table ORDER BY priority ASC",
+        "SELECT * FROM $methods_table WHERE business_id = %d ORDER BY priority ASC",
         $business_id
     ));
     
@@ -2698,9 +2720,10 @@ function bntm_shortcode_op_payment_page() {
 
     // Get active payment methods
     $methods_table = $wpdb->prefix . 'op_payment_methods';
-    $payment_methods = $wpdb->get_results(
-        "SELECT * FROM $methods_table WHERE is_active = 1 ORDER BY priority ASC"
-    );
+    $payment_methods = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM $methods_table WHERE business_id = %d AND is_active = 1 ORDER BY priority ASC",
+        $invoice->business_id
+    ));
 
     if (empty($payment_methods)) {
         return '<div class="bntm-container"><p>No payment methods available. Please contact support.</p></div>';
@@ -2942,12 +2965,12 @@ function bntm_ajax_op_create_invoice() {
 
     global $wpdb;
     $invoices_table = $wpdb->prefix . 'op_invoices';
-    $business_id = get_current_user_id();
+    $business_id = op_get_current_business_id();
      
     // Check table limit
     $limits = get_option('bntm_table_limits', []);
     if (isset($limits[$invoices_table]) && $limits[$invoices_table] > 0) {
-        $current_count = $wpdb->get_var("SELECT COUNT(*) FROM $invoices_table");
+        $current_count = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $invoices_table WHERE business_id = %d", $business_id));
         if ($current_count >= $limits[$invoices_table]) {
             wp_send_json_error(['message' => "Invoice limit reached. Maximum {$limits[$invoices_table]} invoices allowed."]);
         }
@@ -3056,7 +3079,7 @@ function bntm_ajax_op_update_invoice() {
 
     global $wpdb;
     $invoices_table = $wpdb->prefix . 'op_invoices';
-    $business_id = get_current_user_id();
+    $business_id = op_get_current_business_id();
 
     $invoice_id = sanitize_text_field($_POST['invoice_id'] ?? '');
     $customer_name = sanitize_text_field($_POST['customer_name'] ?? '');
@@ -3126,7 +3149,7 @@ function bntm_ajax_op_update_invoice_status() {
 
     global $wpdb;
     $invoices_table = $wpdb->prefix . 'op_invoices';
-    $business_id = get_current_user_id();
+    $business_id = op_get_current_business_id();
     
     $invoice_id = sanitize_text_field($_POST['invoice_id'] ?? '');
     $invoice_status = sanitize_text_field($_POST['invoice_status'] ?? '');
@@ -3288,7 +3311,7 @@ function bntm_ajax_op_setup_payment_methods() {
 
     global $wpdb;
     $methods_table = $wpdb->prefix . 'op_payment_methods';
-    $business_id = get_current_user_id();
+    $business_id = op_get_current_business_id();
     
     $method_id = intval($_POST['method_id'] ?? 0);
     $gateway_type = sanitize_text_field($_POST['gateway_type'] ?? '');
@@ -3397,7 +3420,7 @@ function bntm_ajax_op_get_payment_method() {
 
     global $wpdb;
     $methods_table = $wpdb->prefix . 'op_payment_methods';
-    $business_id = get_current_user_id();
+    $business_id = op_get_current_business_id();
     $method_id = intval($_POST['method_id'] ?? 0);
     
     $method = $wpdb->get_row($wpdb->prepare(
@@ -3421,7 +3444,7 @@ function bntm_ajax_op_delete_payment_method() {
 
     global $wpdb;
     $methods_table = $wpdb->prefix . 'op_payment_methods';
-    $business_id = get_current_user_id();
+    $business_id = op_get_current_business_id();
     $method_id = intval($_POST['method_id'] ?? 0);
     
     $result = $wpdb->delete(

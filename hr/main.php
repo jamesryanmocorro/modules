@@ -15,6 +15,18 @@ if (!defined('ABSPATH')) exit;
 define('BNTM_HR_PATH', dirname(__FILE__) . '/');
 define('BNTM_HR_URL', plugin_dir_url(__FILE__));
 
+if (!function_exists('hr_get_current_business_id')) {
+    function hr_get_current_business_id() {
+        if (function_exists('bntm_get_current_business_id')) {
+            $business_id = absint(bntm_get_current_business_id());
+            if ($business_id > 0) {
+                return $business_id;
+            }
+        }
+        return absint(get_current_user_id());
+    }
+}
+
 /* ---------- MODULE CONFIGURATION ---------- */
 
 function bntm_hr_get_pages() {
@@ -528,9 +540,10 @@ function bntm_ajax_hr_delete_payslip() {
 
     global $wpdb;
     $prefix = $wpdb->prefix;
+    $business_id = hr_get_current_business_id();
 
     // Get payslip first
-    $payslip = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE id = %d", $payslip_id));
+    $payslip = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE id = %d AND business_id = %d", $payslip_id, $business_id));
     if (!$payslip) {
         wp_send_json_error(['message' => 'Payslip not found.']);
     }
@@ -539,15 +552,15 @@ function bntm_ajax_hr_delete_payslip() {
     if ($payslip->is_imported) {
         $wpdb->delete(
             $prefix . 'fn_transactions',
-            ['reference_type' => 'payslip', 'reference_id' => $payslip_id],
-            ['%s', '%d']
+            ['business_id' => $business_id, 'reference_type' => 'payslip', 'reference_id' => $payslip_id],
+            ['%d', '%s', '%d']
         );
         if (function_exists('bntm_fn_update_cashflow_summary')) {
             bntm_fn_update_cashflow_summary();
         }
     }
 
-    $deleted = $wpdb->delete($prefix . 'hr_payslips', ['id' => $payslip_id], ['%d']);
+    $deleted = $wpdb->delete($prefix . 'hr_payslips', ['id' => $payslip_id, 'business_id' => $business_id], ['%d', '%d']);
 
     if ($deleted) {
         wp_send_json_success(['message' => 'Payslip deleted successfully.']);
@@ -622,7 +635,7 @@ function bntm_ajax_hr_kiosk_clock() {
     if ($action_type === 'in') {
         $existing = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_attendance WHERE employee_id = %d AND DATE(clock_in) = %s AND clock_out IS NULL", $user, current_time('Y-m-d')));
         if ($existing) { wp_send_json_error(['message' => 'Already clocked in today.']); }
-        $result = $wpdb->insert($prefix . 'hr_attendance', ['rand_id' => bntm_rand_id(), 'employee_id' => $user, 'business_id' => 1, 'clock_in' => current_time('mysql'), 'status' => 'active'], ['%s', '%d', '%d', '%s', '%s']);
+        $result = $wpdb->insert($prefix . 'hr_attendance', ['rand_id' => bntm_rand_id(), 'employee_id' => $user, 'business_id' => hr_get_current_business_id(), 'clock_in' => current_time('mysql'), 'status' => 'active'], ['%s', '%d', '%d', '%s', '%s']);
         if ($result) { $user_data = get_userdata($user); wp_send_json_success(['message' => 'Welcome ' . $user_data->display_name . '! Clocked in at ' . current_time('h:i A')]); }
         else { wp_send_json_error(['message' => 'Failed to clock in.']); }
     } else {
@@ -1105,15 +1118,16 @@ function bntm_ajax_hr_save_work_config() {
 function bntm_hr_dashboard_view($user_id, $can_manage) {
     global $wpdb;
     $prefix = $wpdb->prefix;
+    $business_id = hr_get_current_business_id();
     $kiosk_page = get_page_by_path('hr-kiosk/');
     $kiosk_url = $kiosk_page ? get_permalink($kiosk_page) : '';
     ob_start();
     if ($can_manage):
         $total_employees = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->users} WHERE ID IN (SELECT user_id FROM {$wpdb->usermeta} WHERE meta_key = 'bntm_role' AND meta_value LIKE '%employee%')");
-        $pending_leaves = $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}hr_leave_requests WHERE status = 'pending'");
-        $pending_overtime = $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}hr_overtime WHERE status = 'pending'");
-        $pending_missing = $wpdb->get_var("SELECT COUNT(*) FROM {$prefix}hr_missing_logs WHERE status = 'pending'");
-        $today_attendance = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$prefix}hr_attendance WHERE DATE(clock_in) = %s", current_time('Y-m-d')));
+        $pending_leaves = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$prefix}hr_leave_requests WHERE business_id = %d AND status = 'pending'", $business_id));
+        $pending_overtime = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$prefix}hr_overtime WHERE business_id = %d AND status = 'pending'", $business_id));
+        $pending_missing = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$prefix}hr_missing_logs WHERE business_id = %d AND status = 'pending'", $business_id));
+        $today_attendance = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$prefix}hr_attendance WHERE business_id = %d AND DATE(clock_in) = %s", $business_id, current_time('Y-m-d')));
         ?>
         <div class="bntm-form-section"><h3>HR Overview</h3>
           <?php if ($kiosk_url): ?>
@@ -1132,7 +1146,7 @@ function bntm_hr_dashboard_view($user_id, $can_manage) {
                 <div class="bntm-stat-card" style="background: #fce7f3; padding: 20px; border-radius: 8px;"><h4 style="margin: 0 0 10px 0;">Pending Missing Logs</h4><p style="font-size: 32px; margin: 0; font-weight: bold;"><?php echo $pending_missing; ?></p></div>
             </div></div>
         <div class="bntm-form-section"><h3>Recent Leave Requests</h3>
-            <?php $recent_leaves = $wpdb->get_results("SELECT * FROM {$prefix}hr_leave_requests ORDER BY created_at DESC LIMIT 5"); if ($recent_leaves): ?>
+            <?php $recent_leaves = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_leave_requests WHERE business_id = %d ORDER BY created_at DESC LIMIT 5", $business_id)); if ($recent_leaves): ?>
             <div class="bntm-table-wrapper"><table class="bntm-table"><thead><tr><th>Employee</th><th>Type</th><th>Dates</th><th>Status</th><th>Actions</th></tr></thead><tbody>
                 <?php foreach ($recent_leaves as $leave): $employee = get_userdata($leave->employee_id); $status_class = $leave->status === 'approved' ? 'bntm-notice-success' : ($leave->status === 'rejected' ? 'bntm-notice-error' : ''); ?>
                     <tr><td><?php echo esc_html($employee->display_name); ?></td><td><?php echo esc_html($leave->leave_type); ?></td><td><?php echo esc_html($leave->start_date . ' to ' . $leave->end_date); ?></td>
@@ -1141,7 +1155,7 @@ function bntm_hr_dashboard_view($user_id, $can_manage) {
                 <?php endforeach; ?></tbody></table></div>
             <?php else: ?><p>No recent leave requests.</p><?php endif; ?></div>
         <div class="bntm-form-section"><h3>Recent Overtime Requests</h3>
-            <?php $recent_overtime = $wpdb->get_results("SELECT o.*, u.display_name FROM {$prefix}hr_overtime o LEFT JOIN {$wpdb->users} u ON o.employee_id = u.ID ORDER BY o.created_at DESC LIMIT 5"); if ($recent_overtime): ?>
+            <?php $recent_overtime = $wpdb->get_results($wpdb->prepare("SELECT o.*, u.display_name FROM {$prefix}hr_overtime o LEFT JOIN {$wpdb->users} u ON o.employee_id = u.ID WHERE o.business_id = %d ORDER BY o.created_at DESC LIMIT 5", $business_id)); if ($recent_overtime): ?>
             <div class="bntm-table-wrapper"><table class="bntm-table"><thead><tr><th>Employee</th><th>Date</th><th>Time</th><th>Hours</th><th>Status</th><th>Actions</th></tr></thead><tbody>
                 <?php foreach ($recent_overtime as $ot): $status_class = $ot->status === 'approved' ? 'bntm-notice-success' : ($ot->status === 'rejected' ? 'bntm-notice-error' : ''); $start = DateTime::createFromFormat('H:i:s', $ot->start_time)->format('h:i A'); $end = DateTime::createFromFormat('H:i:s', $ot->end_time)->format('h:i A'); ?>
                     <tr><td><?php echo esc_html($ot->display_name); ?></td><td><?php echo esc_html(date('M d, Y', strtotime($ot->overtime_date))); ?></td><td><?php echo esc_html($start . ' - ' . $end); ?></td><td><?php echo esc_html($ot->total_hours . ' hrs'); ?></td>
@@ -1150,7 +1164,7 @@ function bntm_hr_dashboard_view($user_id, $can_manage) {
                 <?php endforeach; ?></tbody></table></div>
             <?php else: ?><p>No recent overtime requests.</p><?php endif; ?></div>
         <div class="bntm-form-section"><h3>Recent Missing Logs</h3>
-            <?php $recent_missing = $wpdb->get_results("SELECT m.*, u.display_name FROM {$prefix}hr_missing_logs m LEFT JOIN {$wpdb->users} u ON m.employee_id = u.ID ORDER BY m.created_at DESC LIMIT 5"); if ($recent_missing): ?>
+            <?php $recent_missing = $wpdb->get_results($wpdb->prepare("SELECT m.*, u.display_name FROM {$prefix}hr_missing_logs m LEFT JOIN {$wpdb->users} u ON m.employee_id = u.ID WHERE m.business_id = %d ORDER BY m.created_at DESC LIMIT 5", $business_id)); if ($recent_missing): ?>
             <div class="bntm-table-wrapper"><table class="bntm-table"><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Clock In</th><th>Clock Out</th><th>Status</th><th>Actions</th></tr></thead><tbody>
                 <?php foreach ($recent_missing as $log): $status_class = $log->status === 'approved' ? 'bntm-notice-success' : ($log->status === 'rejected' ? 'bntm-notice-error' : ''); $type_label = $log->log_type === 'clock_in' ? 'Missing Clock In' : ($log->log_type === 'clock_out' ? 'Missing Clock Out' : 'Missing Both'); $clock_in = $log->clock_in_time ? DateTime::createFromFormat('H:i:s', $log->clock_in_time)->format('h:i A') : '-'; $clock_out = $log->clock_out_time ? DateTime::createFromFormat('H:i:s', $log->clock_out_time)->format('h:i A') : '-'; ?>
                     <tr><td><?php echo esc_html($log->display_name); ?></td><td><?php echo esc_html(date('M d, Y', strtotime($log->log_date))); ?></td><td><?php echo esc_html($type_label); ?></td><td><?php echo esc_html($clock_in); ?></td><td><?php echo esc_html($clock_out); ?></td>
@@ -1204,7 +1218,7 @@ function bntm_ajax_hr_clock_in() {
     global $wpdb; $prefix = $wpdb->prefix; $user_id = get_current_user_id();
     $existing = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_attendance WHERE employee_id = %d AND DATE(clock_in) = %s AND clock_out IS NULL", $user_id, current_time('Y-m-d')));
     if ($existing) { wp_send_json_error(['message' => 'You are already clocked in.']); }
-    $result = $wpdb->insert($prefix . 'hr_attendance', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => 1, 'clock_in' => current_time('mysql'), 'status' => 'active'], ['%s', '%d', '%d', '%s', '%s']);
+    $result = $wpdb->insert($prefix . 'hr_attendance', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => hr_get_current_business_id(), 'clock_in' => current_time('mysql'), 'status' => 'active'], ['%s', '%d', '%d', '%s', '%s']);
     if ($result) wp_send_json_success(['message' => 'Clocked in successfully at ' . current_time('h:i A')]);
     else wp_send_json_error(['message' => 'Failed to clock in.']);
 }
@@ -1463,16 +1477,16 @@ function bntm_ajax_hr_update_employee() {
 
 
 function bntm_hr_attendance_view($user_id, $can_manage) {
-    global $wpdb; $prefix = $wpdb->prefix; ob_start();
+    global $wpdb; $prefix = $wpdb->prefix; $business_id = hr_get_current_business_id(); ob_start();
     $date_from = isset($_GET['date_from']) ? sanitize_text_field($_GET['date_from']) : date('Y-m-01');
     $date_to = isset($_GET['date_to']) ? sanitize_text_field($_GET['date_to']) : date('Y-m-d');
     $filter_employee_id = isset($_GET['employee_id']) ? intval($_GET['employee_id']) : 0;
     $employee_name = '';
     if ($filter_employee_id > 0) { $employee = get_userdata($filter_employee_id); if ($employee) $employee_name = $employee->display_name; }
     if ($can_manage) {
-        if ($filter_employee_id > 0) { $attendance = $wpdb->get_results($wpdb->prepare("SELECT a.*, u.display_name FROM {$prefix}hr_attendance a LEFT JOIN {$wpdb->users} u ON a.employee_id = u.ID WHERE a.employee_id = %d AND DATE(a.clock_in) BETWEEN %s AND %s ORDER BY a.clock_in DESC", $filter_employee_id, $date_from, $date_to)); }
-        else { $attendance = $wpdb->get_results($wpdb->prepare("SELECT a.*, u.display_name FROM {$prefix}hr_attendance a LEFT JOIN {$wpdb->users} u ON a.employee_id = u.ID WHERE DATE(a.clock_in) BETWEEN %s AND %s ORDER BY a.clock_in DESC", $date_from, $date_to)); }
-    } else { $attendance = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_attendance WHERE employee_id = %d AND DATE(clock_in) BETWEEN %s AND %s ORDER BY clock_in DESC", $user_id, $date_from, $date_to)); }
+        if ($filter_employee_id > 0) { $attendance = $wpdb->get_results($wpdb->prepare("SELECT a.*, u.display_name FROM {$prefix}hr_attendance a LEFT JOIN {$wpdb->users} u ON a.employee_id = u.ID WHERE a.business_id = %d AND a.employee_id = %d AND DATE(a.clock_in) BETWEEN %s AND %s ORDER BY a.clock_in DESC", $business_id, $filter_employee_id, $date_from, $date_to)); }
+        else { $attendance = $wpdb->get_results($wpdb->prepare("SELECT a.*, u.display_name FROM {$prefix}hr_attendance a LEFT JOIN {$wpdb->users} u ON a.employee_id = u.ID WHERE a.business_id = %d AND DATE(a.clock_in) BETWEEN %s AND %s ORDER BY a.clock_in DESC", $business_id, $date_from, $date_to)); }
+    } else { $attendance = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_attendance WHERE business_id = %d AND employee_id = %d AND DATE(clock_in) BETWEEN %s AND %s ORDER BY clock_in DESC", $business_id, $user_id, $date_from, $date_to)); }
     $all_employees = [];
     if ($can_manage) { $all_employees = get_users(['exclude' => [1], 'orderby' => 'display_name']); }
     ?>
@@ -1538,19 +1552,19 @@ function bntm_ajax_hr_update_attendance() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
     $current_user = wp_get_current_user(); $is_wp_admin = current_user_can('manage_options'); $current_role = bntm_get_user_role($current_user->ID);
     if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) { wp_send_json_error(['message' => 'Permission denied.']); }
-    global $wpdb; $prefix = $wpdb->prefix;
+    global $wpdb; $prefix = $wpdb->prefix; $business_id = hr_get_current_business_id();
     $attendance_id = intval($_POST['attendance_id']); $clock_in = sanitize_text_field($_POST['clock_in']); $clock_out = sanitize_text_field($_POST['clock_out']); $status = sanitize_text_field($_POST['status']);
     $total_hours = null;
     if ($clock_in && $clock_out) { $start = new DateTime($clock_in); $end = new DateTime($clock_out); $interval = $start->diff($end); $total_hours = round($interval->h + ($interval->i / 60) + ($interval->days * 24), 2); }
     $update_data = ['clock_in' => $clock_in, 'status' => $status]; $format = ['%s', '%s'];
     if ($clock_out) { $update_data['clock_out'] = $clock_out; $update_data['total_hours'] = $total_hours; $format[] = '%s'; $format[] = '%f'; }
-    $result = $wpdb->update($prefix . 'hr_attendance', $update_data, ['id' => $attendance_id], $format, ['%d']);
+    $result = $wpdb->update($prefix . 'hr_attendance', $update_data, ['id' => $attendance_id, 'business_id' => $business_id], $format, ['%d','%d']);
     if ($result === false) wp_send_json_error(['message' => 'Failed to update attendance record.']);
     wp_send_json_success(['message' => 'Attendance record updated successfully!']);
 }
 
 function bntm_hr_leaves_view($user_id, $can_manage) {
-    global $wpdb; $prefix = $wpdb->prefix; ob_start();
+    global $wpdb; $prefix = $wpdb->prefix; $business_id = hr_get_current_business_id(); ob_start();
     if (!$can_manage): $leave_types = explode(',', bntm_get_setting('hr_leave_types', 'Sick Leave,Vacation,Personal,Bereavement')); ?>
         <div class="bntm-form-section"><h3>Request Leave</h3><form id="leave-request-form" class="bntm-form">
             <div class="bntm-form-group"><label>Leave Type</label><select id="leave-type" required><option value="">Select type...</option><?php foreach ($leave_types as $type): ?><option value="<?php echo esc_attr(trim($type)); ?>"><?php echo esc_html(trim($type)); ?></option><?php endforeach; ?></select></div>
@@ -1559,8 +1573,8 @@ function bntm_hr_leaves_view($user_id, $can_manage) {
             <button type="submit" class="bntm-btn-primary">Submit Request</button><div id="leave-request-message"></div>
         </form></div>
     <?php endif;
-    if ($can_manage) { $leaves = $wpdb->get_results("SELECT l.*, u.display_name FROM {$prefix}hr_leave_requests l LEFT JOIN {$wpdb->users} u ON l.employee_id = u.ID ORDER BY l.created_at DESC"); }
-    else { $leaves = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_leave_requests WHERE employee_id = %d ORDER BY created_at DESC", $user_id)); }
+    if ($can_manage) { $leaves = $wpdb->get_results($wpdb->prepare("SELECT l.*, u.display_name FROM {$prefix}hr_leave_requests l LEFT JOIN {$wpdb->users} u ON l.employee_id = u.ID WHERE l.business_id = %d ORDER BY l.created_at DESC", $business_id)); }
+    else { $leaves = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_leave_requests WHERE business_id = %d AND employee_id = %d ORDER BY created_at DESC", $business_id, $user_id)); }
     ?>
     <div class="bntm-form-section"><h3><?php echo $can_manage ? 'All Leave Requests' : 'My Leave Requests'; ?></h3>
         <?php if ($leaves): ?>
@@ -1587,10 +1601,10 @@ function bntm_hr_leaves_view($user_id, $can_manage) {
 add_action('wp_ajax_bntm_hr_submit_leave', 'bntm_ajax_hr_submit_leave');
 function bntm_ajax_hr_submit_leave() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
-    $user_id = get_current_user_id(); $leave_type = sanitize_text_field($_POST['leave_type']); $start_date = sanitize_text_field($_POST['start_date']); $end_date = sanitize_text_field($_POST['end_date']); $reason = sanitize_textarea_field($_POST['reason']);
+    $user_id = get_current_user_id(); $business_id = hr_get_current_business_id(); $leave_type = sanitize_text_field($_POST['leave_type']); $start_date = sanitize_text_field($_POST['start_date']); $end_date = sanitize_text_field($_POST['end_date']); $reason = sanitize_textarea_field($_POST['reason']);
     $start = new DateTime($start_date); $end = new DateTime($end_date); $interval = $start->diff($end); $total_days = $interval->days + 1;
     global $wpdb; $prefix = $wpdb->prefix;
-    $result = $wpdb->insert($prefix . 'hr_leave_requests', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => 1, 'leave_type' => $leave_type, 'start_date' => $start_date, 'end_date' => $end_date, 'total_days' => $total_days, 'reason' => $reason, 'status' => 'pending'], ['%s', '%d', '%d', '%s', '%s', '%s', '%d', '%s', '%s']);
+    $result = $wpdb->insert($prefix . 'hr_leave_requests', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => $business_id, 'leave_type' => $leave_type, 'start_date' => $start_date, 'end_date' => $end_date, 'total_days' => $total_days, 'reason' => $reason, 'status' => 'pending'], ['%s', '%d', '%d', '%s', '%s', '%s', '%d', '%s', '%s']);
     if ($result) wp_send_json_success(['message' => 'Leave request submitted successfully.']);
     else wp_send_json_error(['message' => 'Failed to submit leave request.']);
 }
@@ -1600,9 +1614,9 @@ function bntm_ajax_hr_approve_leave() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
     $current_user = wp_get_current_user(); $is_wp_admin = current_user_can('manage_options'); $current_role = bntm_get_user_role($current_user->ID);
     if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) { wp_send_json_error(['message' => 'Unauthorized.']); }
-    $leave_id = intval($_POST['leave_id']); $user_id = get_current_user_id();
+    $leave_id = intval($_POST['leave_id']); $user_id = get_current_user_id(); $business_id = hr_get_current_business_id();
     global $wpdb; $prefix = $wpdb->prefix;
-    $result = $wpdb->update($prefix . 'hr_leave_requests', ['status' => 'approved', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $leave_id], ['%s', '%d', '%s'], ['%d']);
+    $result = $wpdb->update($prefix . 'hr_leave_requests', ['status' => 'approved', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $leave_id, 'business_id' => $business_id], ['%s', '%d', '%s'], ['%d','%d']);
     if ($result !== false) wp_send_json_success(['message' => 'Leave request approved.']);
     else wp_send_json_error(['message' => 'Failed to approve leave request.']);
 }
@@ -1612,9 +1626,9 @@ function bntm_ajax_hr_reject_leave() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
     $current_user = wp_get_current_user(); $is_wp_admin = current_user_can('manage_options'); $current_role = bntm_get_user_role($current_user->ID);
     if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) { wp_send_json_error(['message' => 'Unauthorized.']); }
-    $leave_id = intval($_POST['leave_id']); $user_id = get_current_user_id();
+    $leave_id = intval($_POST['leave_id']); $user_id = get_current_user_id(); $business_id = hr_get_current_business_id();
     global $wpdb; $prefix = $wpdb->prefix;
-    $result = $wpdb->update($prefix . 'hr_leave_requests', ['status' => 'rejected', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $leave_id], ['%s', '%d', '%s'], ['%d']);
+    $result = $wpdb->update($prefix . 'hr_leave_requests', ['status' => 'rejected', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $leave_id, 'business_id' => $business_id], ['%s', '%d', '%s'], ['%d','%d']);
     if ($result !== false) wp_send_json_success(['message' => 'Leave request rejected.']);
     else wp_send_json_error(['message' => 'Failed to reject leave request.']);
 }
@@ -1627,12 +1641,13 @@ function bntm_ajax_hr_reject_leave() {
 function bntm_hr_payslips_view($user_id, $can_manage) {
     global $wpdb;
     $prefix = $wpdb->prefix;
+    $business_id = hr_get_current_business_id();
     ob_start();
     if ($can_manage) {
         $employees = get_users(['exclude' => [1], 'orderby' => 'display_name']);
-        $payslips = $wpdb->get_results("SELECT p.*, u.display_name FROM {$prefix}hr_payslips p LEFT JOIN {$wpdb->users} u ON p.employee_id = u.ID ORDER BY p.created_at DESC LIMIT 50");
+        $payslips = $wpdb->get_results($wpdb->prepare("SELECT p.*, u.display_name FROM {$prefix}hr_payslips p LEFT JOIN {$wpdb->users} u ON p.employee_id = u.ID WHERE p.business_id = %d ORDER BY p.created_at DESC LIMIT 50", $business_id));
     } else {
-        $payslips = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE employee_id = %d ORDER BY created_at DESC", $user_id));
+        $payslips = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE business_id = %d AND employee_id = %d ORDER BY created_at DESC", $business_id, $user_id));
     }
     ?>
     <div class="bntm-form-section">
@@ -1906,7 +1921,7 @@ function bntm_ajax_hr_generate_payslip() {
         $total_adj_increase = 0; $total_adj_deduction = 0; $adjustments_data = [];
         foreach ($adjustments as $adj) { $adj_amount = floatval($adj['amount']); $adjustments_data[] = ['description' => sanitize_text_field($adj['description']), 'amount' => $adj_amount, 'type' => $adj['type']]; if ($adj['type'] === 'increase') $total_adj_increase += $adj_amount; else $total_adj_deduction += $adj_amount; }
         $net_pay = $gross_pay - $total_deductions + $total_adj_increase - $total_adj_deduction;
-        $result = $wpdb->insert($prefix . 'hr_payslips', ['rand_id' => bntm_rand_id(), 'employee_id' => $employee_id, 'business_id' => 1, 'period_start' => $period_start, 'period_end' => $period_end, 'basic_pay' => $basic_pay, 'overtime_pay' => $overtime_pay, 'total_deductions' => $total_deductions, 'net_pay' => $net_pay, 'deductions_data' => json_encode($deductions_data), 'adjustments_data' => json_encode($adjustments_data), 'total_hours' => $total_hours], ['%s', '%d', '%d', '%s', '%s', '%f', '%f', '%f', '%f', '%s', '%s', '%f']);
+        $result = $wpdb->insert($prefix . 'hr_payslips', ['rand_id' => bntm_rand_id(), 'employee_id' => $employee_id, 'business_id' => hr_get_current_business_id(), 'period_start' => $period_start, 'period_end' => $period_end, 'basic_pay' => $basic_pay, 'overtime_pay' => $overtime_pay, 'total_deductions' => $total_deductions, 'net_pay' => $net_pay, 'deductions_data' => json_encode($deductions_data), 'adjustments_data' => json_encode($adjustments_data), 'total_hours' => $total_hours], ['%s', '%d', '%d', '%s', '%s', '%f', '%f', '%f', '%f', '%s', '%s', '%f']);
         if ($result) $generated_count++;
     }
     if ($generated_count > 0) wp_send_json_success(['message' => "Generated {$generated_count} payslip(s) successfully!", 'reload' => true]);
@@ -1950,8 +1965,9 @@ function bntm_ajax_hr_download_payslip() {
     $token = isset($_GET['token']) ? sanitize_text_field($_GET['token']) : '';
     if ($token) { $token_data = get_transient('payslip_token_' . $token); if (!$token_data) { wp_die('This download link has expired or already been used.'); } $payslip_id = $token_data['payslip_id']; delete_transient('payslip_token_' . $token); }
     else { $payslip_id = sanitize_text_field($_GET['payslip_id']); }
-    if ($payslip_id === 'latest') $payslip = $wpdb->get_row("SELECT * FROM {$prefix}hr_payslips ORDER BY id DESC LIMIT 1");
-    else $payslip = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE id = %d", intval($payslip_id)));
+    $business_id = hr_get_current_business_id();
+    if ($payslip_id === 'latest') $payslip = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE business_id = %d ORDER BY id DESC LIMIT 1", $business_id));
+    else $payslip = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE id = %d AND business_id = %d", intval($payslip_id), $business_id));
     if (!$payslip) wp_die('Payslip not found.');
     $employee = get_userdata($payslip->employee_id); $position = get_user_meta($payslip->employee_id, 'bntm_position', true); $department = get_user_meta($payslip->employee_id, 'bntm_department', true); $deductions_data = json_decode($payslip->deductions_data, true) ?: []; $logo = bntm_get_site_logo(); $site_title = bntm_get_site_title();
     $html = bntm_generate_payslip_pdf_html($payslip, $employee, $position, $department, $deductions_data, $logo, $site_title);
@@ -1963,6 +1979,9 @@ function bntm_ajax_generate_payslip_token() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
     $payslip_id = isset($_POST['payslip_id']) ? intval($_POST['payslip_id']) : 0;
     if (!$payslip_id) { wp_send_json_error(['message' => 'Invalid payslip ID']); }
+    global $wpdb; $prefix = $wpdb->prefix;
+    $exists = $wpdb->get_var($wpdb->prepare("SELECT id FROM {$prefix}hr_payslips WHERE id = %d AND business_id = %d", $payslip_id, hr_get_current_business_id()));
+    if (!$exists) { wp_send_json_error(['message' => 'Payslip not found']); }
     $token = wp_generate_password(32, false);
     set_transient('payslip_token_' . $token, ['payslip_id' => $payslip_id, 'generated_at' => time()], 300);
     $url = admin_url('admin-ajax.php') . '?action=bntm_hr_download_payslip&token=' . $token . '&nonce=' . wp_create_nonce('bntm_hr_nonce');
@@ -2040,7 +2059,7 @@ function bntm_generate_payslip_pdf_html($payslip, $employee, $position, $departm
 
 function bntm_get_approved_overtime($employee_id, $period_start, $period_end) {
     global $wpdb; $prefix = $wpdb->prefix;
-    $overtime_records = $wpdb->get_results($wpdb->prepare("SELECT overtime_date as date, start_time, end_time, total_hours FROM {$prefix}hr_overtime WHERE employee_id = %d AND status = 'approved' AND DATE(overtime_date) BETWEEN %s AND %s ORDER BY overtime_date", $employee_id, $period_start, $period_end));
+    $overtime_records = $wpdb->get_results($wpdb->prepare("SELECT overtime_date as date, start_time, end_time, total_hours FROM {$prefix}hr_overtime WHERE business_id = %d AND employee_id = %d AND status = 'approved' AND DATE(overtime_date) BETWEEN %s AND %s ORDER BY overtime_date", hr_get_current_business_id(), $employee_id, $period_start, $period_end));
     if (empty($overtime_records)) return ['records' => [], 'summary' => ['total_hours' => 0, 'total_amount' => 0]];
     $total_hours = 0; $total_amount = 0; $hourly_rate = floatval(bntm_get_setting('hr_hourly_rate', '15.00')); $employee_hourly_rate = floatval(get_user_meta($employee_id, 'bntm_hourly_rate', true)) ?: $hourly_rate; $ot_rate_default = floatval(bntm_get_setting('hr_ot_rate', '1')); $ot_rate = $employee_hourly_rate * $ot_rate_default;
     $records_array = [];
@@ -2051,7 +2070,7 @@ function bntm_get_approved_overtime($employee_id, $period_start, $period_end) {
 function bntm_get_detailed_hours_breakdown($employee_id, $period_start, $period_end) {
     global $wpdb; $prefix = $wpdb->prefix;
     $work_hours_per_day = floatval(bntm_get_setting('hr_work_hours', '8')); $lunch_break_hours = floatval(bntm_get_setting('hr_lunch_break_hours', '1')); $lunch_threshold = 4;
-    $attendance_records = $wpdb->get_results($wpdb->prepare("SELECT DATE(clock_in) as work_date, clock_in, clock_out, SUM(total_hours) as actual_hours, COUNT(*) as shifts FROM {$prefix}hr_attendance WHERE employee_id = %d AND DATE(clock_in) BETWEEN %s AND %s AND clock_out IS NOT NULL GROUP BY DATE(clock_in) ORDER BY work_date", $employee_id, $period_start, $period_end));
+    $attendance_records = $wpdb->get_results($wpdb->prepare("SELECT DATE(clock_in) as work_date, clock_in, clock_out, SUM(total_hours) as actual_hours, COUNT(*) as shifts FROM {$prefix}hr_attendance WHERE business_id = %d AND employee_id = %d AND DATE(clock_in) BETWEEN %s AND %s AND clock_out IS NOT NULL GROUP BY DATE(clock_in) ORDER BY work_date", hr_get_current_business_id(), $employee_id, $period_start, $period_end));
     if (empty($attendance_records)) return null;
     $breakdown = []; $total_actual = 0; $total_payable = 0; $total_lunch_deducted = 0; $total_capped = 0;
     foreach ($attendance_records as $record) {
@@ -2074,10 +2093,10 @@ function bntm_ajax_hr_import_payslips() {
     if (empty($payslip_ids)) { wp_send_json_error(['message' => 'No payslips selected.']); }
     $imported_count = 0;
     foreach ($payslip_ids as $payslip_id) {
-        $payslip = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE id = %d AND is_imported = 0", $payslip_id));
+        $payslip = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$prefix}hr_payslips WHERE id = %d AND business_id = %d AND is_imported = 0", $payslip_id, hr_get_current_business_id()));
         if (!$payslip) continue;
         $employee = get_userdata($payslip->employee_id);
-        $result = $wpdb->insert($prefix . 'fn_transactions', ['rand_id' => bntm_rand_id(), 'business_id' => 0, 'type' => 'expense', 'amount' => $payslip->net_pay, 'category' => 'Payroll', 'notes' => 'Payslip for ' . $employee->display_name . ' (' . date('M d', strtotime($payslip->period_start)) . ' - ' . date('M d, Y', strtotime($payslip->period_end)) . ')', 'reference_type' => 'payslip', 'reference_id' => $payslip->id], ['%s', '%d', '%s', '%f', '%s', '%s', '%s', '%d']);
+        $result = $wpdb->insert($prefix . 'fn_transactions', ['rand_id' => bntm_rand_id(), 'business_id' => hr_get_current_business_id(), 'type' => 'expense', 'amount' => $payslip->net_pay, 'category' => 'Payroll', 'notes' => 'Payslip for ' . $employee->display_name . ' (' . date('M d', strtotime($payslip->period_start)) . ' - ' . date('M d, Y', strtotime($payslip->period_end)) . ')', 'reference_type' => 'payslip', 'reference_id' => $payslip->id], ['%s', '%d', '%s', '%f', '%s', '%s', '%s', '%d']);
         if ($result) { $wpdb->update($prefix . 'hr_payslips', ['is_imported' => 1], ['id' => $payslip->id], ['%d'], ['%d']); $imported_count++; }
     }
     if ($imported_count > 0) { if (function_exists('bntm_fn_update_cashflow_summary')) bntm_fn_update_cashflow_summary(); wp_send_json_success(['message' => "Imported {$imported_count} payslip(s) to Finance successfully!"]); }
@@ -2102,7 +2121,7 @@ function bntm_ajax_hr_revert_payslips() {
 }
 
 function bntm_hr_overtime_missing_view($user_id, $can_manage) {
-    global $wpdb; $prefix = $wpdb->prefix; ob_start();
+    global $wpdb; $prefix = $wpdb->prefix; $business_id = hr_get_current_business_id(); ob_start();
     ?>
     <?php if (!$can_manage): ?>
         <div class="bntm-form-section" style="margin-bottom: 30px;"><h3>Request Overtime or Missing Log</h3>
@@ -2123,7 +2142,7 @@ function bntm_hr_overtime_missing_view($user_id, $can_manage) {
         </div>
     <?php endif; ?>
     <div class="bntm-form-section"><h3><?php echo $can_manage ? 'Overtime Requests' : 'My Overtime Requests'; ?></h3>
-        <?php if ($can_manage) { $overtime = $wpdb->get_results("SELECT o.*, u.display_name FROM {$prefix}hr_overtime o LEFT JOIN {$wpdb->users} u ON o.employee_id = u.ID ORDER BY o.created_at DESC"); } else { $overtime = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_overtime WHERE employee_id = %d ORDER BY created_at DESC", $user_id)); } ?>
+        <?php if ($can_manage) { $overtime = $wpdb->get_results($wpdb->prepare("SELECT o.*, u.display_name FROM {$prefix}hr_overtime o LEFT JOIN {$wpdb->users} u ON o.employee_id = u.ID WHERE o.business_id = %d ORDER BY o.created_at DESC", $business_id)); } else { $overtime = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_overtime WHERE business_id = %d AND employee_id = %d ORDER BY created_at DESC", $business_id, $user_id)); } ?>
         <?php if ($overtime): ?>
         <div class="bntm-table-wrapper"><table class="bntm-table"><thead><tr><?php if ($can_manage): ?><th>Employee</th><?php endif; ?><th>Date</th><th>Time</th><th>Hours</th><th>Reason</th><th>Status</th><?php if ($can_manage): ?><th>Actions</th><?php endif; ?></tr></thead><tbody>
             <?php foreach ($overtime as $ot): $status_class = $ot->status === 'approved' ? 'bntm-notice-success' : ($ot->status === 'rejected' ? 'bntm-notice-error' : ''); $start = DateTime::createFromFormat('H:i:s', $ot->start_time)->format('h:i A'); $end = DateTime::createFromFormat('H:i:s', $ot->end_time)->format('h:i A'); ?>
@@ -2134,7 +2153,7 @@ function bntm_hr_overtime_missing_view($user_id, $can_manage) {
         <?php else: ?><p>No overtime requests found.</p><?php endif; ?>
     </div>
     <div class="bntm-form-section"><h3><?php echo $can_manage ? 'Missing Clock In/Out Logs' : 'My Missing Logs'; ?></h3>
-        <?php if ($can_manage) { $missing = $wpdb->get_results("SELECT m.*, u.display_name FROM {$prefix}hr_missing_logs m LEFT JOIN {$wpdb->users} u ON m.employee_id = u.ID ORDER BY m.created_at DESC"); } else { $missing = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_missing_logs WHERE employee_id = %d ORDER BY created_at DESC", $user_id)); } ?>
+        <?php if ($can_manage) { $missing = $wpdb->get_results($wpdb->prepare("SELECT m.*, u.display_name FROM {$prefix}hr_missing_logs m LEFT JOIN {$wpdb->users} u ON m.employee_id = u.ID WHERE m.business_id = %d ORDER BY m.created_at DESC", $business_id)); } else { $missing = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$prefix}hr_missing_logs WHERE business_id = %d AND employee_id = %d ORDER BY created_at DESC", $business_id, $user_id)); } ?>
         <?php if ($missing): ?>
         <div class="bntm-table-wrapper"><table class="bntm-table"><thead><tr><?php if ($can_manage): ?><th>Employee</th><?php endif; ?><th>Date</th><th>Type</th><th>Clock In</th><th>Clock Out</th><th>Reason</th><th>Status</th><?php if ($can_manage): ?><th>Actions</th><?php endif; ?></tr></thead><tbody>
             <?php foreach ($missing as $log): $status_class = $log->status === 'approved' ? 'bntm-notice-success' : ($log->status === 'rejected' ? 'bntm-notice-error' : ''); $type_label = $log->log_type === 'clock_in' ? 'Missing Clock In' : ($log->log_type === 'clock_out' ? 'Missing Clock Out' : 'Missing Both'); $clock_in = $log->clock_in_time ? DateTime::createFromFormat('H:i:s', $log->clock_in_time)->format('h:i A') : '-'; $clock_out = $log->clock_out_time ? DateTime::createFromFormat('H:i:s', $log->clock_out_time)->format('h:i A') : '-'; ?>
@@ -2164,11 +2183,11 @@ function bntm_hr_overtime_missing_view($user_id, $can_manage) {
 add_action('wp_ajax_bntm_hr_submit_overtime', 'bntm_ajax_hr_submit_overtime');
 function bntm_ajax_hr_submit_overtime() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
-    $user_id = get_current_user_id(); $overtime_date = sanitize_text_field($_POST['overtime_date']); $start_time = sanitize_text_field($_POST['start_time']); $end_time = sanitize_text_field($_POST['end_time']); $reason = sanitize_textarea_field($_POST['reason']);
+    $user_id = get_current_user_id(); $business_id = hr_get_current_business_id(); $overtime_date = sanitize_text_field($_POST['overtime_date']); $start_time = sanitize_text_field($_POST['start_time']); $end_time = sanitize_text_field($_POST['end_time']); $reason = sanitize_textarea_field($_POST['reason']);
     $total_hours = round((strtotime($end_time) - strtotime($start_time)) / 3600, 2);
     if ($total_hours <= 0) { wp_send_json_error(['message' => 'End time must be after start time.']); }
     global $wpdb; $prefix = $wpdb->prefix;
-    $result = $wpdb->insert($prefix . 'hr_overtime', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => 1, 'overtime_date' => $overtime_date, 'start_time' => $start_time, 'end_time' => $end_time, 'total_hours' => $total_hours, 'reason' => $reason, 'status' => 'pending'], ['%s', '%d', '%d', '%s', '%s', '%s', '%f', '%s', '%s']);
+    $result = $wpdb->insert($prefix . 'hr_overtime', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => $business_id, 'overtime_date' => $overtime_date, 'start_time' => $start_time, 'end_time' => $end_time, 'total_hours' => $total_hours, 'reason' => $reason, 'status' => 'pending'], ['%s', '%d', '%d', '%s', '%s', '%s', '%f', '%s', '%s']);
     if ($result) wp_send_json_success(['message' => 'Overtime request submitted successfully.']);
     else wp_send_json_error(['message' => 'Failed to submit overtime request.']);
 }
@@ -2176,9 +2195,9 @@ function bntm_ajax_hr_submit_overtime() {
 add_action('wp_ajax_bntm_hr_submit_missing_log', 'bntm_ajax_hr_submit_missing_log');
 function bntm_ajax_hr_submit_missing_log() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
-    $user_id = get_current_user_id(); $log_date = sanitize_text_field($_POST['log_date']); $log_type = sanitize_text_field($_POST['log_type']); $clock_in = sanitize_text_field($_POST['clock_in'] ?? ''); $clock_out = sanitize_text_field($_POST['clock_out'] ?? ''); $reason = sanitize_textarea_field($_POST['reason']);
+    $user_id = get_current_user_id(); $business_id = hr_get_current_business_id(); $log_date = sanitize_text_field($_POST['log_date']); $log_type = sanitize_text_field($_POST['log_type']); $clock_in = sanitize_text_field($_POST['clock_in'] ?? ''); $clock_out = sanitize_text_field($_POST['clock_out'] ?? ''); $reason = sanitize_textarea_field($_POST['reason']);
     global $wpdb; $prefix = $wpdb->prefix;
-    $result = $wpdb->insert($prefix . 'hr_missing_logs', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => 1, 'log_date' => $log_date, 'log_type' => $log_type, 'clock_in_time' => $clock_in ?: null, 'clock_out_time' => $clock_out ?: null, 'reason' => $reason, 'status' => 'pending'], ['%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s']);
+    $result = $wpdb->insert($prefix . 'hr_missing_logs', ['rand_id' => bntm_rand_id(), 'employee_id' => $user_id, 'business_id' => $business_id, 'log_date' => $log_date, 'log_type' => $log_type, 'clock_in_time' => $clock_in ?: null, 'clock_out_time' => $clock_out ?: null, 'reason' => $reason, 'status' => 'pending'], ['%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s']);
     if ($result) wp_send_json_success(['message' => 'Missing log request submitted successfully.']);
     else wp_send_json_error(['message' => 'Failed to submit missing log request.']);
 }
@@ -2188,9 +2207,9 @@ function bntm_ajax_hr_approve_overtime() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
     $current_user = wp_get_current_user(); $is_wp_admin = current_user_can('manage_options'); $current_role = bntm_get_user_role($current_user->ID);
     if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) { wp_send_json_error(['message' => 'Permission denied.']); }
-    $ot_id = intval($_POST['ot_id']); $user_id = get_current_user_id();
+    $ot_id = intval($_POST['ot_id']); $user_id = get_current_user_id(); $business_id = hr_get_current_business_id();
     global $wpdb; $prefix = $wpdb->prefix;
-    $result = $wpdb->update($prefix . 'hr_overtime', ['status' => 'approved', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $ot_id], ['%s', '%d', '%s'], ['%d']);
+    $result = $wpdb->update($prefix . 'hr_overtime', ['status' => 'approved', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $ot_id, 'business_id' => $business_id], ['%s', '%d', '%s'], ['%d','%d']);
     if ($result !== false) wp_send_json_success(['message' => 'Overtime request approved.']);
     else wp_send_json_error(['message' => 'Failed to approve overtime request.']);
 }
@@ -2200,9 +2219,9 @@ function bntm_ajax_hr_reject_overtime() {
     check_ajax_referer('bntm_hr_nonce', 'nonce');
     $current_user = wp_get_current_user(); $is_wp_admin = current_user_can('manage_options'); $current_role = bntm_get_user_role($current_user->ID);
     if (!$is_wp_admin && !in_array($current_role, ['owner', 'manager'])) { wp_send_json_error(['message' => 'Permission denied.']); }
-    $ot_id = intval($_POST['ot_id']); $user_id = get_current_user_id();
+    $ot_id = intval($_POST['ot_id']); $user_id = get_current_user_id(); $business_id = hr_get_current_business_id();
     global $wpdb; $prefix = $wpdb->prefix;
-    $result = $wpdb->update($prefix . 'hr_overtime', ['status' => 'rejected', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $ot_id], ['%s', '%d', '%s'], ['%d']);
+    $result = $wpdb->update($prefix . 'hr_overtime', ['status' => 'rejected', 'approved_by' => $user_id, 'approved_at' => current_time('mysql')], ['id' => $ot_id, 'business_id' => $business_id], ['%s', '%d', '%s'], ['%d','%d']);
     if ($result !== false) wp_send_json_success(['message' => 'Overtime request rejected.']);
     else wp_send_json_error(['message' => 'Failed to reject overtime request.']);
 }
@@ -2221,14 +2240,16 @@ function bntm_ajax_hr_approve_missing_log() {
     
     $log_id = intval($_POST['log_id']);
     $user_id = get_current_user_id();
+    $business_id = hr_get_current_business_id();
     
     global $wpdb;
     $prefix = $wpdb->prefix;
     
     // Get the missing log record
     $log = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$prefix}hr_missing_logs WHERE id = %d",
-        $log_id
+        "SELECT * FROM {$prefix}hr_missing_logs WHERE id = %d AND business_id = %d",
+        $log_id,
+        $business_id
     ));
     
     if (!$log) {
@@ -2246,9 +2267,9 @@ function bntm_ajax_hr_approve_missing_log() {
             'approved_by' => $user_id,
             'approved_at' => current_time('mysql')
         ],
-        ['id' => $log_id],
+        ['id' => $log_id, 'business_id' => $business_id],
         ['%s', '%d', '%s'],
-        ['%d']
+        ['%d','%d']
     );
     
     if ($result !== false) {
@@ -2258,7 +2279,7 @@ function bntm_ajax_hr_approve_missing_log() {
             [
                 'rand_id' => bntm_rand_id(),
                 'employee_id' => $log->employee_id,
-                'business_id' => 1,
+                'business_id' => $business_id,
                 'clock_in' => $log->log_date . ' ' . ($clock_in),
                 'clock_out' => $log->log_date . ' ' . ($clock_out_time),
                 'total_hours' => $total_hours,
@@ -2288,6 +2309,7 @@ function bntm_ajax_hr_reject_missing_log() {
     
     $log_id = intval($_POST['log_id']);
     $user_id = get_current_user_id();
+    $business_id = hr_get_current_business_id();
     
     global $wpdb;
     $prefix = $wpdb->prefix;
@@ -2299,9 +2321,9 @@ function bntm_ajax_hr_reject_missing_log() {
             'approved_by' => $user_id,
             'approved_at' => current_time('mysql')
         ],
-        ['id' => $log_id],
+        ['id' => $log_id, 'business_id' => $business_id],
         ['%s', '%d', '%s'],
-        ['%d']
+        ['%d','%d']
     );
     
     if ($result !== false) {

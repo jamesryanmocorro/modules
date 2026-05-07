@@ -17,6 +17,18 @@ if (!defined("ABSPATH")) {
 define("BNTM_PM_PATH", dirname(__FILE__) . "/");
 define("BNTM_PM_URL", plugin_dir_url(__FILE__));
 
+if (!function_exists('pm_get_current_business_id')) {
+    function pm_get_current_business_id() {
+        if (function_exists('bntm_get_current_business_id')) {
+            $business_id = absint(bntm_get_current_business_id());
+            if ($business_id > 0) {
+                return $business_id;
+            }
+        }
+        return absint(get_current_user_id());
+    }
+}
+
 /* ---------- MODULE CONFIGURATION ---------- */
 
 /**
@@ -323,7 +335,7 @@ function bntm_shortcode_pm_dashboard()
     }
 
     $current_user = wp_get_current_user();
-    $business_id = $current_user->ID;
+    $business_id = pm_get_current_business_id();
     $is_wp_admin = current_user_can('manage_options');
     $current_role = bntm_get_user_role($current_user->ID);
     $can_access_resources = $is_wp_admin || in_array($current_role, ['owner', 'manager']);
@@ -571,48 +583,38 @@ function pm_overview_tab($business_id)
     $time_logs_table = $wpdb->prefix . "pm_time_logs";
 
     // Get statistics
-    $total_projects = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$projects_table} "
-    );
-    $active_projects = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$projects_table} WHERE  status NOT IN ('completed', 'cancelled','on_hold')"
-    );
-    $total_tasks = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$tasks_table}"
-    );
-    $completed_tasks = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$tasks_table} WHERE status IN ('completed', 'closed')"
-    );
-    $overdue_tasks = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$tasks_table} WHERE  due_date < CURDATE() AND status NOT IN ('completed', 'closed')"
-    );
+    $total_projects = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$projects_table} WHERE business_id = %d", $business_id));
+    $active_projects = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$projects_table} WHERE business_id = %d AND status NOT IN ('completed', 'cancelled','on_hold')", $business_id));
+    $total_tasks = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$tasks_table} WHERE business_id = %d", $business_id));
+    $completed_tasks = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$tasks_table} WHERE business_id = %d AND status IN ('completed', 'closed')", $business_id));
+    $overdue_tasks = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$tasks_table} WHERE business_id = %d AND due_date < CURDATE() AND status NOT IN ('completed', 'closed')", $business_id));
 
     // Total hours logged
-    $total_hours = $wpdb->get_var("SELECT SUM(tl.hours) FROM {$time_logs_table} tl 
+    $total_hours = $wpdb->get_var($wpdb->prepare("SELECT SUM(tl.hours) FROM {$time_logs_table} tl 
         INNER JOIN {$tasks_table} t ON tl.task_id = t.id 
-       ");
+        WHERE t.business_id = %d", $business_id));
     $total_hours = $total_hours ? floatval($total_hours) : 0;
 
     // Get recent projects
-    $recent_projects = $wpdb->get_results("SELECT * FROM {$projects_table} 
-        ORDER BY updated_at DESC LIMIT 5");
+    $recent_projects = $wpdb->get_results($wpdb->prepare("SELECT * FROM {$projects_table} WHERE business_id = %d ORDER BY updated_at DESC LIMIT 5", $business_id));
 
     // Get upcoming tasks
-    $upcoming_tasks = $wpdb->get_results("SELECT t.*, p.name as project_name, p.color as project_color 
+    $upcoming_tasks = $wpdb->get_results($wpdb->prepare("SELECT t.*, p.name as project_name, p.color as project_color 
         FROM {$tasks_table} t 
         INNER JOIN {$projects_table} p ON t.project_id = p.id 
-        WHERE  t.status NOT IN ('completed', 'closed') AND t.due_date IS NOT NULL
-        ORDER BY t.due_date ASC LIMIT 10");
+        WHERE t.business_id = %d AND p.business_id = %d AND t.status NOT IN ('completed', 'closed') AND t.due_date IS NOT NULL
+        ORDER BY t.due_date ASC LIMIT 10", $business_id, $business_id));
 
     // Project status distribution
-    $status_stats = $wpdb->get_results("SELECT status, COUNT(*) as count 
+    $status_stats = $wpdb->get_results($wpdb->prepare("SELECT status, COUNT(*) as count 
         FROM {$projects_table} 
-        GROUP BY status");
+        WHERE business_id = %d
+        GROUP BY status", $business_id));
 
     // Task priority distribution
-    $priority_stats = $wpdb->get_results("SELECT priority, COUNT(*) as count 
-        FROM {$tasks_table} WHERE status NOT IN ('completed', 'closed')
-        GROUP BY priority");
+    $priority_stats = $wpdb->get_results($wpdb->prepare("SELECT priority, COUNT(*) as count 
+        FROM {$tasks_table} WHERE business_id = %d AND status NOT IN ('completed', 'closed')
+        GROUP BY priority", $business_id));
 
     ob_start();
     ?>
@@ -2380,7 +2382,8 @@ function pm_resource_load_tab($business_id) {
     $user_project_ids = [];
     if (!$can_view_all) {
         $user_projects = $wpdb->get_col($wpdb->prepare(
-            "SELECT project_id FROM {$team_table} WHERE user_id = %d AND role = 'project_manager'",
+            "SELECT project_id FROM {$team_table} WHERE business_id = %d AND user_id = %d AND role = 'project_manager'",
+            $business_id,
             $current_user->ID
         ));
         $user_project_ids = !empty($user_projects) ? $user_projects : [0];
@@ -3392,10 +3395,10 @@ function pm_reports_tab($business_id) {
     }
     
     // Build project filter condition
-    $project_filter = '';
+    $project_filter = " WHERE p.business_id = " . intval($business_id);
     if (!$can_view_all) {
         $project_ids_str = implode(',', array_map('intval', $user_project_ids));
-        $project_filter = " WHERE p.id IN ({$project_ids_str})";
+        $project_filter .= " AND p.id IN ({$project_ids_str})";
     }
     
     // Overall statistics
@@ -3409,13 +3412,13 @@ function pm_reports_tab($business_id) {
     );
     
     $total_tasks = $wpdb->get_var(
-        "SELECT COUNT(*) FROM {$tasks_table} t " .
-        (!$can_view_all ? "WHERE t.project_id IN (" . implode(',', array_map('intval', $user_project_ids)) . ")" : "")
+        "SELECT COUNT(*) FROM {$tasks_table} t WHERE t.business_id = " . intval($business_id) .
+        (!$can_view_all ? " AND t.project_id IN (" . implode(',', array_map('intval', $user_project_ids)) . ")" : "")
     );
     
     $completed_tasks = $wpdb->get_var(
         "SELECT COUNT(*) FROM {$tasks_table} t 
-         WHERE t.status IN ('completed', 'closed')" .
+         WHERE t.business_id = " . intval($business_id) . " AND t.status IN ('completed', 'closed')" .
         (!$can_view_all ? " AND t.project_id IN (" . implode(',', array_map('intval', $user_project_ids)) . ")" : "")
     );
     
@@ -3423,8 +3426,9 @@ function pm_reports_tab($business_id) {
     $total_hours = $wpdb->get_var($wpdb->prepare(
         "SELECT SUM(tl.hours) FROM {$time_logs_table} tl
          INNER JOIN {$tasks_table} t ON tl.task_id = t.id
-         WHERE tl.log_date BETWEEN %s AND %s" .
+         WHERE t.business_id = %d AND tl.log_date BETWEEN %s AND %s" .
         (!$can_view_all ? " AND t.project_id IN (" . implode(',', array_map('intval', $user_project_ids)) . ")" : ""),
+        $business_id,
         $date_from,
         $date_to
     ));
@@ -3438,12 +3442,14 @@ function pm_reports_tab($business_id) {
          COALESCE(SUM(tl.hours), 0) as total_hours
          FROM {$wpdb->users} u
          INNER JOIN {$tasks_table} t ON u.ID = t.assigned_to
-         LEFT JOIN {$time_logs_table} tl ON t.id = tl.task_id AND tl.log_date BETWEEN %s AND %s" .
-        (!$can_view_all ? " WHERE t.project_id IN (" . implode(',', array_map('intval', $user_project_ids)) . ")" : "") . "
+         LEFT JOIN {$time_logs_table} tl ON t.id = tl.task_id AND tl.log_date BETWEEN %s AND %s
+         WHERE t.business_id = %d" .
+        (!$can_view_all ? " AND t.project_id IN (" . implode(',', array_map('intval', $user_project_ids)) . ")" : "") . "
          GROUP BY u.ID
          ORDER BY completed_tasks DESC",
         $date_from,
-        $date_to
+        $date_to,
+        $business_id
     ));
     
     // Project completion rate
@@ -4135,8 +4141,8 @@ function pm_logs_tab($business_id) {
     $date_to = isset($_GET['log_date_to']) ? sanitize_text_field($_GET['log_date_to']) : date('Y-m-d');
     
     // Build query
-    $where = ["DATE(a.created_at) BETWEEN %s AND %s"];
-    $params = [$date_from, $date_to];
+    $where = ["a.business_id = %d", "DATE(a.created_at) BETWEEN %s AND %s"];
+    $params = [$business_id, $date_from, $date_to];
     
     if ($filter_project > 0) {
         $where[] = "a.project_id = %d";
@@ -4178,14 +4184,15 @@ function pm_logs_tab($business_id) {
     ));
     
     // Get filter options
-    $projects = $wpdb->get_results("SELECT id, name FROM {$projects_table} ORDER BY name ASC");
-    $actions = $wpdb->get_col("SELECT DISTINCT action FROM {$activity_table} ORDER BY action ASC");
-    $users = $wpdb->get_results(
+    $projects = $wpdb->get_results($wpdb->prepare("SELECT id, name FROM {$projects_table} WHERE business_id = %d ORDER BY name ASC", $business_id));
+    $actions = $wpdb->get_col($wpdb->prepare("SELECT DISTINCT action FROM {$activity_table} WHERE business_id = %d ORDER BY action ASC", $business_id));
+    $users = $wpdb->get_results($wpdb->prepare(
         "SELECT DISTINCT u.ID, u.display_name 
          FROM {$wpdb->users} u
          INNER JOIN {$activity_table} a ON u.ID = a.user_id
+         WHERE a.business_id = %d
          ORDER BY u.display_name ASC"
-    );
+    , $business_id));
     
     $total_pages = ceil($total_logs / $per_page);
     

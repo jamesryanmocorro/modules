@@ -15,6 +15,18 @@ if (!defined('ABSPATH')) exit;
 define('BNTM_EC_PATH', dirname(__FILE__) . '/');
 define('BNTM_EC_URL', plugin_dir_url(__FILE__));
 
+if (!function_exists('ec_get_current_business_id')) {
+    function ec_get_current_business_id() {
+        if (function_exists('bntm_get_current_business_id')) {
+            $business_id = absint(bntm_get_current_business_id());
+            if ($business_id > 0) {
+                return $business_id;
+            }
+        }
+        return absint(get_current_user_id());
+    }
+}
+
 /* ---------- MODULE CONFIGURATION ---------- */
 
 /**
@@ -133,8 +145,7 @@ function bntm_shortcode_ec() {
         return '<div class="bntm-notice">Please log in to access the E-Commerce dashboard.</div>';
     }
     
-    $current_user = wp_get_current_user();
-    $business_id = $current_user->ID;
+    $business_id = ec_get_current_business_id();
     $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'overview';
     
     ob_start();
@@ -637,33 +648,33 @@ function ec_get_dashboard_stats($business_id) {
     $items_table = $wpdb->prefix . 'ec_order_items';
     
     // Total products
-    $total_products = $wpdb->get_var("SELECT COUNT(*) FROM $products_table");
+    $total_products = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $products_table WHERE business_id = %d", $business_id));
     
     // Total orders
-    $total_orders = $wpdb->get_var("SELECT COUNT(*) FROM $orders_table");
+    $total_orders = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $orders_table WHERE business_id = %d", $business_id));
     
     // Monthly revenue
     $monthly_revenue = $wpdb->get_var(
-        "SELECT COALESCE(SUM(total), 0) FROM $orders_table 
-         WHERE status != 'cancelled'
+        $wpdb->prepare("SELECT COALESCE(SUM(total), 0) FROM $orders_table 
+         WHERE business_id = %d AND status != 'cancelled'
          AND MONTH(created_at) = MONTH(CURRENT_DATE()) 
-         AND YEAR(created_at) = YEAR(CURRENT_DATE())"
+         AND YEAR(created_at) = YEAR(CURRENT_DATE())", $business_id)
     );
     
     // Low stock items
     $low_stock = $wpdb->get_var(
-        "SELECT COUNT(*) FROM $products_table 
-         WHERE stock <= 5 AND stock > 0"
+        $wpdb->prepare("SELECT COUNT(*) FROM $products_table 
+         WHERE business_id = %d AND stock <= 5 AND stock > 0", $business_id)
     );
     
     // Monthly sales data (last 6 months) - each month independent
     $monthly_sales_data = $wpdb->get_results(
-        "SELECT DATE_FORMAT(created_at, '%b %Y') as month, COALESCE(SUM(total), 0) as total
+        $wpdb->prepare("SELECT DATE_FORMAT(created_at, '%b %Y') as month, COALESCE(SUM(total), 0) as total
         FROM $orders_table
-        WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+        WHERE business_id = %d AND created_at >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
         AND status != 'cancelled'
         GROUP BY YEAR(created_at), MONTH(created_at)
-        ORDER BY YEAR(created_at), MONTH(created_at)",
+        ORDER BY YEAR(created_at), MONTH(created_at)", $business_id),
         ARRAY_A
     );
     
@@ -684,10 +695,12 @@ function ec_get_dashboard_stats($business_id) {
         FROM $items_table oi
         JOIN $products_table p ON oi.product_id = p.id
         JOIN $orders_table o ON oi.order_id = o.id
-        WHERE o.status != 'cancelled'
+        WHERE o.business_id = %d AND p.business_id = %d AND o.status != 'cancelled'
         GROUP BY p.id, p.name
         ORDER BY total DESC
         LIMIT 5",
+        $business_id,
+        $business_id,
         ARRAY_A
     );
     
@@ -695,7 +708,9 @@ function ec_get_dashboard_stats($business_id) {
     $order_status_data = $wpdb->get_results(
         "SELECT status, COUNT(*) as count
         FROM $orders_table
+        WHERE business_id = %d
         GROUP BY status",
+        $business_id,
         ARRAY_A
     );
     
@@ -712,9 +727,10 @@ function ec_get_dashboard_stats($business_id) {
 function ec_orders_tab($business_id) {
     global $wpdb;
     $table = $wpdb->prefix . 'ec_orders';
-    $orders = $wpdb->get_results(
-        "SELECT * FROM $table  ORDER BY created_at DESC"
-    );
+    $orders = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM $table WHERE business_id = %d ORDER BY created_at DESC",
+        $business_id
+    ));
     
     $nonce = wp_create_nonce('ec_nonce');
 
@@ -1279,18 +1295,19 @@ function bntm_ajax_ec_get_order_details() {
 }
 add_action('wp_ajax_ec_get_order_details', 'bntm_ajax_ec_get_order_details');
 
-function bntm_fn_orders_tab() {
+function bntm_fn_orders_tab($business_id = 0) {
     global $wpdb;
     $orders_table = $wpdb->prefix . 'ec_orders';
     $txn_table = $wpdb->prefix . 'fn_transactions';
+    $business_id = absint($business_id ?: ec_get_current_business_id());
     
-$orders = $wpdb->get_results("
+$orders = $wpdb->get_results($wpdb->prepare("
     SELECT o.*, 
-    (SELECT COUNT(*) FROM {$txn_table} WHERE reference_type='order' AND reference_id=o.id) as is_imported
+    (SELECT COUNT(*) FROM {$txn_table} WHERE business_id = %d AND reference_type='order' AND reference_id=o.id) as is_imported
     FROM {$orders_table} o
-    WHERE o.status NOT IN ('pending', 'cancelled')
+    WHERE o.business_id = %d AND o.status NOT IN ('pending', 'cancelled')
     ORDER BY o.created_at DESC
-");
+", $business_id, $business_id));
     
     $nonce = wp_create_nonce('bntm_fn_action');
     
@@ -5167,7 +5184,7 @@ function bntm_ajax_ec_process_checkout_op() {
     }
 
     // Get OP payment method
-    $business_id = get_current_user_id();
+    $business_id = ec_get_current_business_id();
     $payment_method = $wpdb->get_row($wpdb->prepare(
         "SELECT * FROM $methods_table WHERE id = %d AND is_active = 1",
         $op_method_id, $business_id
@@ -6071,8 +6088,9 @@ function bntm_ajax_ec_update_order_status() {
 
     // Get current order to check if it's being paid
     $order = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $table WHERE rand_id = %s",
-        $order_id, $business_id
+        "SELECT * FROM $table WHERE rand_id = %s AND business_id = %d",
+        $order_id,
+        $business_id
     ));
 
     if (!$order) {
@@ -6082,7 +6100,7 @@ function bntm_ajax_ec_update_order_status() {
     $result = $wpdb->update(
         $table,
         ['status' => $status],
-        ['rand_id' => $order_id],
+        ['rand_id' => $order_id, 'business_id' => $business_id],
         ['%s'],
         ['%s', '%d']
     );
@@ -6107,16 +6125,19 @@ function ec_render_recent_orders($business_id, $limit = 10) {
     $offset = ($current_page - 1) * $limit;
     
     // Get total count for pagination
-    $total_orders = $wpdb->get_var(
-        "SELECT COUNT(*) FROM $table"
-    );
+    $total_orders = $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM $table WHERE business_id = %d",
+        $business_id
+    ));
     
     $total_pages = ceil($total_orders / $limit);
     
     // Get orders for current page
     $orders = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM $table ORDER BY created_at DESC LIMIT %d OFFSET %d",
-        $limit, $offset
+        "SELECT * FROM $table WHERE business_id = %d ORDER BY created_at DESC LIMIT %d OFFSET %d",
+        $business_id,
+        $limit,
+        $offset
     ));
     
     if (empty($orders) && $current_page == 1) {

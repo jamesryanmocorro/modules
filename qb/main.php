@@ -15,6 +15,18 @@ if (!defined('ABSPATH')) exit;
 define('BNTM_QB_PATH', dirname(__FILE__) . '/');
 define('BNTM_QB_URL', plugin_dir_url(__FILE__));
 
+if (!function_exists('qb_get_current_business_id')) {
+    function qb_get_current_business_id() {
+        if (function_exists('bntm_get_current_business_id')) {
+            $business_id = absint(bntm_get_current_business_id());
+            if ($business_id > 0) {
+                return $business_id;
+            }
+        }
+        return absint(get_current_user_id());
+    }
+}
+
 /* ---------- MODULE CONFIGURATION ---------- */
 
 /**
@@ -167,8 +179,7 @@ function bntm_shortcode_qb_dashboard() {
         return '<div class="bntm-notice">Please log in to access.</div>';
     }
     
-    $current_user = wp_get_current_user();
-    $business_id = $current_user->ID;
+    $business_id = qb_get_current_business_id();
     $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'quotations';
     
     ob_start();
@@ -311,6 +322,7 @@ function qb_quotations_tab($business_id) {
     
     $quotations = $wpdb->get_results($wpdb->prepare(
         "SELECT * FROM $quotations_table 
+         WHERE business_id = %d
          ORDER BY created_at DESC",
         $business_id
     ));
@@ -1148,6 +1160,7 @@ function qb_billing_tab($business_id) {
         "SELECT s.*, q.quotation_number, q.title as quotation_title, q.total as quotation_total
          FROM $schedules_table s
          LEFT JOIN $quotations_table q ON s.quotation_id = q.id
+         WHERE s.business_id = %d
          ORDER BY s.created_at DESC",
         $business_id
     ));
@@ -2394,7 +2407,7 @@ function bntm_ajax_qb_create_billing_schedule() {
 
     global $wpdb;
     $schedules_table = $wpdb->prefix . 'qb_billing_schedules';
-    $business_id = get_current_user_id();
+    $business_id = qb_get_current_business_id();
     
     $quotation_id = intval($_POST['quotation_id'] ?? 0);
     $customer_name = sanitize_text_field($_POST['customer_name'] ?? '');
@@ -2489,7 +2502,7 @@ function bntm_ajax_qb_generate_scheduled_invoice() {
 
     $schedule_id = intval($_POST['schedule_id'] ?? 0);
     
-    $result = qb_generate_invoice_from_schedule($schedule_id);
+    $result = qb_generate_invoice_from_schedule($schedule_id, qb_get_current_business_id());
     
     if ($result['success']) {
         wp_send_json_success(['message' => $result['message']]);
@@ -2510,7 +2523,7 @@ function bntm_ajax_qb_create_quotation() {
     global $wpdb;
     $quotations_table = $wpdb->prefix . 'qb_quotations';
     $items_table = $wpdb->prefix . 'qb_quotation_items';
-    $business_id = get_current_user_id();
+    $business_id = qb_get_current_business_id();
     
     $customer_name = sanitize_text_field($_POST['customer_name'] ?? '');
     $customer_email = sanitize_email($_POST['customer_email'] ?? '');
@@ -2644,7 +2657,7 @@ function bntm_ajax_qb_update_quotation() {
     global $wpdb;
     $quotations_table = $wpdb->prefix . 'qb_quotations';
     $items_table = $wpdb->prefix . 'qb_quotation_items';
-    $business_id = get_current_user_id();
+    $business_id = qb_get_current_business_id();
     
     $quotation_id = intval($_POST['quotation_id'] ?? 0);
     $customer_name = sanitize_text_field($_POST['customer_name'] ?? '');
@@ -2756,7 +2769,7 @@ function bntm_ajax_qb_delete_quotation() {
 
     global $wpdb;
     $quotations_table = $wpdb->prefix . 'qb_quotations';
-    $business_id = get_current_user_id();
+    $business_id = qb_get_current_business_id();
     $quotation_id = intval($_POST['quotation_id'] ?? 0);
     
     $result = $wpdb->delete(
@@ -2785,12 +2798,13 @@ function bntm_ajax_qb_get_quotation() {
     global $wpdb;
     $quotations_table = $wpdb->prefix . 'qb_quotations';
     $items_table = $wpdb->prefix . 'qb_quotation_items';
-    $business_id = get_current_user_id();
+    $business_id = qb_get_current_business_id();
     $quotation_id = intval($_POST['quotation_id'] ?? 0);
     
     $quotation = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $quotations_table WHERE id = %d",
-        $quotation_id, $business_id
+        "SELECT * FROM $quotations_table WHERE id = %d AND business_id = %d",
+        $quotation_id,
+        $business_id
     ));
 
     if ($quotation) {
@@ -2818,8 +2832,18 @@ function bntm_ajax_qb_get_quotation_items() {
 
     global $wpdb;
     $items_table = $wpdb->prefix . 'qb_quotation_items';
+    $quotations_table = $wpdb->prefix . 'qb_quotations';
+    $business_id = qb_get_current_business_id();
     $quotation_id = intval($_POST['quotation_id'] ?? 0);
     
+    $quotation_exists = $wpdb->get_var($wpdb->prepare(
+        "SELECT id FROM $quotations_table WHERE id = %d AND business_id = %d",
+        $quotation_id,
+        $business_id
+    ));
+    if (!$quotation_exists) {
+        wp_send_json_error(['message' => 'Quotation not found']);
+    }
     $items = $wpdb->get_results($wpdb->prepare(
         "SELECT * FROM $items_table WHERE quotation_id = %d",
         $quotation_id
@@ -2840,7 +2864,7 @@ function bntm_ajax_qb_change_quotation_status() {
 
     global $wpdb;
     $quotations_table = $wpdb->prefix . 'qb_quotations';
-    $business_id = get_current_user_id();
+    $business_id = qb_get_current_business_id();
     
     $quotation_id = intval($_POST['quotation_id'] ?? 0);
     $status = sanitize_text_field($_POST['status'] ?? '');
@@ -2879,14 +2903,15 @@ function bntm_ajax_qb_create_quotation_revision() {
     global $wpdb;
     $quotations_table = $wpdb->prefix . 'qb_quotations';
     $items_table = $wpdb->prefix . 'qb_quotation_items';
-    $business_id = get_current_user_id();
+    $business_id = qb_get_current_business_id();
     
     $quotation_id = intval($_POST['quotation_id'] ?? 0);
     
     // Get original quotation
     $original = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $quotations_table WHERE id = %d ",
-        $quotation_id, $business_id
+        "SELECT * FROM $quotations_table WHERE id = %d AND business_id = %d",
+        $quotation_id,
+        $business_id
     ));
     
     if (!$original) {
@@ -2902,9 +2927,9 @@ function bntm_ajax_qb_create_quotation_revision() {
     // Get current max revision number
     $max_revision = $wpdb->get_var($wpdb->prepare(
         "SELECT MAX(CAST(revision_number AS UNSIGNED)) FROM $quotations_table 
-         WHERE quotation_number LIKE %s ",
-        $wpdb->esc_like(substr($original->quotation_number, 0, strrpos($original->quotation_number, '-'))) . '%',
-        $business_id
+         WHERE business_id = %d AND quotation_number LIKE %s ",
+        $business_id,
+        $wpdb->esc_like(substr($original->quotation_number, 0, strrpos($original->quotation_number, '-'))) . '%'
     ));
     
     $new_revision = ($max_revision ?: 0) + 1;
@@ -3003,17 +3028,25 @@ function qb_process_scheduled_invoices() {
 /**
  * Generate Invoice from Schedule
  */
-function qb_generate_invoice_from_schedule($schedule_id) {
+function qb_generate_invoice_from_schedule($schedule_id, $business_id = 0) {
     global $wpdb;
     $schedules_table = $wpdb->prefix . 'qb_billing_schedules';
     $quotations_table = $wpdb->prefix . 'qb_quotations';
     $quotation_items_table = $wpdb->prefix . 'qb_quotation_items';
     $invoices_table = $wpdb->prefix . 'op_invoices';
     
-    $schedule = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $schedules_table WHERE id = %d",
-        $schedule_id
-    ));
+    if ($business_id > 0) {
+        $schedule = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $schedules_table WHERE id = %d AND business_id = %d",
+            $schedule_id,
+            $business_id
+        ));
+    } else {
+        $schedule = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM $schedules_table WHERE id = %d",
+            $schedule_id
+        ));
+    }
     
     if (!$schedule || $schedule->status !== 'active') {
         return ['success' => false, 'message' => 'Schedule not found or inactive'];

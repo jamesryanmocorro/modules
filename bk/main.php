@@ -718,16 +718,32 @@ function bk_generate_remittance_id() {
        return openssl_decrypt($enc, 'AES-256-CBC', substr(hash('sha256', $key), 0, 32), 0, $iv);
    }
 
-   function bk_get_maya_config() {
+   function bk_get_maya_config($business_id = 0) {
+       $business_id = absint($business_id ?: bk_get_request_business_id());
+       $mode = $business_id > 0 ? bk_get_business_setting($business_id, 'bk_maya_mode', '') : '';
+       $public_enc = $business_id > 0 ? bk_get_business_setting($business_id, 'bk_maya_public_key_enc', '') : '';
+       $secret_enc = $business_id > 0 ? bk_get_business_setting($business_id, 'bk_maya_secret_key_enc', '') : '';
+       $public_key = bk_decrypt_key($public_enc);
+       $secret_key = bk_decrypt_key($secret_enc);
+       if ($mode === '') {
+           $mode = get_option('bk_maya_mode', 'sandbox');
+       }
+       if ($public_key === '') {
+           $public_key = bk_decrypt_key(get_option('bk_maya_public_key_enc', ''));
+       }
+       if ($secret_key === '') {
+           $secret_key = bk_decrypt_key(get_option('bk_maya_secret_key_enc', ''));
+       }
        return [
-           'mode' => get_option('bk_maya_mode', 'sandbox'),
-           'public_key' => bk_decrypt_key(get_option('bk_maya_public_key_enc', '')),
-           'secret_key' => bk_decrypt_key(get_option('bk_maya_secret_key_enc', '')),
+           'mode' => in_array($mode, ['sandbox', 'live'], true) ? $mode : 'sandbox',
+           'public_key' => $public_key,
+           'secret_key' => $secret_key,
+           'business_id' => $business_id,
        ];
    }
 
-   function bk_get_paymaya_method() {
-       $config = bk_get_maya_config();
+   function bk_get_paymaya_method($business_id = 0) {
+       $config = bk_get_maya_config($business_id);
        if (empty($config['public_key']) || empty($config['secret_key'])) {
            return null;
        }
@@ -1109,10 +1125,9 @@ function bntm_shortcode_bk_dashboard() {
    }
    
    /* ---------- TAB FUNCTIONS ---------- */
-   function bk_overview_tab($business_id) {
+function bk_overview_tab($business_id) {
        $stats = bk_get_dashboard_stats($business_id);
-       $booking_page = get_page_by_path('book-appointment');
-       $booking_url = $booking_page ? add_query_arg('id', bk_get_business_public_id($business_id), get_permalink($booking_page)) : '';
+       $booking_url = bk_get_booking_url($business_id);
        
        ob_start();
        ?>
@@ -1343,7 +1358,7 @@ function bntm_shortcode_bk_dashboard() {
        $remittance_platform_fee = bk_get_shared_setting('bk_remittance_platform_fee', '0');
        $remittance_frequency_days = bk_get_remittance_frequency_days();
        $public_primary_color = bk_get_setting_with_fallbacks(['bk_public_primary_color'], bk_get_primary_color());
-       $maya_config = bk_get_maya_config();
+       $maya_config = bk_get_maya_config(0);
        $maya_mode = $maya_config['mode'];
        $has_maya_public_key = !empty(get_option('bk_maya_public_key_enc', ''));
        $has_maya_secret_key = !empty(get_option('bk_maya_secret_key_enc', ''));
@@ -3274,6 +3289,13 @@ function bk_render_invoice_table_v2($invoices, $show_business = false, $allow_up
        $amenities = bk_get_business_amenities($business_id);
        $amenity_catalog = bk_get_default_amenities_catalog();
        $custom_amenities = array_values(array_filter($amenities, static fn($item) => !in_array($item, $amenity_catalog, true)));
+       $maya_config = bk_get_maya_config($business_id);
+       $maya_mode = $maya_config['mode'];
+       $business_maya_public = bk_get_business_setting($business_id, 'bk_maya_public_key_enc', '');
+       $business_maya_secret = bk_get_business_setting($business_id, 'bk_maya_secret_key_enc', '');
+       $has_business_maya = !empty($business_maya_public) && !empty($business_maya_secret);
+       $has_effective_maya = !empty($maya_config['public_key']) && !empty($maya_config['secret_key']);
+       $maya_source_label = $has_business_maya ? 'Business-specific' : 'Global fallback';
        $operating_hours = bk_get_business_operating_hours($business_id);
        if (empty($operating_hours)) {
            bntm_bk_initialize_operating_hours();
@@ -3459,6 +3481,30 @@ function bk_render_invoice_table_v2($invoices, $show_business = false, $allow_up
        <div style="padding:0 0 16px;display:flex;gap:12px;align-items:center">
            <button type="submit" class="bntm-btn-primary">Save Settings</button>
            <div id="booking-settings-message" style="flex:1"></div>
+       </div>
+       <div class="bntm-form-section" style="margin-top:12px;">
+           <h4 style="margin:0 0 10px;">Maya Checkout (Per Business)</h4>
+           <p style="color:#6b7280;margin:0 0 14px;">
+               Effective source: <strong><?php echo esc_html($maya_source_label); ?></strong>
+               · Status: <?php echo $has_effective_maya ? '<span style="color:#16a34a;font-weight:700;">Configured</span>' : '<span style="color:#dc2626;font-weight:700;">Not configured</span>'; ?>
+           </p>
+           <div class="bntm-form-group">
+               <label>Maya Mode</label>
+               <select name="maya_mode">
+                   <option value="sandbox" <?php selected($maya_mode, 'sandbox'); ?>>Sandbox</option>
+                   <option value="live" <?php selected($maya_mode, 'live'); ?>>Live</option>
+               </select>
+           </div>
+           <div class="bntm-form-group">
+               <label>Public Key</label>
+               <input type="text" name="maya_public_key" placeholder="pk-..." autocomplete="off" style="font-family:monospace;">
+               <small style="color:#6b7280;">Leave empty to keep current key.</small>
+           </div>
+           <div class="bntm-form-group">
+               <label>Secret Key</label>
+               <input type="password" name="maya_secret_key" placeholder="sk-..." autocomplete="new-password" style="font-family:monospace;">
+               <small style="color:#6b7280;">Leave empty to keep current key.</small>
+           </div>
        </div>
        </form>
     
@@ -3682,9 +3728,15 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
 
             <!-- ── SCROLLABLE DATE STRIP (image ref: horizontal date chips) ── -->
             <div class="bkcal-date-strip-wrap">
+                <button type="button" class="bkcal-strip-nav bkcal-strip-nav--prev" id="bkcal-strip-prev" aria-label="Previous dates">
+                    <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
                 <div class="bkcal-date-strip" id="bkcal-date-strip">
                     <!-- populated by JS -->
                 </div>
+                <button type="button" class="bkcal-strip-nav bkcal-strip-nav--next" id="bkcal-strip-next" aria-label="Next dates">
+                    <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
             </div>
 
             <div class="bkcal-service-filter">
@@ -3846,6 +3898,10 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
 .bkcal-date-strip-wrap{margin-bottom:18px;overflow:hidden;}
 .bkcal-date-strip{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding:4px 2px 8px;}
 .bkcal-date-strip::-webkit-scrollbar{display:none;}
+.bkcal-date-strip-wrap{display:grid;grid-template-columns:32px 1fr 32px;gap:8px;align-items:center;}
+.bkcal-strip-nav{width:32px;height:32px;border-radius:10px;border:1.5px solid #e2e8f0;background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.bkcal-strip-nav svg{width:16px;height:16px;stroke:#334155;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+.bkcal-strip-nav:hover{border-color:var(--p,#3b82f6);}
 .bkcal-date-chip{flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:58px;padding:10px 6px;border-radius:14px;border:1.5px solid #e2e8f0;background:rgba(255,255,255,.8);cursor:pointer;transition:all .18s;gap:2px;}
 .bkcal-date-chip:hover:not(.bkcal-date-chip--disabled):not(.bkcal-date-chip--full){border-color:var(--p);background:rgba(59,130,246,.06);}
 .bkcal-date-chip--selected{background:var(--p)!important;border-color:var(--p)!important;box-shadow:0 4px 16px rgba(59,130,246,.25);}
@@ -3990,6 +4046,10 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
     const slotPanel=$('bk-selected-slot-panel');
     const slotTitle=$('bk-selected-slot-title'),slotMeta=$('bk-selected-slot-meta');
     const footer=$('bkcal-footer'),footerTotal=$('bkcal-footer-total'),cartCount=$('bk-cart-count');
+    const stripPrevBtn=$('bkcal-strip-prev'),stripNextBtn=$('bkcal-strip-next');
+    const pushViewState=(view)=>{try{history.pushState({bkView:view},'',location.href);}catch(e){}};
+    const showCalendarView=()=>{slotsView.style.display='none';calView.style.display='block';calView.style.opacity='1';};
+    const showSlotsView=()=>{calView.style.display='none';slotsView.style.display='block';slotsView.style.opacity='1';};
 
     function formatDate(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
     function bkPrice(n){return currencySymbol+parseFloat(n).toFixed(2);}
@@ -4052,12 +4112,10 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
                 /* transition to slots view */
                 calView.style.opacity='0';
                 setTimeout(()=>{
-                    calView.style.display='none';
-                    slotsView.style.display='block';
-                    slotsView.style.opacity='0';
-                    setTimeout(()=>slotsView.style.opacity='1',10);
+                    showSlotsView();
                     buildDateStrip();
                     loadSlotsTable();
+                    pushViewState('slots');
                 },300);
             });
         });
@@ -4129,7 +4187,14 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
 
     $('back-to-calendar').addEventListener('click',()=>{
         slotsView.style.opacity='0';
-        setTimeout(()=>{slotsView.style.display='none';calView.style.display='block';calView.style.opacity='1';},300);
+        setTimeout(()=>{showCalendarView();},300);
+        try{history.back();}catch(e){}
+    });
+    if(stripPrevBtn) stripPrevBtn.addEventListener('click',()=>{ const s=$('bkcal-date-strip'); if(s) s.scrollBy({left:-220,behavior:'smooth'});});
+    if(stripNextBtn) stripNextBtn.addEventListener('click',()=>{ const s=$('bkcal-date-strip'); if(s) s.scrollBy({left:220,behavior:'smooth'});});
+    window.addEventListener('popstate',()=>{
+        const isSlotsVisible = slotsView && slotsView.style.display !== 'none';
+        if (isSlotsVisible) { showCalendarView(); }
     });
 
     serviceFilter.addEventListener('change',()=>{if(selectedDate) loadSlotsTable();});
@@ -4752,7 +4817,7 @@ function bntm_shortcode_bk_directory() {
                     <div class="bkd-tile-rating">
                         <?php if(!empty($biz['rating'])):?>★ <?php echo number_format($biz['rating'],1);?> <span>(<?php echo $biz['total'];?>)</span><?php else:?><span class="bkd-new">New</span><?php endif;?>
                     </div>
-                    <a class="bkd-tile-book" href="<?php echo esc_url($biz['url']);?>">Book Now</a>
+                    <a class="bkd-tile-book" href="<?php echo esc_url($biz['bookurl']);?>">Book Now</a>
                 </div>
             </div>
         </article>
@@ -5089,9 +5154,15 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
 
             <!-- ── SCROLLABLE DATE STRIP ── -->
             <div class="bkp-date-strip-wrap">
+                <button type="button" class="bkp-strip-nav bkp-strip-nav--prev" id="bkp-strip-prev" aria-label="Previous dates">
+                    <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
                 <div class="bkp-date-strip" id="bkp-date-strip">
                     <!-- populated by JS -->
                 </div>
+                <button type="button" class="bkp-strip-nav bkp-strip-nav--next" id="bkp-strip-next" aria-label="Next dates">
+                    <svg viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
             </div>
 
             <div class="bkp-svc-filter-row">
@@ -5337,6 +5408,10 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
 .bkp-date-strip-wrap{margin-bottom:14px;overflow:hidden;}
 .bkp-date-strip{display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:4px 2px 6px;}
 .bkp-date-strip::-webkit-scrollbar{display:none;}
+.bkp-date-strip-wrap{display:grid;grid-template-columns:32px 1fr 32px;gap:8px;align-items:center;}
+.bkp-strip-nav{width:32px;height:32px;border-radius:10px;border:1.5px solid #e2e8f0;background:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.bkp-strip-nav svg{width:16px;height:16px;stroke:#334155;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;}
+.bkp-strip-nav:hover{border-color:var(--p,#3b82f6);}
 .bkp-date-chip{flex-shrink:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:52px;padding:9px 5px;border-radius:13px;border:1.5px solid #e2e8f0;background:rgba(255,255,255,.9);cursor:pointer;transition:all .18s;gap:2px;}
 .bkp-date-chip:hover:not(.bkp-date-chip--disabled):not(.bkp-date-chip--full){border-color:var(--p);background:rgba(59,130,246,.05);}
 .bkp-date-chip--selected{background:var(--p)!important;border-color:var(--p)!important;box-shadow:0 4px 14px rgba(59,130,246,.22);}
@@ -5485,6 +5560,10 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
     var calPanel=document.getElementById('bkp-cal-panel'),slotsPanel=document.getElementById('bkp-slots-panel');
     var modal=document.getElementById('bkp-booking-modal'),modalOverlay=modal.querySelector('.bkp-modal-overlay');
     var bookNowBtn=document.getElementById('bkp-book-now-btn');
+    var bkpStripPrev=document.getElementById('bkp-strip-prev'),bkpStripNext=document.getElementById('bkp-strip-next');
+    function bkpShowCal(){slotsPanel.style.display='none';calPanel.style.display='block';calPanel.style.opacity='1';}
+    function bkpShowSlots(){calPanel.style.display='none';slotsPanel.style.display='block';slotsPanel.style.opacity='1';}
+    function bkpPushViewState(view){try{history.pushState({bkpView:view},'',location.href);}catch(e){}}
     if(bookNowBtn) bookNowBtn.addEventListener('click', bkpBookNow);
 
     /* ── Footer price ── */
@@ -5532,12 +5611,10 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
                 bkpSelectDate(this.dataset.date);
                 calPanel.style.opacity='0';
                 setTimeout(()=>{
-                    calPanel.style.display='none';
-                    slotsPanel.style.display='block';
-                    slotsPanel.style.opacity='0';
-                    setTimeout(()=>slotsPanel.style.opacity='1',10);
+                    bkpShowSlots();
                     bkpBuildDateStrip();
                     bkpLoadSlots();
+                    bkpPushViewState('slots');
                 },280);
             });
         });
@@ -5634,7 +5711,14 @@ window.formatTime12Hour = window.formatTime12Hour || function(t){if(!t)return'';
     document.getElementById('bkp-next-month').addEventListener('click',()=>{calMonth.setMonth(calMonth.getMonth()+1);bkpRenderCal();bkpLoadAvail();});
     document.getElementById('bkp-back-cal').addEventListener('click',()=>{
         slotsPanel.style.opacity='0';
-        setTimeout(()=>{slotsPanel.style.display='none';calPanel.style.display='block';calPanel.style.opacity='1';},280);
+        setTimeout(()=>{bkpShowCal();},280);
+        try{history.back();}catch(e){}
+    });
+    if(bkpStripPrev) bkpStripPrev.addEventListener('click',()=>{var s=document.getElementById('bkp-date-strip'); if(s) s.scrollBy({left:-220,behavior:'smooth'});});
+    if(bkpStripNext) bkpStripNext.addEventListener('click',()=>{var s=document.getElementById('bkp-date-strip'); if(s) s.scrollBy({left:220,behavior:'smooth'});});
+    window.addEventListener('popstate',function(){
+        var isSlotsVisible = slotsPanel && slotsPanel.style.display !== 'none';
+        if(isSlotsVisible) bkpShowCal();
     });
     document.getElementById('bkp-svc-filter').addEventListener('change',()=>{if(selDate) bkpLoadSlots();});
 
@@ -5938,7 +6022,7 @@ function bntm_shortcode_bk_transaction() {
         <?php endif;?>
     </div>
 
-    <a href="<?php echo get_permalink(get_page_by_path('book-appointment'));?>" class="bktx-again-btn">Book Another Appointment</a>
+    <a href="<?php echo esc_url(bk_get_booking_url($booking->business_id));?>" class="bktx-again-btn">Book Another Appointment</a>
 </div>
 
 <style>
@@ -7859,7 +7943,7 @@ function bntm_ajax_bk_create_admin_booking() {
            wp_send_json_error(['message' => 'Your cart is empty']);
        }
    
-       $op_payment_method = bk_get_paymaya_method();
+       $op_payment_method = bk_get_paymaya_method($business_id);
        if (!$op_payment_method) {
            wp_send_json_error(['message' => 'Maya checkout is not configured.']);
        }
@@ -8125,7 +8209,7 @@ function bntm_ajax_bk_create_admin_booking() {
            wp_send_json_error(['message' => 'One or more time slots in your selected range are no longer available. Please select a different time.']);
        }
        
-       $op_payment_method = bk_get_paymaya_method();
+       $op_payment_method = bk_get_paymaya_method($business_id);
        
        if (!$op_payment_method) {
            wp_send_json_error(['message' => 'Maya checkout is not configured.']);
@@ -8622,7 +8706,7 @@ function bntm_ajax_bk_create_admin_booking() {
            return false;
        }
        
-       $config = bk_get_maya_config();
+       $config = bk_get_maya_config($business_id);
        if (empty($config['public_key']) || empty($config['secret_key'])) {
            error_log("Maya payment settings not found");
            return false;
@@ -8669,7 +8753,7 @@ function bntm_ajax_bk_create_admin_booking() {
    }
    /* ---------- BK CALENDAR PAYMENT METHODS ---------- */
    function bntm_ajax_bk_get_payment_methods() {
-       $method = bk_get_paymaya_method();
+       $method = bk_get_paymaya_method(bk_get_request_business_id());
        $methods = [];
        if ($method) {
            $methods[] = [
@@ -9012,6 +9096,19 @@ function bntm_ajax_bk_create_admin_booking() {
        bk_update_business_setting($business_id, 'bk_remittance_account_name', sanitize_text_field(wp_unslash($_POST['bk_remittance_account_name'] ?? '')));
        bk_update_business_setting($business_id, 'bk_remittance_account_number', sanitize_text_field(wp_unslash($_POST['bk_remittance_account_number'] ?? '')));
        bk_update_business_setting($business_id, 'bk_remittance_bank_notes', sanitize_textarea_field(wp_unslash($_POST['bk_remittance_bank_notes'] ?? '')));
+       $maya_mode = sanitize_text_field(wp_unslash($_POST['maya_mode'] ?? 'sandbox'));
+       if (!in_array($maya_mode, ['sandbox', 'live'], true)) {
+           $maya_mode = 'sandbox';
+       }
+       bk_update_business_setting($business_id, 'bk_maya_mode', $maya_mode);
+       $maya_public_key = sanitize_text_field(wp_unslash($_POST['maya_public_key'] ?? ''));
+       $maya_secret_key = sanitize_text_field(wp_unslash($_POST['maya_secret_key'] ?? ''));
+       if ($maya_public_key !== '') {
+           bk_update_business_setting($business_id, 'bk_maya_public_key_enc', bk_encrypt_key($maya_public_key));
+       }
+       if ($maya_secret_key !== '') {
+           bk_update_business_setting($business_id, 'bk_maya_secret_key_enc', bk_encrypt_key($maya_secret_key));
+       }
        $hours_table = $wpdb->prefix . 'bk_operating_hours';
        foreach ((array) ($_POST['hours'] ?? []) as $hour_id => $hour_data) {
            $hour_id = absint($hour_id);
