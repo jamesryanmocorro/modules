@@ -114,6 +114,18 @@ function bntm_cs_get_tables() {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_business (business_id)
         ) {$charset};",
+
+        'cs_departments' => "CREATE TABLE {$prefix}cs_departments (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            dept_name VARCHAR(150) NOT NULL,
+            dept_code VARCHAR(30) NOT NULL DEFAULT '',
+            status ENUM('active','inactive') NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_business (business_id)
+        ) {$charset};",
     ];
 }
 
@@ -146,6 +158,12 @@ add_action('wp_ajax_cs_save_room',            'bntm_ajax_cs_save_room');
 add_action('wp_ajax_cs_delete_room',          'bntm_ajax_cs_delete_room');
 add_action('wp_ajax_cs_get_section_data',     'bntm_ajax_cs_get_section_data');
 add_action('wp_ajax_cs_bulk_import_section',  'bntm_ajax_cs_bulk_import_section');
+add_action('wp_ajax_cs_save_department',      'bntm_ajax_cs_save_department');
+add_action('wp_ajax_cs_delete_department',    'bntm_ajax_cs_delete_department');
+add_action('wp_ajax_cs_bulk_import_instructors', 'bntm_ajax_cs_bulk_import_instructors');
+add_action('wp_ajax_cs_bulk_import_rooms',       'bntm_ajax_cs_bulk_import_rooms');
+add_action('wp_ajax_cs_bulk_import_departments', 'bntm_ajax_cs_bulk_import_departments');
+add_action('wp_ajax_cs_bulk_import_sections',    'bntm_ajax_cs_bulk_import_sections');
 
 // ─────────────────────────────────────────────────────────────
 // MAIN DASHBOARD SHORTCODE
@@ -166,6 +184,7 @@ function bntm_shortcode_cs() {
         'schedule'    => 'Schedule Entry',
         'instructors' => 'Instructors',
         'rooms'       => 'Rooms',
+        'departments' => 'Departments',
     ];
 
     ob_start();
@@ -173,207 +192,319 @@ function bntm_shortcode_cs() {
     <script>var ajaxurl = '<?php echo esc_js(admin_url('admin-ajax.php')); ?>';</script>
 
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
 
-    /* ── Design Tokens on :root so the modal (outside .cs-wrap) inherits them ── */
+    /* ════════════════════════════════════════════════════
+       DESIGN TOKENS — Deep Navy + Warm Slate Academic Theme
+       ════════════════════════════════════════════════════ */
     :root {
-        --cs-bg:           #f8fbff;
+        --cs-navy:         #0f1e35;
+        --cs-navy-mid:     #172842;
+        --cs-navy-light:   #1e3555;
+        --cs-navy-rim:     #2a4a6e;
+        --cs-amber:        #e8a838;
+        --cs-amber-light:  #f4c46a;
+        --cs-amber-dim:    #c48c24;
         --cs-surface:      #ffffff;
-        --cs-surface-2:    #eaf4ff;
-        --cs-border:       #c4d9ef;
-        --cs-border-soft:  #dbeafc;
-        --cs-blue-dark:    #134b87;
-        --cs-blue-mid:     #1f6bbf;
-        --cs-blue-light:   #69a2e3;
-        --cs-blue-muted:   #8cb1d7;
-        --cs-accent:       #1e6bb8;
-        --cs-accent-hover: #155e9b;
-        --cs-text-primary: #102f53;
-        --cs-text-secondary:#2a4f82;
-        --cs-text-muted:   #5c7ea6;
-        --cs-shadow-sm:    0 1px 3px rgba(20,75,130,.08);
-        --cs-shadow-md:    0 4px 16px rgba(20,75,130,.12);
-        --cs-shadow-lg:    0 20px 60px rgba(20,75,130,.22);
+        --cs-surface-2:    #f5f7fa;
+        --cs-surface-3:    #edf0f5;
+        --cs-border:       #dde3ec;
+        --cs-border-soft:  #eaeff5;
+        --cs-text-primary: #111827;
+        --cs-text-secondary:#374151;
+        --cs-text-muted:   #6b7280;
+        --cs-accent:       #1a4f8a;
+        --cs-accent-hover: #133d6e;
+        --cs-blue-dark:    #0f2d52;
+        --cs-blue-mid:     #1a4f8a;
+        --cs-blue-light:   #3b82c4;
+        --cs-blue-muted:   #7aa8d4;
+        --cs-shadow-sm:    0 1px 3px rgba(15,30,53,.07), 0 1px 2px rgba(15,30,53,.05);
+        --cs-shadow-md:    0 4px 16px rgba(15,30,53,.10), 0 2px 6px rgba(15,30,53,.07);
+        --cs-shadow-lg:    0 20px 50px rgba(15,30,53,.18);
         --cs-radius:       10px;
-        --cs-radius-sm:    6px;
+        --cs-radius-sm:    7px;
         --cs-radius-lg:    14px;
+        --sidebar-w:       220px;
     }
 
-    html, body {
+    html, body { width: 100%; min-height: 100%; margin: 0; padding: 0; }
+
+    /* ── App Shell ──────────────────────────────────────── */
+    .cs-wrap {
         width: 100%;
-        min-height: 100%;
+        min-height: 100vh;
         margin: 0;
         padding: 0;
-    }
-    .cs-wrap {
-        width: 100vw;
-        max-width: 100%;
-        min-height: 100vh;
-        min-height: calc(100vh - 0px);
-        margin: 0;
-        padding: 16px;
-        font-family: 'Source Sans 3', 'Segoe UI', sans-serif;
+        font-family: 'DM Sans', system-ui, sans-serif;
         color: var(--cs-text-primary);
-        background: var(--cs-bg);
+        background: var(--cs-surface-2);
         box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
     }
     .cs-wrap * { box-sizing: border-box; }
+
+    /* ── Top Bar ─────────────────────────────────────────── */
     .cs-topbar {
+        background: var(--cs-navy);
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 10px 14px;
-        margin: -16px -16px 14px;
-        border-radius: var(--cs-radius);
-        background: var(--cs-surface-2);
-        border: 1px solid var(--cs-border);
-        box-shadow: var(--cs-shadow-sm);
+        padding: 0 24px;
+        height: 58px;
+        flex-shrink: 0;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        box-shadow: 0 2px 12px rgba(0,0,0,.25);
     }
     .cs-topbar-brand {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
+        font-family: 'Playfair Display', Georgia, serif;
         font-weight: 700;
-        color: var(--cs-blue-dark);
-        font-size: 26px;
+        color: #ffffff;
+        font-size: 20px;
+        letter-spacing: .3px;
+    }
+    .cs-topbar-brand-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: var(--cs-amber);
+        display: inline-block;
+        margin-bottom: 2px;
     }
     .cs-topbar-icon {
-        width: 32px;
-        height: 32px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 6px;
-        background: transparent;
-        color: var(--cs-blue-mid);
-        font-size: 18px;
+        width: 34px; height: 34px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 8px;
+        background: rgba(232,168,56,.15);
+        color: var(--cs-amber);
     }
     .cs-back-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 8px 14px;
-        border-radius: 8px;
-        background: var(--cs-accent);
-        color: #fff;
-        font-weight: 600;
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 7px 16px;
+        border-radius: 6px;
+        background: rgba(255,255,255,.10);
+        border: 1px solid rgba(255,255,255,.18);
+        color: #e8ecf2;
+        font-family: 'DM Sans', sans-serif;
+        font-size: 13px;
+        font-weight: 500;
         text-decoration: none;
-        box-shadow: 0 1px 8px rgba(20,75,130,.22);
+        transition: all .18s;
     }
     .cs-back-btn:hover {
-        background: var(--cs-accent-hover);
+        background: rgba(255,255,255,.18);
+        color: #ffffff;
     }
 
-    /* ── Tab Navigation ────────────────────────────────── */
-    .cs-tabs {
-        display: flex; flex-wrap: wrap; gap: 12px;
-        justify-content: center;
-        margin-bottom: 24px;
-        background: var(--cs-surface-2);
-        border: 1px solid var(--cs-border);
-        border-radius: var(--cs-radius);
-        padding: 5px;
+    /* ── Layout: Sidebar + Content ─────────────────────── */
+    .cs-layout {
+        display: flex;
+        flex: 1;
+        min-height: 0;
     }
+
+    /* ── Sidebar Navigation ─────────────────────────────── */
+    .cs-sidebar {
+        width: var(--sidebar-w);
+        flex-shrink: 0;
+        background: var(--cs-navy-mid);
+        padding: 20px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-height: calc(100vh - 58px);
+        position: sticky;
+        top: 58px;
+        align-self: flex-start;
+    }
+    .cs-sidebar-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 1.2px;
+        text-transform: uppercase;
+        color: rgba(255,255,255,.32);
+        padding: 4px 10px 8px;
+        margin-top: 8px;
+    }
+    .cs-sidebar-label:first-child { margin-top: 0; }
     .cs-tab-btn {
-        padding: 9px 16px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        width: 100%;
+        padding: 9px 12px;
         border: none;
         background: transparent;
         cursor: pointer;
-        font-family: 'Source Sans 3', sans-serif;
+        font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
-        font-weight: 600;
-        color: var(--cs-text-secondary);
-        border-radius: var(--cs-radius-sm);
-        border-bottom: none;
-        margin-bottom: 0;
-        transition: all .18s ease;
-        letter-spacing: .2px;
+        font-weight: 500;
+        color: rgba(255,255,255,.62);
+        border-radius: 7px;
+        transition: all .16s ease;
+        text-align: left;
+    }
+    .cs-tab-btn .tab-icon {
+        width: 18px; height: 18px;
+        flex-shrink: 0;
+        opacity: .7;
     }
     .cs-tab-btn:hover {
-        color: var(--cs-blue-dark);
-        background: rgba(30,107,184,.10);
-    }
-    .cs-tab-btn.active {
         color: #ffffff;
-        background: var(--cs-accent);
-        box-shadow: 0 2px 8px rgba(30,107,184,.30);
+        background: rgba(255,255,255,.08);
+    }
+    .cs-tab-btn:hover .tab-icon { opacity: 1; }
+    .cs-tab-btn.active {
+        background: var(--cs-amber);
+        color: var(--cs-navy);
+        font-weight: 700;
+        box-shadow: 0 2px 10px rgba(232,168,56,.35);
+    }
+    .cs-tab-btn.active .tab-icon { opacity: 1; }
+
+    /* ── Main Content Area ──────────────────────────────── */
+    .cs-main {
+        flex: 1;
+        padding: 28px 32px;
+        min-width: 0;
+        overflow-x: hidden;
     }
 
-    /* ── Stat Cards ────────────────────────────────────── */
+    /* ── Page Header ─────────────────────────────────────── */
+    .cs-page-header {
+        margin-bottom: 28px;
+    }
+    .cs-page-title {
+        font-family: 'Playfair Display', Georgia, serif;
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--cs-navy);
+        margin: 0 0 4px;
+        line-height: 1.2;
+    }
+    .cs-page-subtitle {
+        font-size: 13.5px;
+        color: var(--cs-text-muted);
+        margin: 0;
+    }
+
+    /* ── Stat Cards ─────────────────────────────────────── */
     .cs-stat-row {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
         gap: 16px;
         margin-bottom: 28px;
     }
     .cs-stat-card {
         background: var(--cs-surface);
-        border: 1px solid var(--cs-border-soft);
+        border: 1px solid var(--cs-border);
         border-radius: var(--cs-radius);
-        padding: 20px 18px;
+        padding: 20px 20px 18px;
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 14px;
         box-shadow: var(--cs-shadow-sm);
-        transition: box-shadow .18s, transform .18s;
+        transition: box-shadow .2s, transform .2s;
+        position: relative;
+        overflow: hidden;
+    }
+    .cs-stat-card::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0;
+        height: 3px;
+        background: linear-gradient(90deg, var(--cs-amber), var(--cs-amber-light));
+        border-radius: 10px 10px 0 0;
     }
     .cs-stat-card:hover {
         box-shadow: var(--cs-shadow-md);
-        transform: translateY(-1px);
+        transform: translateY(-2px);
     }
     .cs-stat-icon {
-        width: 46px; height: 46px;
-        border-radius: var(--cs-radius-sm);
+        width: 44px; height: 44px;
+        border-radius: 10px;
         display: flex; align-items: center; justify-content: center;
         flex-shrink: 0;
+        background: var(--cs-surface-3);
     }
     .cs-stat-label {
-        font-size: 11.5px;
+        font-size: 11px;
         font-weight: 600;
-        letter-spacing: .5px;
+        letter-spacing: .7px;
         text-transform: uppercase;
         color: var(--cs-text-muted);
-        margin-bottom: 4px;
+        margin-bottom: 5px;
     }
     .cs-stat-num {
-        font-family: 'Lora', Georgia, serif;
-        font-size: 28px;
+        font-family: 'Playfair Display', Georgia, serif;
+        font-size: 30px;
         font-weight: 700;
-        color: var(--cs-accent);
+        color: var(--cs-navy);
         line-height: 1;
     }
 
-    /* ── Panels ────────────────────────────────────────── */
+    /* ── Panels ──────────────────────────────────────────── */
     .cs-panel {
         background: var(--cs-surface);
-        border: 1px solid var(--cs-border-soft);
+        border: 1px solid var(--cs-border);
         border-radius: var(--cs-radius);
-        padding: 24px;
+        padding: 24px 26px;
         margin-bottom: 20px;
         box-shadow: var(--cs-shadow-sm);
     }
     .cs-panel h3 {
-        font-family: 'Lora', Georgia, serif;
-        font-size: 16px;
+        font-family: 'Playfair Display', Georgia, serif;
+        font-size: 17px;
         font-weight: 700;
-        color: var(--cs-blue-dark);
-        margin: 0 0 16px;
-        padding-bottom: 12px;
-        border-bottom: 2px solid var(--cs-border-soft);
+        color: var(--cs-navy);
+        margin: 0 0 18px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--cs-border);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .cs-panel h3::before {
+        content: '';
+        display: inline-block;
+        width: 4px; height: 18px;
+        background: var(--cs-amber);
+        border-radius: 3px;
+        flex-shrink: 0;
     }
     .cs-panel h4 {
-        font-family: 'Lora', Georgia, serif;
-        font-size: 14px;
-        font-weight: 600;
+        font-family: 'DM Sans', sans-serif;
+        font-size: 13.5px;
+        font-weight: 700;
         color: var(--cs-blue-mid);
         margin: 0 0 12px;
+        text-transform: uppercase;
+        letter-spacing: .5px;
     }
 
-    /* ── Forms ─────────────────────────────────────────── */
+    /* ── Panel Action Bar ─────────────────────────────────── */
+    .cs-panel-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+    }
+    .cs-panel-actions-right {
+        margin-left: auto;
+        display: flex; gap: 8px;
+    }
+
+    /* ── Forms ───────────────────────────────────────────── */
     .cs-form-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 16px;
+        gap: 18px;
     }
     .cs-field {
         display: flex;
@@ -384,10 +515,10 @@ function bntm_shortcode_cs() {
         display: block;
         font-size: 11px;
         font-weight: 700;
-        color: var(--cs-blue-mid);
-        margin-bottom: 6px;
+        color: var(--cs-text-secondary);
+        margin-bottom: 7px;
         text-transform: uppercase;
-        letter-spacing: .6px;
+        letter-spacing: .7px;
     }
     .cs-field input,
     .cs-field select,
@@ -396,7 +527,7 @@ function bntm_shortcode_cs() {
         padding: 9px 13px;
         border: 1.5px solid var(--cs-border);
         border-radius: var(--cs-radius-sm);
-        font-family: 'Source Sans 3', sans-serif;
+        font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
         color: var(--cs-text-primary);
         background: var(--cs-surface);
@@ -404,107 +535,100 @@ function bntm_shortcode_cs() {
         line-height: 1.4;
     }
     .cs-field input::placeholder,
-    .cs-field textarea::placeholder {
-        color: var(--cs-text-muted);
-    }
+    .cs-field textarea::placeholder { color: #a0aec0; }
     .cs-field input:focus,
     .cs-field select:focus,
     .cs-field textarea:focus {
         outline: none;
-        border-color: var(--cs-accent);
-        box-shadow: 0 0 0 3px rgba(30,107,184,.16);
+        border-color: var(--cs-blue-mid);
+        box-shadow: 0 0 0 3px rgba(26,79,138,.12);
         background: #fff;
     }
     .cs-field.span2 { grid-column: span 2; }
     .cs-field.span3 { grid-column: span 3; }
 
-    /* ── Buttons ────────────────────────────────────────── */
+    /* ── Buttons ──────────────────────────────────────────── */
     .cs-btn {
-        display: inline-flex; align-items: center; gap: 6px;
+        display: inline-flex; align-items: center; gap: 7px;
         padding: 9px 18px;
         border-radius: var(--cs-radius-sm);
-        font-family: 'Source Sans 3', sans-serif;
+        font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
         font-weight: 600;
         border: none;
         cursor: pointer;
         transition: all .16s ease;
         letter-spacing: .1px;
+        white-space: nowrap;
     }
     .cs-btn-primary {
-        background: var(--cs-accent);
+        background: var(--cs-navy);
         color: #ffffff;
-        box-shadow: 0 2px 6px rgba(30,107,184,.25);
+        box-shadow: 0 2px 6px rgba(15,30,53,.22);
     }
     .cs-btn-primary:hover {
-        background: var(--cs-accent-hover);
-        box-shadow: 0 4px 12px rgba(30,107,184,.35);
+        background: var(--cs-navy-light);
+        box-shadow: 0 4px 14px rgba(15,30,53,.30);
+        transform: translateY(-1px);
+    }
+    .cs-btn-amber {
+        background: var(--cs-amber);
+        color: var(--cs-navy);
+        box-shadow: 0 2px 6px rgba(232,168,56,.30);
+    }
+    .cs-btn-amber:hover {
+        background: var(--cs-amber-light);
+        box-shadow: 0 4px 12px rgba(232,168,56,.40);
         transform: translateY(-1px);
     }
     .cs-btn-secondary {
-        background: var(--cs-surface-2);
-        color: var(--cs-blue-dark);
+        background: var(--cs-surface);
+        color: var(--cs-text-secondary);
         border: 1.5px solid var(--cs-border);
     }
     .cs-btn-secondary:hover {
-        background: var(--cs-border-soft);
-        color: var(--cs-blue-mid);
-        border-color: var(--cs-blue-muted);
+        background: var(--cs-surface-3);
+        color: var(--cs-text-primary);
+        border-color: #b8c4d4;
     }
     .cs-btn-danger {
-        background: #ffe9ef;
-        color: #b11f37;
-        border: 1.5px solid #fac0cf;
+        background: #fff1f1;
+        color: #c0192f;
+        border: 1.5px solid #f9c6c6;
     }
     .cs-btn-danger:hover {
-        background: #f8d4da;
-        color: #8d1b2e;
+        background: #ffe0e0;
+        color: #9a1224;
+        border-color: #f4a8a8;
     }
-    .cs-btn-sm { padding: 5px 12px; font-size: 12px; }
-    .cs-btn:disabled { opacity: .50; cursor: not-allowed; transform: none !important; }
+    .cs-btn-sm { padding: 5px 12px; font-size: 12px; gap: 5px; }
+    .cs-btn:disabled { opacity: .48; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
     .cs-btn-group {
         display: flex; gap: 8px; flex-wrap: wrap;
-        margin-top: 20px; align-items: center;
-        padding-top: 16px;
+        margin-top: 22px; align-items: center;
+        padding-top: 18px;
         border-top: 1px solid var(--cs-border-soft);
     }
 
-    /* Explicit button rules repeated for .cs-modal scope (outside .cs-wrap) */
+    /* Modal buttons use the same classes — explicit scope just in case */
     .cs-modal .cs-btn {
-        display: inline-flex; align-items: center; gap: 6px;
+        display: inline-flex; align-items: center; gap: 7px;
         padding: 9px 18px;
-        border-radius: 6px;
-        font-family: 'Source Sans 3', sans-serif;
+        border-radius: var(--cs-radius-sm);
+        font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
         font-weight: 600;
         border: none;
         cursor: pointer;
         transition: all .16s ease;
-        letter-spacing: .1px;
     }
-    .cs-modal .cs-btn-primary {
-        background-color: var(--cs-accent);
-        color: #ffffff;
-        box-shadow: 0 2px 6px rgba(30,107,184,.25);
-    }
-    .cs-modal .cs-btn-primary:hover {
-        background-color: var(--cs-accent-hover);
-        box-shadow: 0 4px 12px rgba(30,107,184,.35);
-        transform: translateY(-1px);
-    }
-    .cs-modal .cs-btn-secondary {
-        background-color: var(--cs-surface-2);
-        color: var(--cs-blue-dark);
-        border: 1.5px solid var(--cs-border);
-    }
-    .cs-modal .cs-btn-secondary:hover {
-        background-color: var(--cs-border-soft);
-        color: var(--cs-blue-mid);
-        border-color: var(--cs-blue-muted);
-    }
-    .cs-modal .cs-btn:disabled { opacity: .50; cursor: not-allowed; transform: none !important; }
+    .cs-modal .cs-btn-primary { background: var(--cs-navy); color: #ffffff; box-shadow: 0 2px 6px rgba(15,30,53,.22); }
+    .cs-modal .cs-btn-primary:hover { background: var(--cs-navy-light); transform: translateY(-1px); }
+    .cs-modal .cs-btn-secondary { background: var(--cs-surface); color: var(--cs-text-secondary); border: 1.5px solid var(--cs-border); }
+    .cs-modal .cs-btn-secondary:hover { background: var(--cs-surface-3); color: var(--cs-text-primary); }
+    .cs-modal .cs-btn:disabled { opacity: .48; cursor: not-allowed; transform: none !important; }
 
-    /* ── Table ──────────────────────────────────────────── */
+    /* ── Table ───────────────────────────────────────────── */
     .cs-table-wrap {
         overflow-x: auto;
         border-radius: var(--cs-radius-sm);
@@ -516,26 +640,29 @@ function bntm_shortcode_cs() {
         font-size: 13.5px;
     }
     .cs-table thead th {
-        background: #e5f2ff;
-        padding: 11px 14px;
+        background: var(--cs-navy);
+        padding: 11px 16px;
         text-align: left;
-        font-size: 11px;
+        font-size: 10.5px;
         font-weight: 700;
-        color: var(--cs-blue-dark);
+        color: rgba(255,255,255,.75);
         text-transform: uppercase;
-        letter-spacing: .6px;
-        border-bottom: 2px solid var(--cs-border);
+        letter-spacing: .8px;
+        border-bottom: none;
     }
+    .cs-table thead th:first-child { border-radius: 7px 0 0 0; }
+    .cs-table thead th:last-child  { border-radius: 0 7px 0 0; }
     .cs-table tbody td {
-        padding: 12px 14px;
+        padding: 12px 16px;
         border-bottom: 1px solid var(--cs-border-soft);
         vertical-align: middle;
         color: var(--cs-text-primary);
     }
     .cs-table tbody tr:last-child td { border-bottom: none; }
     .cs-table tbody tr:hover { background: var(--cs-surface-2); }
+    .cs-table tbody tr:hover td { border-bottom-color: var(--cs-border); }
 
-    /* ── Badges ─────────────────────────────────────────── */
+    /* ── Badges ──────────────────────────────────────────── */
     .cs-badge {
         display: inline-block;
         padding: 3px 10px;
@@ -544,10 +671,10 @@ function bntm_shortcode_cs() {
         font-weight: 600;
         letter-spacing: .2px;
     }
-    .cs-badge-green  { background: #e8f7ff; color: #1f6bbf; border: 1px solid #bcdff8; }
-    .cs-badge-gray   { background: var(--cs-surface-2); color: var(--cs-text-muted); border: 1px solid var(--cs-border); }
-    .cs-badge-blue   { background: #dcefff; color: #134b87; border: 1px solid #a8c4ea; }
-    .cs-badge-yellow { background: #fff6db; color: #8f7b34; border: 1px solid #f0d5a0; }
+    .cs-badge-green  { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+    .cs-badge-gray   { background: var(--cs-surface-3); color: var(--cs-text-muted); border: 1px solid var(--cs-border); }
+    .cs-badge-blue   { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+    .cs-badge-yellow { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
 
     /* ── Notices ─────────────────────────────────────────── */
     .cs-notice {
@@ -557,12 +684,12 @@ function bntm_shortcode_cs() {
         margin: 12px 0;
         font-weight: 500;
     }
-    .cs-notice-success { background: #e7f6ff; color: #136b9f; border-left: 3px solid #1f78bd; }
-    .cs-notice-error   { background: #ffe9ef; color: #a01f37; border-left: 3px solid #d9503e; }
-    .cs-notice-info    { background: #eaf1ff; color: #1f4e8f; border-left: 3px solid #4a6dc2; }
+    .cs-notice-success { background: #f0fdf4; color: #15803d; border-left: 3px solid #22c55e; }
+    .cs-notice-error   { background: #fff1f2; color: #be123c; border-left: 3px solid #f43f5e; }
+    .cs-notice-info    { background: #eff6ff; color: #1d4ed8; border-left: 3px solid #3b82f6; }
 
     /* ── Timetable Grid ──────────────────────────────────── */
-    .cs-grid-wrap { overflow-x: auto; }
+    .cs-grid-wrap { overflow-x: auto; border-radius: var(--cs-radius-sm); }
     .cs-timetable {
         width: 100%;
         border-collapse: collapse;
@@ -570,225 +697,288 @@ function bntm_shortcode_cs() {
         min-width: 780px;
     }
     .cs-timetable th {
-        background: var(--cs-blue-dark);
-        color: #ffffff;
-        padding: 11px 8px;
+        background: var(--cs-navy);
+        color: rgba(255,255,255,.85);
+        padding: 12px 10px;
         text-align: center;
-        font-family: 'Source Sans 3', sans-serif;
-        font-size: 12px;
+        font-family: 'DM Sans', sans-serif;
+        font-size: 11px;
         font-weight: 700;
-        letter-spacing: .6px;
+        letter-spacing: .8px;
         text-transform: uppercase;
-        border: 1px solid var(--cs-blue-mid);
+        border: 1px solid var(--cs-navy-light);
     }
     .cs-timetable td {
         border: 1px solid var(--cs-border);
         padding: 0;
         vertical-align: top;
-        min-width: 100px;
+        min-width: 110px;
     }
     .cs-slot-label {
-        background: var(--cs-surface-2);
-        padding: 10px 12px;
-        font-weight: 700;
-        font-size: 12px;
-        color: var(--cs-blue-mid);
+        background: var(--cs-navy-mid);
+        color: rgba(255,255,255,.75);
+        padding: 10px 14px;
+        font-weight: 600;
+        font-size: 11.5px;
         white-space: nowrap;
         text-align: center;
-        border: 1px solid var(--cs-border);
+        border: 1px solid var(--cs-navy-light);
     }
-    .cs-cell { padding: 7px 9px; min-height: 64px; background: var(--cs-surface); }
+    .cs-cell { padding: 7px 8px; min-height: 68px; background: var(--cs-surface); }
     .cs-cell-entry {
-        background: #e5f1ff;
-        border: 1px solid #a8c9eb;
-        border-radius: var(--cs-radius-sm);
-        padding: 6px 8px;
-        line-height: 1.45;
-        color: var(--cs-blue-dark);
+        background: #eff6ff;
+        border: 1px solid #bfdbfe;
+        border-radius: 6px;
+        padding: 6px 9px;
+        line-height: 1.5;
+        color: #1e3a6e;
+        border-left: 3px solid var(--cs-blue-mid);
     }
     .cs-cell-entry.lab {
-        background: #eaf8f8;
-        border-color: #8fc8d6;
-        color: #136873;
+        background: #f0fdf4;
+        border-color: #bbf7d0;
+        border-left-color: #16a34a;
+        color: #14532d;
     }
     .cs-cell-entry .ce-code { font-weight: 700; font-size: 12px; display: block; }
-    .cs-cell-entry .ce-inst { font-size: 11px; color: var(--cs-text-secondary); }
+    .cs-cell-entry .ce-inst { font-size: 11px; color: #2563eb; opacity: .8; }
     .cs-cell-entry .ce-room { font-size: 11px; color: var(--cs-text-muted); font-style: italic; }
-    .cs-cell-empty { background: var(--cs-bg); }
+    .cs-cell-empty { background: var(--cs-surface-2); }
 
     /* ── Modal ───────────────────────────────────────────── */
     .cs-modal-overlay {
         display: none;
         position: fixed; inset: 0;
-        background: rgba(17,66,118,.50);
+        background: rgba(10,20,40,.55);
+        backdrop-filter: blur(3px);
         z-index: 9999;
         align-items: center;
         justify-content: center;
     }
     .cs-modal-overlay.open { display: flex; }
     .cs-modal {
-        /* Fully opaque — explicit fallback + var in case :root isn't enough */
         background-color: #ffffff;
-        background-color: var(--cs-surface);
-        border-radius: var(--cs-radius-lg, 14px);
-        padding: 30px 32px;
-        width: 92%;
-        max-width: 580px;
+        border-radius: var(--cs-radius-lg);
+        padding: 32px 34px;
+        width: 94%;
+        max-width: 600px;
         max-height: 90vh;
         overflow-y: auto;
-        box-shadow: 0 20px 60px rgba(20,75,130,.30);
+        box-shadow: 0 24px 64px rgba(10,20,40,.30);
         border: 1px solid var(--cs-border);
-        border-color: var(--cs-border, #c4d9ef);
         position: relative;
-        /* Ensure font/color apply to all injected modal content */
-        font-family: 'Source Sans 3', 'Segoe UI', sans-serif;
+        font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
-        color: var(--cs-text-primary, #102f53);
+        color: var(--cs-text-primary);
         box-sizing: border-box;
+        animation: csModalIn .2s ease;
+    }
+    @keyframes csModalIn {
+        from { opacity: 0; transform: translateY(12px) scale(.98); }
+        to   { opacity: 1; transform: translateY(0) scale(1); }
     }
     .cs-modal * { box-sizing: border-box; }
-
-    /* Modal typography */
     .cs-modal-title {
-        font-family: 'Lora', Georgia, serif;
-        font-size: 17px;
+        font-family: 'Playfair Display', Georgia, serif;
+        font-size: 18px;
         font-weight: 700;
-        color: var(--cs-blue-dark, #134b87);
-        margin: 0 0 20px;
-        padding-bottom: 14px;
-        border-bottom: 2px solid var(--cs-border-soft, #dbeafc);
+        color: var(--cs-navy);
+        margin: 0 0 22px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--cs-border);
     }
     .cs-modal-close {
-        position: absolute; top: 18px; right: 20px;
-        background: var(--cs-surface-2, #eaf4ff);
-        border: 1px solid var(--cs-border, #c4d9ef);
+        position: absolute; top: 20px; right: 22px;
+        background: var(--cs-surface-3);
+        border: 1px solid var(--cs-border);
         border-radius: 50%;
-        width: 30px; height: 30px;
+        width: 32px; height: 32px;
         cursor: pointer;
         display: flex; align-items: center; justify-content: center;
-        color: var(--cs-text-muted, #5c7ea6);
+        color: var(--cs-text-muted);
         font-size: 16px;
         transition: all .15s;
     }
     .cs-modal-close:hover {
-        background: var(--cs-border-soft, #dbeafc);
-        color: var(--cs-blue-dark, #134b87);
+        background: var(--cs-border);
+        color: var(--cs-text-primary);
     }
-
-    /* Form fields inside the modal need explicit styling since .cs-wrap scoping may not apply */
     .cs-modal .cs-form-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 16px;
+        gap: 18px;
     }
-    .cs-modal .cs-field {
-        display: flex;
-        flex-direction: column;
-    }
+    .cs-modal .cs-field { display: flex; flex-direction: column; }
     .cs-modal .cs-field label {
         display: block;
-        font-family: 'Source Sans 3', sans-serif;
+        font-family: 'DM Sans', sans-serif;
         font-size: 11px;
         font-weight: 700;
-        color: var(--cs-blue-mid, #1f6bbf);
-        margin-bottom: 6px;
+        color: var(--cs-text-secondary);
+        margin-bottom: 7px;
         text-transform: uppercase;
-        letter-spacing: .6px;
+        letter-spacing: .7px;
     }
     .cs-modal .cs-field input,
     .cs-modal .cs-field select,
     .cs-modal .cs-field textarea {
         width: 100%;
         padding: 9px 13px;
-        border: 1.5px solid var(--cs-border, #c4d9ef);
-        border-radius: 6px;
-        border-radius: var(--cs-radius-sm, 6px);
-        font-family: 'Source Sans 3', sans-serif;
+        border: 1.5px solid var(--cs-border);
+        border-radius: var(--cs-radius-sm);
+        font-family: 'DM Sans', sans-serif;
         font-size: 13.5px;
-        color: var(--cs-text-primary, #102f53);
-        background-color: var(--cs-surface, #ffffff);
+        color: var(--cs-text-primary);
+        background-color: var(--cs-surface);
         transition: border-color .15s, box-shadow .15s;
         line-height: 1.4;
         -webkit-appearance: auto;
         appearance: auto;
     }
     .cs-modal .cs-field input::placeholder,
-    .cs-modal .cs-field textarea::placeholder {
-        color: #9b8878;
-        color: var(--cs-text-muted, #9b8878);
-    }
+    .cs-modal .cs-field textarea::placeholder { color: #a0aec0; }
     .cs-modal .cs-field input:focus,
     .cs-modal .cs-field select:focus,
     .cs-modal .cs-field textarea:focus {
         outline: none;
-        border-color: var(--cs-accent, #1e6bb8);
-        box-shadow: 0 0 0 3px rgba(30,107,184,.14);
+        border-color: var(--cs-blue-mid);
+        box-shadow: 0 0 0 3px rgba(26,79,138,.12);
         background-color: #fff;
     }
-    .cs-modal .cs-field select option {
-        background-color: #fdfaf4;
-        color: #2c1f14;
-    }
+    .cs-modal .cs-field select option { background-color: #fff; color: var(--cs-text-primary); }
     .cs-modal .cs-btn-group {
         display: flex; gap: 8px; flex-wrap: wrap;
-        margin-top: 20px; align-items: center;
-        padding-top: 16px;
-        border-top: 1px solid #e8e0d0;
-        border-top-color: var(--cs-border-soft, #e8e0d0);
+        margin-top: 22px; align-items: center;
+        padding-top: 18px;
+        border-top: 1px solid var(--cs-border-soft);
     }
-    /* Notice inside modal */
     .cs-modal .cs-notice {
-        padding: 11px 15px;
-        border-radius: 6px;
-        font-size: 13.5px;
-        margin: 12px 0;
-        font-weight: 500;
+        padding: 11px 15px; border-radius: 7px;
+        font-size: 13.5px; margin: 12px 0; font-weight: 500;
     }
-    .cs-modal .cs-notice-error   { background: #fdf0ed; color: #82231a; border-left: 3px solid #d9503e; }
-    .cs-modal .cs-notice-success { background: #edf7f1; color: #1a5e35; border-left: 3px solid #3aaa6e; }
-    .cs-modal .cs-notice-info    { background: #edf1f9; color: #2b4480; border-left: 3px solid #4a6dc2; }
+    .cs-modal .cs-notice-error   { background: #fff1f2; color: #be123c; border-left: 3px solid #f43f5e; }
+    .cs-modal .cs-notice-success { background: #f0fdf4; color: #15803d; border-left: 3px solid #22c55e; }
+    .cs-modal .cs-notice-info    { background: #eff6ff; color: #1d4ed8; border-left: 3px solid #3b82f6; }
+
+    /* ── Quick Start Guide ────────────────────────────────── */
+    .cs-quickstart { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+    .cs-quickstart li {
+        display: flex; align-items: flex-start; gap: 12px;
+        padding: 11px 14px;
+        background: var(--cs-surface-2);
+        border-radius: 8px;
+        border: 1px solid var(--cs-border-soft);
+        font-size: 13.5px;
+        color: var(--cs-text-secondary);
+        line-height: 1.5;
+    }
+    .cs-quickstart li .qs-num {
+        width: 22px; height: 22px; border-radius: 50%;
+        background: var(--cs-navy); color: var(--cs-amber);
+        font-size: 11px; font-weight: 700;
+        display: flex; align-items: center; justify-content: center;
+        flex-shrink: 0; margin-top: 1px;
+    }
 
     /* ── Print ───────────────────────────────────────────── */
     @media print {
-        .cs-tabs, .cs-btn-group, .cs-panel:not(.cs-print-target), .cs-filter-bar { display: none !important; }
+        .cs-topbar, .cs-sidebar, .cs-btn-group,
+        .cs-panel:not(.cs-print-target), .cs-filter-bar { display: none !important; }
+        .cs-main { padding: 0 !important; }
+        .cs-layout { display: block !important; }
         .cs-print-target { display: block !important; }
+    }
+
+    /* ── Responsive ──────────────────────────────────────── */
+    @media (max-width: 768px) {
+        .cs-layout { flex-direction: column; }
+        .cs-sidebar {
+            width: 100%; min-height: unset; position: static;
+            flex-direction: row; flex-wrap: wrap;
+            padding: 10px;
+        }
+        .cs-sidebar-label { display: none; }
+        .cs-tab-btn { padding: 7px 11px; font-size: 12.5px; flex: 0 0 auto; }
+        .cs-main { padding: 18px 16px; }
+        .cs-topbar-brand { font-size: 16px; }
     }
     </style>
 
     <div class="cs-wrap">
         <div class="cs-topbar">
             <div class="cs-topbar-brand">
-                <span class="cs-topbar-icon">&#x1F4C5;</span>
+                <span class="cs-topbar-icon">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" stroke-width="2"/><line x1="16" y1="2" x2="16" y2="6" stroke-width="2"/><line x1="8" y1="2" x2="8" y2="6" stroke-width="2"/><line x1="3" y1="10" x2="21" y2="10" stroke-width="2"/></svg>
+                </span>
                 <span>Class Scheduler</span>
+                <span class="cs-topbar-brand-dot"></span>
             </div>
-            <a class="cs-back-btn" href="<?php echo esc_url(admin_url()); ?>">← Back to Dashboard</a>
-        </div>
-        <div class="cs-tabs">
-            <?php foreach ($tabs as $key => $label): ?>
-            <button class="cs-tab-btn <?php echo $active_tab === $key ? 'active' : ''; ?>"
-                    data-tab="<?php echo esc_attr($key); ?>">
-                <?php echo esc_html($label); ?>
-            </button>
-            <?php endforeach; ?>
+            <a class="cs-back-btn" href="<?php echo esc_url(admin_url()); ?>">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                Dashboard
+            </a>
         </div>
 
-        <div id="cs-tab-overview"    class="cs-tab-content" <?php echo $active_tab !== 'overview'    ? 'style="display:none"' : ''; ?>>
-            <?php echo cs_overview_tab($business_id); ?>
-        </div>
-        <div id="cs-tab-timetable"   class="cs-tab-content" <?php echo $active_tab !== 'timetable'   ? 'style="display:none"' : ''; ?>>
-            <?php echo cs_timetable_tab($business_id); ?>
-        </div>
-        <div id="cs-tab-sections"    class="cs-tab-content" <?php echo $active_tab !== 'sections'    ? 'style="display:none"' : ''; ?>>
-            <?php echo cs_sections_tab($business_id); ?>
-        </div>
-        <div id="cs-tab-schedule"    class="cs-tab-content" <?php echo $active_tab !== 'schedule'    ? 'style="display:none"' : ''; ?>>
-            <?php echo cs_schedule_tab($business_id); ?>
-        </div>
-        <div id="cs-tab-instructors" class="cs-tab-content" <?php echo $active_tab !== 'instructors' ? 'style="display:none"' : ''; ?>>
-            <?php echo cs_instructors_tab($business_id); ?>
-        </div>
-        <div id="cs-tab-rooms"       class="cs-tab-content" <?php echo $active_tab !== 'rooms'       ? 'style="display:none"' : ''; ?>>
-            <?php echo cs_rooms_tab($business_id); ?>
+        <div class="cs-layout">
+            <!-- Sidebar Navigation -->
+            <nav class="cs-sidebar">
+                <div class="cs-sidebar-label">Main</div>
+                <button class="cs-tab-btn <?php echo $active_tab === 'overview' ? 'active' : ''; ?>" data-tab="overview">
+                    <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
+                    Overview
+                </button>
+                <button class="cs-tab-btn <?php echo $active_tab === 'timetable' ? 'active' : ''; ?>" data-tab="timetable">
+                    <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" stroke-width="2"/><line x1="3" y1="10" x2="21" y2="10" stroke-width="2"/><line x1="9" y1="4" x2="9" y2="20" stroke-width="2"/></svg>
+                    Timetable View
+                </button>
+
+                <div class="cs-sidebar-label">Manage</div>
+                <button class="cs-tab-btn <?php echo $active_tab === 'sections' ? 'active' : ''; ?>" data-tab="sections">
+                    <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/></svg>
+                    Sections
+                </button>
+                <button class="cs-tab-btn <?php echo $active_tab === 'schedule' ? 'active' : ''; ?>" data-tab="schedule">
+                    <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    Schedule Entry
+                </button>
+                <button class="cs-tab-btn <?php echo $active_tab === 'instructors' ? 'active' : ''; ?>" data-tab="instructors">
+                    <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                    Instructors
+                </button>
+                <button class="cs-tab-btn <?php echo $active_tab === 'rooms' ? 'active' : ''; ?>" data-tab="rooms">
+                    <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                    Rooms
+                </button>
+                <button class="cs-tab-btn <?php echo $active_tab === 'departments' ? 'active' : ''; ?>" data-tab="departments">
+                    <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16M3 21h18M9 7h1m-1 4h1m4-4h1m-1 4h1M5 21V9a2 2 0 012-2h10a2 2 0 012 2v12"/></svg>
+                    Departments
+                </button>
+            </nav>
+
+            <!-- Main Content -->
+            <div class="cs-main">
+                <div id="cs-tab-overview"    class="cs-tab-content" <?php echo $active_tab !== 'overview'    ? 'style="display:none"' : ''; ?>>
+                    <?php echo cs_overview_tab($business_id); ?>
+                </div>
+                <div id="cs-tab-timetable"   class="cs-tab-content" <?php echo $active_tab !== 'timetable'   ? 'style="display:none"' : ''; ?>>
+                    <?php echo cs_timetable_tab($business_id); ?>
+                </div>
+                <div id="cs-tab-sections"    class="cs-tab-content" <?php echo $active_tab !== 'sections'    ? 'style="display:none"' : ''; ?>>
+                    <?php echo cs_sections_tab($business_id); ?>
+                </div>
+                <div id="cs-tab-schedule"    class="cs-tab-content" <?php echo $active_tab !== 'schedule'    ? 'style="display:none"' : ''; ?>>
+                    <?php echo cs_schedule_tab($business_id); ?>
+                </div>
+                <div id="cs-tab-instructors" class="cs-tab-content" <?php echo $active_tab !== 'instructors' ? 'style="display:none"' : ''; ?>>
+                    <?php echo cs_instructors_tab($business_id); ?>
+                </div>
+                <div id="cs-tab-rooms"       class="cs-tab-content" <?php echo $active_tab !== 'rooms'       ? 'style="display:none"' : ''; ?>>
+                    <?php echo cs_rooms_tab($business_id); ?>
+                </div>
+                <div id="cs-tab-departments" class="cs-tab-content" <?php echo $active_tab !== 'departments' ? 'style="display:none"' : ''; ?>>
+                    <?php echo cs_departments_tab($business_id); ?>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -864,8 +1054,8 @@ function cs_overview_tab($business_id) {
     ?>
     <div class="cs-stat-row">
         <div class="cs-stat-card">
-            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#1e6bb8,#85b5ef)">
-                <svg width="22" height="22" fill="none" stroke="#ffffff" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/></svg>
+            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#0f1e35,#1e3555)">
+                <svg width="22" height="22" fill="none" stroke="#e8a838" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0"/></svg>
             </div>
             <div>
                 <div class="cs-stat-label">Active Sections</div>
@@ -873,8 +1063,8 @@ function cs_overview_tab($business_id) {
             </div>
         </div>
         <div class="cs-stat-card">
-            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#134b87,#4f89c6)">
-                <svg width="22" height="22" fill="none" stroke="#ffffff" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" stroke-width="2"/><line x1="16" y1="2" x2="16" y2="6" stroke-width="2"/><line x1="8" y1="2" x2="8" y2="6" stroke-width="2"/><line x1="3" y1="10" x2="21" y2="10" stroke-width="2"/></svg>
+            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#172842,#2a4a6e)">
+                <svg width="22" height="22" fill="none" stroke="#e8a838" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" stroke-width="2"/><line x1="16" y1="2" x2="16" y2="6" stroke-width="2"/><line x1="8" y1="2" x2="8" y2="6" stroke-width="2"/><line x1="3" y1="10" x2="21" y2="10" stroke-width="2"/></svg>
             </div>
             <div>
                 <div class="cs-stat-label">Schedule Entries</div>
@@ -882,8 +1072,8 @@ function cs_overview_tab($business_id) {
             </div>
         </div>
         <div class="cs-stat-card">
-            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#1e6bb8,#8ec5f7)">
-                <svg width="22" height="22" fill="none" stroke="#ffffff" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#0f1e35,#1a4f8a)">
+                <svg width="22" height="22" fill="none" stroke="#e8a838" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
             </div>
             <div>
                 <div class="cs-stat-label">Instructors</div>
@@ -891,8 +1081,8 @@ function cs_overview_tab($business_id) {
             </div>
         </div>
         <div class="cs-stat-card">
-            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#2b689e,#7eb1ef)">
-                <svg width="22" height="22" fill="none" stroke="#ffffff" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+            <div class="cs-stat-icon" style="background:linear-gradient(135deg,#172842,#1e3555)">
+                <svg width="22" height="22" fill="none" stroke="#e8a838" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
             </div>
             <div>
                 <div class="cs-stat-label">Rooms</div>
@@ -903,12 +1093,13 @@ function cs_overview_tab($business_id) {
 
     <div class="cs-panel">
         <h3>Quick Start Guide</h3>
-        <ol style="margin:0;padding-left:20px;line-height:2;font-size:13.5px;color:#000000;">
-            <li>Go to <strong>Instructors</strong> and add your faculty members.</li>
-            <li>Go to <strong>Rooms</strong> and add your classrooms/labs.</li>
-            <li>Go to <strong>Sections</strong> and create your class groups (e.g. CHE3 A1).</li>
-            <li>Go to <strong>Schedule Entry</strong> to assign subjects to time slots.</li>
-            <li>View the complete timetable grid in <strong>Timetable View</strong>.</li>
+        <ol class="cs-quickstart">
+            <li><span class="qs-num">1</span><span>Go to <strong>Departments</strong> and add your college or department units (e.g. College of Engineering).</span></li>
+            <li><span class="qs-num">2</span><span>Go to <strong>Rooms</strong> and add your classrooms and laboratories.</span></li>
+            <li><span class="qs-num">3</span><span>Go to <strong>Sections</strong> and create your class groups (e.g. CHE3 A1).</span></li>
+            <li><span class="qs-num">4</span><span>Go to <strong>Schedule Entry</strong> to assign subjects, rooms, and time slots to each section.</span></li>
+            <li><span class="qs-num">5</span><span>Go to <strong>Instructors</strong> and add your faculty members, assigning them to their department.</span></li>
+            <li><span class="qs-num">6</span><span>View the complete timetable grid in <strong>Timetable View</strong>.</span></li>
         </ol>
     </div>
 
@@ -1210,6 +1401,10 @@ function cs_sections_tab($business_id) {
             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add Section
         </button>
+        <button class="cs-btn cs-btn-secondary" id="cs-bulk-section-btn" style="margin-left:8px;">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            Bulk Import
+        </button>
         <div id="cs-section-notice"></div>
     </div>
 
@@ -1366,6 +1561,37 @@ function cs_sections_tab($business_id) {
                 csAjax(fd).then(json => {
                     if (json.success) location.reload();
                     else csNotice(document.getElementById('cs-section-notice'), json.data.message, 'error');
+                });
+            });
+        });
+
+        // ── Bulk Import Sections ──
+        document.getElementById('cs-bulk-section-btn').addEventListener('click', function () {
+            csOpenModal(`
+                <h2 class="cs-modal-title">Bulk Import Sections</h2>
+                <p style="font-size:13px;color:#5c7ea6;margin:0 0 12px;">Paste CSV data below. Each row: <code>course_code, year_level, block, academic_year, semester</code><br>Example: <code>CHE, 3, A1, 2024-2025, First</code></p>
+                <div class="cs-field"><label>CSV Data</label><textarea id="bulk-sec-csv" rows="10" placeholder="CHE, 3, A1, 2024-2025, First&#10;IT, 2, B2, 2024-2025, Second" style="font-family:monospace;font-size:12.5px;"></textarea></div>
+                <div id="bulk-sec-notice"></div>
+                <div class="cs-btn-group">
+                    <button class="cs-btn cs-btn-primary" id="bulk-sec-save">Import</button>
+                    <button class="cs-btn cs-btn-secondary" onclick="csCloseModal()">Cancel</button>
+                </div>`);
+            document.getElementById('bulk-sec-save').addEventListener('click', function () {
+                const btn = this;
+                const lines = document.getElementById('bulk-sec-csv').value.trim().split('\n').filter(l => l.trim());
+                if (!lines.length) { csNotice(document.getElementById('bulk-sec-notice'), 'No data entered.', 'error'); return; }
+                const rows = lines.map(l => {
+                    const p = l.split(',').map(s => s.trim());
+                    return { course_code: p[0]||'', year_level: p[1]||'1', block: p[2]||'', academic_year: p[3]||'', semester: p[4]||'First' };
+                });
+                btn.disabled = true; btn.textContent = 'Importing...';
+                const fd = new FormData();
+                fd.append('action', 'cs_bulk_import_sections');
+                fd.append('nonce', nonce);
+                fd.append('rows', JSON.stringify(rows));
+                csAjax(fd).then(json => {
+                    if (json.success) { csNotice(document.getElementById('bulk-sec-notice'), json.data.message, 'success'); setTimeout(() => location.reload(), 1200); }
+                    else { csNotice(document.getElementById('bulk-sec-notice'), json.data.message, 'error'); btn.disabled=false; btn.textContent='Import'; }
                 });
             });
         });
@@ -1555,14 +1781,14 @@ function cs_schedule_tab($business_id) {
             return `
             <style>
             .ef-day-picker{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;}
-            .ef-day-label{display:inline-flex;align-items:center;gap:5px;padding:5px 10px;border:1.5px solid var(--cs-border,#c4d9ef);border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;color:var(--cs-text-secondary,#2a4f82);transition:all .15s;user-select:none;}
-            .ef-day-label:hover{border-color:var(--cs-accent,#1e6bb8);color:var(--cs-accent,#1e6bb8);}
+            .ef-day-label{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border:1.5px solid var(--cs-border,#dde3ec);border-radius:20px;cursor:pointer;font-size:12.5px;font-weight:600;color:var(--cs-text-secondary,#374151);transition:all .15s;user-select:none;}
+            .ef-day-label:hover{border-color:var(--cs-navy,#0f1e35);color:var(--cs-navy,#0f1e35);}
             .ef-day-label input{display:none;}
-            .ef-day-label:has(input:checked){background:var(--cs-accent,#1e6bb8);border-color:var(--cs-accent,#1e6bb8);color:#fff;}
+            .ef-day-label:has(input:checked){background:var(--cs-navy,#0f1e35);border-color:var(--cs-navy,#0f1e35);color:var(--cs-amber,#e8a838);}
             .ef-time-row{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin-top:4px;}
-            .ef-time-sep{font-size:13px;font-weight:700;color:var(--cs-text-muted,#5c7ea6);text-align:center;}
-            .ef-time-row input[type=time]{padding:8px 10px;border:1.5px solid var(--cs-border,#c4d9ef);border-radius:6px;font-family:inherit;font-size:13.5px;color:var(--cs-text-primary,#102f53);background:#fff;width:100%;}
-            .ef-time-row input[type=time]:focus{outline:none;border-color:var(--cs-accent,#1e6bb8);box-shadow:0 0 0 3px rgba(30,107,184,.14);}
+            .ef-time-sep{font-size:13px;font-weight:700;color:var(--cs-text-muted,#6b7280);text-align:center;}
+            .ef-time-row input[type=time]{padding:8px 10px;border:1.5px solid var(--cs-border,#dde3ec);border-radius:7px;font-family:inherit;font-size:13.5px;color:var(--cs-text-primary,#111827);background:#fff;width:100%;}
+            .ef-time-row input[type=time]:focus{outline:none;border-color:var(--cs-blue-mid,#1a4f8a);box-shadow:0 0 0 3px rgba(26,79,138,.12);}
             </style>
             <h2 class="cs-modal-title">${data.id ? 'Edit Entry' : 'Add Schedule Entry'}</h2>
             <div class="cs-form-grid">
@@ -1737,6 +1963,11 @@ function cs_instructors_tab($business_id) {
         $business_id
     ));
 
+    $departments = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$wpdb->prefix}cs_departments WHERE business_id=%d AND status='active' ORDER BY dept_name ASC",
+        $business_id
+    ));
+
     $nonce = wp_create_nonce('cs_instructors_nonce');
 
     ob_start();
@@ -1746,6 +1977,10 @@ function cs_instructors_tab($business_id) {
         <button class="cs-btn cs-btn-primary" id="cs-add-inst-btn">
             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add Instructor
+        </button>
+        <button class="cs-btn cs-btn-secondary" id="cs-bulk-inst-btn" style="margin-left:8px;">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            Bulk Import
         </button>
         <div id="cs-inst-notice"></div>
     </div>
@@ -1786,9 +2021,16 @@ function cs_instructors_tab($business_id) {
     <script>
     (function () {
         const nonce = '<?php echo $nonce; ?>';
+        const deptOptions = <?php echo json_encode(array_map(function($d){ return ['id'=>$d->id,'name'=>$d->dept_name,'code'=>$d->dept_code]; }, $departments)); ?>;
 
         function instForm(data) {
             data = data || {};
+            const deptSelect = deptOptions.length
+                ? `<select id="if-dept">
+                    <option value="">— Select Department —</option>
+                    ${deptOptions.map(d=>`<option value="${d.name.replace(/"/g,'&quot;')}" ${data.dept===d.name?'selected':''}>${d.name}${d.code?' ('+d.code+')':''}</option>`).join('')}
+                   </select>`
+                : `<input type="text" id="if-dept" value="${data.dept||''}" placeholder="No departments added yet">`;
             return `
             <h2 class="cs-modal-title">${data.id ? 'Edit Instructor' : 'Add Instructor'}</h2>
             <div class="cs-form-grid">
@@ -1802,7 +2044,7 @@ function cs_instructors_tab($business_id) {
                 </div>
                 <div class="cs-field">
                     <label>Department</label>
-                    <input type="text" id="if-dept" value="${data.dept||''}" placeholder="Optional">
+                    ${deptSelect}
                 </div>
                 ${data.id ? `<div class="cs-field">
                     <label>Status</label>
@@ -1864,6 +2106,37 @@ function cs_instructors_tab($business_id) {
                 });
             });
         });
+
+        // ── Bulk Import Instructors ──
+        document.getElementById('cs-bulk-inst-btn').addEventListener('click', function () {
+            csOpenModal(`
+                <h2 class="cs-modal-title">Bulk Import Instructors</h2>
+                <p style="font-size:13px;color:#5c7ea6;margin:0 0 12px;">Paste CSV data below. Each row: <code>initials, full_name, department</code><br>Example: <code>EORTIZ, Eduardo Ortiz, College of Engineering</code></p>
+                <div class="cs-field"><label>CSV Data</label><textarea id="bulk-inst-csv" rows="10" placeholder="EORTIZ, Eduardo Ortiz, College of Engineering&#10;JSMITH, Jane Smith, College of Arts" style="font-family:monospace;font-size:12.5px;"></textarea></div>
+                <div id="bulk-inst-notice"></div>
+                <div class="cs-btn-group">
+                    <button class="cs-btn cs-btn-primary" id="bulk-inst-save">Import</button>
+                    <button class="cs-btn cs-btn-secondary" onclick="csCloseModal()">Cancel</button>
+                </div>`);
+            document.getElementById('bulk-inst-save').addEventListener('click', function () {
+                const btn = this;
+                const lines = document.getElementById('bulk-inst-csv').value.trim().split('\n').filter(l => l.trim());
+                if (!lines.length) { csNotice(document.getElementById('bulk-inst-notice'), 'No data entered.', 'error'); return; }
+                const rows = lines.map(l => {
+                    const p = l.split(',').map(s => s.trim());
+                    return { initials: p[0]||'', full_name: p[1]||'', department: p.slice(2).join(',').trim() };
+                });
+                btn.disabled = true; btn.textContent = 'Importing...';
+                const fd = new FormData();
+                fd.append('action', 'cs_bulk_import_instructors');
+                fd.append('nonce', nonce);
+                fd.append('rows', JSON.stringify(rows));
+                csAjax(fd).then(json => {
+                    if (json.success) { csNotice(document.getElementById('bulk-inst-notice'), json.data.message, 'success'); setTimeout(() => location.reload(), 1200); }
+                    else { csNotice(document.getElementById('bulk-inst-notice'), json.data.message, 'error'); btn.disabled=false; btn.textContent='Import'; }
+                });
+            });
+        });
     })();
     </script>
     <?php
@@ -1891,6 +2164,10 @@ function cs_rooms_tab($business_id) {
         <button class="cs-btn cs-btn-primary" id="cs-add-room-btn">
             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
             Add Room
+        </button>
+        <button class="cs-btn cs-btn-secondary" id="cs-bulk-room-btn" style="margin-left:8px;">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            Bulk Import
         </button>
         <div id="cs-room-notice"></div>
     </div>
@@ -2017,6 +2294,37 @@ function cs_rooms_tab($business_id) {
                 csAjax(fd).then(json => {
                     if (json.success) location.reload();
                     else csNotice(document.getElementById('cs-room-notice'), json.data.message, 'error');
+                });
+            });
+        });
+
+        // ── Bulk Import Rooms ──
+        document.getElementById('cs-bulk-room-btn').addEventListener('click', function () {
+            csOpenModal(`
+                <h2 class="cs-modal-title">Bulk Import Rooms</h2>
+                <p style="font-size:13px;color:#5c7ea6;margin:0 0 12px;">Paste CSV data below. Each row: <code>room_code, building, capacity, room_type</code><br>Room type: <code>lecture</code>, <code>lab</code>, or <code>both</code><br>Example: <code>E207, Engineering Building, 40, lecture</code></p>
+                <div class="cs-field"><label>CSV Data</label><textarea id="bulk-room-csv" rows="10" placeholder="E207, Engineering Building, 40, lecture&#10;LAB1, Science Hall, 30, lab" style="font-family:monospace;font-size:12.5px;"></textarea></div>
+                <div id="bulk-room-notice"></div>
+                <div class="cs-btn-group">
+                    <button class="cs-btn cs-btn-primary" id="bulk-room-save">Import</button>
+                    <button class="cs-btn cs-btn-secondary" onclick="csCloseModal()">Cancel</button>
+                </div>`);
+            document.getElementById('bulk-room-save').addEventListener('click', function () {
+                const btn = this;
+                const lines = document.getElementById('bulk-room-csv').value.trim().split('\n').filter(l => l.trim());
+                if (!lines.length) { csNotice(document.getElementById('bulk-room-notice'), 'No data entered.', 'error'); return; }
+                const rows = lines.map(l => {
+                    const p = l.split(',').map(s => s.trim());
+                    return { room_code: p[0]||'', building: p[1]||'', capacity: p[2]||'40', room_type: p[3]||'lecture' };
+                });
+                btn.disabled = true; btn.textContent = 'Importing...';
+                const fd = new FormData();
+                fd.append('action', 'cs_bulk_import_rooms');
+                fd.append('nonce', nonce);
+                fd.append('rows', JSON.stringify(rows));
+                csAjax(fd).then(json => {
+                    if (json.success) { csNotice(document.getElementById('bulk-room-notice'), json.data.message, 'success'); setTimeout(() => location.reload(), 1200); }
+                    else { csNotice(document.getElementById('bulk-room-notice'), json.data.message, 'error'); btn.disabled=false; btn.textContent='Import'; }
                 });
             });
         });
@@ -2358,6 +2666,471 @@ function bntm_ajax_cs_delete_room() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// TAB: DEPARTMENTS
+// ─────────────────────────────────────────────────────────────
+
+function cs_departments_tab($business_id) {
+    global $wpdb;
+
+    $departments = $wpdb->get_results($wpdb->prepare(
+        "SELECT * FROM {$wpdb->prefix}cs_departments WHERE business_id=%d ORDER BY dept_name ASC",
+        $business_id
+    ));
+
+    $nonce = wp_create_nonce('cs_departments_nonce');
+
+    ob_start();
+    ?>
+    <div class="cs-panel">
+        <h3>Departments</h3>
+        <button class="cs-btn cs-btn-primary" id="cs-add-dept-btn">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            Add Department
+        </button>
+        <button class="cs-btn cs-btn-secondary" id="cs-bulk-dept-btn" style="margin-left:8px;">
+            <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
+            Bulk Import
+        </button>
+        <div id="cs-dept-notice"></div>
+    </div>
+
+    <div class="cs-panel">
+        <?php if (empty($departments)): ?>
+        <p style="color:#5c7ea6;font-size:13.5px;">No departments yet. Add a department to start assigning instructors.</p>
+        <?php else: ?>
+        <div class="cs-table-wrap">
+        <table class="cs-table">
+            <thead>
+                <tr><th>Department Name</th><th>Code</th><th>Instructors</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+                <?php foreach ($departments as $dept):
+                    $inst_count = (int) $wpdb->get_var($wpdb->prepare(
+                        "SELECT COUNT(*) FROM {$wpdb->prefix}cs_instructors WHERE business_id=%d AND department=%s AND status='active'",
+                        $business_id, $dept->dept_name
+                    ));
+                ?>
+                <tr>
+                    <td><strong><?php echo esc_html($dept->dept_name); ?></strong></td>
+                    <td><?php echo esc_html($dept->dept_code ?: '—'); ?></td>
+                    <td><span class="cs-badge cs-badge-blue"><?php echo $inst_count; ?></span></td>
+                    <td><span class="cs-badge <?php echo $dept->status === 'active' ? 'cs-badge-green' : 'cs-badge-gray'; ?>"><?php echo ucfirst($dept->status); ?></span></td>
+                    <td>
+                        <button class="cs-btn cs-btn-secondary cs-btn-sm cs-edit-dept"
+                            data-id="<?php echo $dept->id; ?>"
+                            data-name="<?php echo esc_attr($dept->dept_name); ?>"
+                            data-code="<?php echo esc_attr($dept->dept_code); ?>"
+                            data-status="<?php echo esc_attr($dept->status); ?>">Edit</button>
+                        <button class="cs-btn cs-btn-danger cs-btn-sm cs-del-dept" data-id="<?php echo $dept->id; ?>" data-name="<?php echo esc_attr($dept->dept_name); ?>" style="margin-left:4px;">Delete</button>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+        </div>
+        <?php endif; ?>
+    </div>
+
+    <script>
+    (function () {
+        const nonce = '<?php echo $nonce; ?>';
+
+        function deptForm(data) {
+            data = data || {};
+            return `
+            <h2 class="cs-modal-title">${data.id ? 'Edit Department' : 'Add Department'}</h2>
+            <div class="cs-form-grid">
+                <div class="cs-field">
+                    <label>Department Name *</label>
+                    <input type="text" id="df-name" value="${data.name||''}" placeholder="e.g. College of Engineering" maxlength="150">
+                </div>
+                <div class="cs-field">
+                    <label>Department Code <small style="color:#5c7ea6;">(optional)</small></label>
+                    <input type="text" id="df-code" value="${data.code||''}" placeholder="e.g. COE" maxlength="30">
+                </div>
+                ${data.id ? `<div class="cs-field">
+                    <label>Status</label>
+                    <select id="df-status">
+                        <option value="active"   ${data.status==='active'?'selected':''}>Active</option>
+                        <option value="inactive" ${data.status==='inactive'?'selected':''}>Inactive</option>
+                    </select>
+                </div>` : ''}
+            </div>
+            <div id="df-notice"></div>
+            <div class="cs-btn-group">
+                <button class="cs-btn cs-btn-primary" id="df-save">Save Department</button>
+                <button class="cs-btn cs-btn-secondary" onclick="csCloseModal()">Cancel</button>
+            </div>
+            <input type="hidden" id="df-id" value="${data.id||0}">`;
+        }
+
+        function bindDeptForm() {
+            document.getElementById('df-save').addEventListener('click', function () {
+                const btn = this;
+                const fd = new FormData();
+                fd.append('action', 'cs_save_department');
+                fd.append('nonce', nonce);
+                fd.append('id', document.getElementById('df-id').value);
+                fd.append('dept_name', document.getElementById('df-name').value.trim());
+                fd.append('dept_code', document.getElementById('df-code').value.trim().toUpperCase());
+                const statusEl = document.getElementById('df-status');
+                if (statusEl) fd.append('status', statusEl.value);
+                btn.disabled = true; btn.textContent = 'Saving...';
+                csAjax(fd).then(json => {
+                    if (json.success) location.reload();
+                    else { csNotice(document.getElementById('df-notice'), json.data.message, 'error'); btn.disabled=false; btn.textContent='Save Department'; }
+                });
+            });
+        }
+
+        document.getElementById('cs-add-dept-btn').addEventListener('click', function () {
+            csOpenModal(deptForm()); bindDeptForm();
+        });
+
+        document.querySelectorAll('.cs-edit-dept').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                csOpenModal(deptForm({ id: this.dataset.id, name: this.dataset.name, code: this.dataset.code, status: this.dataset.status }));
+                bindDeptForm();
+            });
+        });
+
+        document.querySelectorAll('.cs-del-dept').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                if (!confirm('Delete department "' + this.dataset.name + '"? Instructors assigned to this department will not be deleted.')) return;
+                const fd = new FormData();
+                fd.append('action', 'cs_delete_department');
+                fd.append('nonce', nonce);
+                fd.append('id', this.dataset.id);
+                csAjax(fd).then(json => {
+                    if (json.success) location.reload();
+                    else csNotice(document.getElementById('cs-dept-notice'), json.data.message, 'error');
+                });
+            });
+        });
+
+        // ── Bulk Import Departments ──
+        document.getElementById('cs-bulk-dept-btn').addEventListener('click', function () {
+            csOpenModal(`
+                <h2 class="cs-modal-title">Bulk Import Departments</h2>
+                <p style="font-size:13px;color:#5c7ea6;margin:0 0 12px;">Paste CSV data below. Each row: <code>dept_name, dept_code</code><br>Example: <code>College of Engineering, COE</code></p>
+                <div class="cs-field"><label>CSV Data</label><textarea id="bulk-dept-csv" rows="10" placeholder="College of Engineering, COE&#10;College of Arts and Sciences, CAS" style="font-family:monospace;font-size:12.5px;"></textarea></div>
+                <div id="bulk-dept-notice"></div>
+                <div class="cs-btn-group">
+                    <button class="cs-btn cs-btn-primary" id="bulk-dept-save">Import</button>
+                    <button class="cs-btn cs-btn-secondary" onclick="csCloseModal()">Cancel</button>
+                </div>`);
+            document.getElementById('bulk-dept-save').addEventListener('click', function () {
+                const btn = this;
+                const lines = document.getElementById('bulk-dept-csv').value.trim().split('\n').filter(l => l.trim());
+                if (!lines.length) { csNotice(document.getElementById('bulk-dept-notice'), 'No data entered.', 'error'); return; }
+                const rows = lines.map(l => {
+                    const idx = l.indexOf(',');
+                    const name = idx >= 0 ? l.substring(0, idx).trim() : l.trim();
+                    const code = idx >= 0 ? l.substring(idx + 1).trim() : '';
+                    return { dept_name: name, dept_code: code };
+                });
+                btn.disabled = true; btn.textContent = 'Importing...';
+                const fd = new FormData();
+                fd.append('action', 'cs_bulk_import_departments');
+                fd.append('nonce', nonce);
+                fd.append('rows', JSON.stringify(rows));
+                csAjax(fd).then(json => {
+                    if (json.success) { csNotice(document.getElementById('bulk-dept-notice'), json.data.message, 'success'); setTimeout(() => location.reload(), 1200); }
+                    else { csNotice(document.getElementById('bulk-dept-notice'), json.data.message, 'error'); btn.disabled=false; btn.textContent='Import'; }
+                });
+            });
+        });
+    })();
+    </script>
+    <?php
+    return ob_get_clean();
+}
+
+// ─────────────────────────────────────────────────────────────
+// AJAX: DEPARTMENTS
+// ─────────────────────────────────────────────────────────────
+
+function bntm_ajax_cs_save_department() {
+    check_ajax_referer('cs_departments_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+
+    // Ensure the departments table exists (handles installs before this feature was added)
+    $table = $wpdb->prefix . 'cs_departments';
+    if ($wpdb->get_var("SHOW TABLES LIKE '{$table}'") !== $table) {
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        $charset = $wpdb->get_charset_collate();
+        dbDelta("CREATE TABLE {$table} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            dept_name VARCHAR(150) NOT NULL,
+            dept_code VARCHAR(30) NOT NULL DEFAULT '',
+            status ENUM('active','inactive') NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_business (business_id)
+        ) {$charset};");
+    }
+    $business_id = get_current_user_id();
+    $id          = intval($_POST['id']);
+    $dept_name   = sanitize_text_field($_POST['dept_name'] ?? '');
+    $dept_code   = strtoupper(sanitize_text_field($_POST['dept_code'] ?? ''));
+    $status      = sanitize_text_field($_POST['status'] ?? 'active');
+
+    if (empty($dept_name)) {
+        wp_send_json_error(['message' => 'Department name is required.']);
+    }
+
+    $table = $wpdb->prefix . 'cs_departments';
+
+    if ($id > 0) {
+        $result = $wpdb->update($table,
+            compact('dept_name','dept_code','status'),
+            ['id' => $id, 'business_id' => $business_id],
+            ['%s','%s','%s'], ['%d','%d']
+        );
+        if ($result !== false) wp_send_json_success(['message' => 'Department updated.']);
+        else wp_send_json_error(['message' => 'Failed to update department.']);
+    } else {
+        $rand_id = function_exists('bntm_rand_id') ? bntm_rand_id() : wp_generate_password(12, false);
+        $result  = $wpdb->insert($table,
+            ['rand_id'=>$rand_id,'business_id'=>$business_id,'dept_name'=>$dept_name,'dept_code'=>$dept_code,'status'=>'active'],
+            ['%s','%d','%s','%s','%s']
+        );
+        if ($result) wp_send_json_success(['message' => 'Department added.', 'id' => $wpdb->insert_id]);
+        else wp_send_json_error(['message' => 'Failed to add department.']);
+    }
+}
+
+function bntm_ajax_cs_delete_department() {
+    check_ajax_referer('cs_departments_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+    $business_id = get_current_user_id();
+    $id          = intval($_POST['id']);
+    $result      = $wpdb->delete($wpdb->prefix . 'cs_departments', ['id'=>$id,'business_id'=>$business_id], ['%d','%d']);
+
+    if ($result) wp_send_json_success(['message' => 'Department deleted.']);
+    else wp_send_json_error(['message' => 'Failed to delete.']);
+}
+
+// ─────────────────────────────────────────────────────────────
+// AJAX: BULK IMPORTS
+// ─────────────────────────────────────────────────────────────
+
+function bntm_ajax_cs_bulk_import_sections() {
+    check_ajax_referer('cs_sections_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+    $business_id = get_current_user_id();
+    $rows        = json_decode(stripslashes($_POST['rows']), true);
+
+    if (empty($rows) || !is_array($rows)) {
+        wp_send_json_error(['message' => 'No data provided.']);
+    }
+
+    $table    = $wpdb->prefix . 'cs_sections';
+    $imported = 0;
+    $skipped  = 0;
+
+    foreach ($rows as $r) {
+        $course_code   = strtoupper(sanitize_text_field($r['course_code'] ?? ''));
+        $year_level    = intval($r['year_level'] ?? 1);
+        $block         = strtoupper(sanitize_text_field($r['block'] ?? ''));
+        $academic_year = sanitize_text_field($r['academic_year'] ?? '');
+        $semester      = sanitize_text_field($r['semester'] ?? 'First');
+
+        if (empty($course_code) || empty($block) || $year_level < 1) { $skipped++; continue; }
+
+        $section_name = $course_code . $year_level . ' ' . $block;
+
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$table} WHERE business_id=%d AND section_name=%s",
+            $business_id, $section_name
+        ));
+        if ($exists) { $skipped++; continue; }
+
+        $rand_id = function_exists('bntm_rand_id') ? bntm_rand_id() : wp_generate_password(12, false);
+        $result  = $wpdb->insert($table, [
+            'rand_id'       => $rand_id,
+            'business_id'   => $business_id,
+            'section_name'  => $section_name,
+            'course_code'   => $course_code,
+            'year_level'    => $year_level,
+            'block'         => $block,
+            'academic_year' => $academic_year,
+            'semester'      => $semester,
+            'status'        => 'active',
+        ], ['%s','%d','%s','%s','%d','%s','%s','%s','%s']);
+        if ($result) $imported++;
+    }
+
+    $msg = "Imported {$imported} section" . ($imported !== 1 ? 's' : '');
+    if ($skipped) $msg .= ", skipped {$skipped} (missing fields or duplicates)";
+    wp_send_json_success(['message' => $msg . '.', 'imported' => $imported]);
+}
+
+function bntm_ajax_cs_bulk_import_instructors() {
+    check_ajax_referer('cs_instructors_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+    $business_id = get_current_user_id();
+    $rows        = json_decode(stripslashes($_POST['rows']), true);
+
+    if (empty($rows) || !is_array($rows)) {
+        wp_send_json_error(['message' => 'No data provided.']);
+    }
+
+    $table    = $wpdb->prefix . 'cs_instructors';
+    $imported = 0;
+    $skipped  = 0;
+
+    foreach ($rows as $r) {
+        $initials   = strtoupper(sanitize_text_field($r['initials'] ?? ''));
+        $full_name  = sanitize_text_field($r['full_name'] ?? '');
+        $department = sanitize_text_field($r['department'] ?? '');
+
+        if (empty($initials) || empty($full_name)) { $skipped++; continue; }
+
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$table} WHERE business_id=%d AND initials=%s",
+            $business_id, $initials
+        ));
+        if ($exists) { $skipped++; continue; }
+
+        $rand_id = function_exists('bntm_rand_id') ? bntm_rand_id() : wp_generate_password(12, false);
+        $result  = $wpdb->insert($table, [
+            'rand_id'    => $rand_id,
+            'business_id'=> $business_id,
+            'initials'   => $initials,
+            'full_name'  => $full_name,
+            'department' => $department,
+            'status'     => 'active',
+        ], ['%s','%d','%s','%s','%s','%s']);
+        if ($result) $imported++;
+    }
+
+    $msg = "Imported {$imported} instructor" . ($imported !== 1 ? 's' : '');
+    if ($skipped) $msg .= ", skipped {$skipped} (missing fields or duplicate initials)";
+    wp_send_json_success(['message' => $msg . '.', 'imported' => $imported]);
+}
+
+function bntm_ajax_cs_bulk_import_rooms() {
+    check_ajax_referer('cs_rooms_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+    $business_id = get_current_user_id();
+    $rows        = json_decode(stripslashes($_POST['rows']), true);
+
+    if (empty($rows) || !is_array($rows)) {
+        wp_send_json_error(['message' => 'No data provided.']);
+    }
+
+    $table         = $wpdb->prefix . 'cs_rooms';
+    $valid_types   = ['lecture', 'lab', 'both'];
+    $imported      = 0;
+    $skipped       = 0;
+
+    foreach ($rows as $r) {
+        $room_code = strtoupper(sanitize_text_field($r['room_code'] ?? ''));
+        $building  = sanitize_text_field($r['building'] ?? '');
+        $capacity  = max(1, intval($r['capacity'] ?? 40));
+        $room_type = in_array($r['room_type'] ?? '', $valid_types) ? $r['room_type'] : 'lecture';
+
+        if (empty($room_code)) { $skipped++; continue; }
+
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$table} WHERE business_id=%d AND room_code=%s",
+            $business_id, $room_code
+        ));
+        if ($exists) { $skipped++; continue; }
+
+        $rand_id = function_exists('bntm_rand_id') ? bntm_rand_id() : wp_generate_password(12, false);
+        $result  = $wpdb->insert($table, [
+            'rand_id'    => $rand_id,
+            'business_id'=> $business_id,
+            'room_code'  => $room_code,
+            'building'   => $building,
+            'capacity'   => $capacity,
+            'room_type'  => $room_type,
+            'status'     => 'active',
+        ], ['%s','%d','%s','%s','%d','%s','%s']);
+        if ($result) $imported++;
+    }
+
+    $msg = "Imported {$imported} room" . ($imported !== 1 ? 's' : '');
+    if ($skipped) $msg .= ", skipped {$skipped} (missing room code or duplicates)";
+    wp_send_json_success(['message' => $msg . '.', 'imported' => $imported]);
+}
+
+function bntm_ajax_cs_bulk_import_departments() {
+    check_ajax_referer('cs_departments_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+    $business_id = get_current_user_id();
+    $rows        = json_decode(stripslashes($_POST['rows']), true);
+
+    if (empty($rows) || !is_array($rows)) {
+        wp_send_json_error(['message' => 'No data provided.']);
+    }
+
+    // Ensure table exists
+    $table = $wpdb->prefix . 'cs_departments';
+    if ($wpdb->get_var("SHOW TABLES LIKE '{$table}'") !== $table) {
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        $charset = $wpdb->get_charset_collate();
+        dbDelta("CREATE TABLE {$table} (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            dept_name VARCHAR(150) NOT NULL,
+            dept_code VARCHAR(30) NOT NULL DEFAULT '',
+            status ENUM('active','inactive') NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_business (business_id)
+        ) {$charset};");
+    }
+
+    $imported = 0;
+    $skipped  = 0;
+
+    foreach ($rows as $r) {
+        $dept_name = sanitize_text_field($r['dept_name'] ?? '');
+        $dept_code = strtoupper(sanitize_text_field($r['dept_code'] ?? ''));
+
+        if (empty($dept_name)) { $skipped++; continue; }
+
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$table} WHERE business_id=%d AND dept_name=%s",
+            $business_id, $dept_name
+        ));
+        if ($exists) { $skipped++; continue; }
+
+        $rand_id = function_exists('bntm_rand_id') ? bntm_rand_id() : wp_generate_password(12, false);
+        $result  = $wpdb->insert($table, [
+            'rand_id'    => $rand_id,
+            'business_id'=> $business_id,
+            'dept_name'  => $dept_name,
+            'dept_code'  => $dept_code,
+            'status'     => 'active',
+        ], ['%s','%d','%s','%s','%s']);
+        if ($result) $imported++;
+    }
+
+    $msg = "Imported {$imported} department" . ($imported !== 1 ? 's' : '');
+    if ($skipped) $msg .= ", skipped {$skipped} (missing name or duplicates)";
+    wp_send_json_success(['message' => $msg . '.', 'imported' => $imported]);
+}
+
+// ─────────────────────────────────────────────────────────────
 // PUBLIC SHORTCODE: SECTION TIMETABLE
 // ─────────────────────────────────────────────────────────────
 
@@ -2431,23 +3204,23 @@ function bntm_shortcode_cs_public() {
     ob_start();
     ?>
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Lora:wght@600;700&family=Source+Sans+3:wght@400;500;600;700&display=swap');
-    .cs-pub * { box-sizing: border-box; font-family: 'Source Sans 3', system-ui, sans-serif; }
-    .cs-pub h2 { font-family: 'Lora', Georgia, serif; font-size: 20px; font-weight: 700; color: var(--cs-blue-dark); margin: 0 0 4px; }
-    .cs-pub .sub { font-size: 13px; color: var(--cs-blue-muted); margin-bottom: 18px; font-weight: 500; }
-    .cs-pub-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid var(--cs-border); }
+    @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+    .cs-pub * { box-sizing: border-box; font-family: 'DM Sans', system-ui, sans-serif; }
+    .cs-pub h2 { font-family: 'Playfair Display', Georgia, serif; font-size: 22px; font-weight: 700; color: #0f1e35; margin: 0 0 4px; }
+    .cs-pub .sub { font-size: 13px; color: #6b7280; margin-bottom: 18px; font-weight: 500; }
+    .cs-pub-wrap { overflow-x: auto; border-radius: 8px; border: 1px solid #dde3ec; box-shadow: 0 2px 8px rgba(15,30,53,.07); }
     .cs-pub-table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 700px; }
-    .cs-pub-table th { background: var(--cs-blue-dark); color: #ffffff; padding: 11px 8px; text-align: center; border: 1px solid var(--cs-blue-mid); font-size: 12px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
-    .cs-pub-table td { border: 1px solid var(--cs-border-soft); padding: 0; vertical-align: top; }
-    .cs-pub-slot { background: var(--cs-surface-2); padding: 10px 12px; font-weight: 700; font-size: 12px; color: var(--cs-blue-mid); text-align: center; white-space: nowrap; }
-    .cs-pub-cell { padding: 6px 8px; min-height: 60px; background: var(--cs-surface); }
-    .cs-pub-entry { background: #e5f1ff; border: 1px solid #a8c9eb; border-radius: 5px; padding: 5px 7px; line-height: 1.45; }
-    .cs-pub-entry.lab { background: #e9f5ee; border-color: #8fc8d6; }
-    .cs-pub-entry b { display: block; font-size: 12px; color: var(--cs-blue-dark); font-weight: 700; }
+    .cs-pub-table th { background: #0f1e35; color: rgba(255,255,255,.85); padding: 12px 10px; text-align: center; border: 1px solid #1e3555; font-size: 11px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; }
+    .cs-pub-table td { border: 1px solid #dde3ec; padding: 0; vertical-align: top; }
+    .cs-pub-slot { background: #172842; color: rgba(255,255,255,.72); padding: 10px 14px; font-weight: 600; font-size: 11.5px; text-align: center; white-space: nowrap; border: 1px solid #1e3555; }
+    .cs-pub-cell { padding: 7px 8px; min-height: 64px; background: #ffffff; }
+    .cs-pub-entry { background: #eff6ff; border: 1px solid #bfdbfe; border-left: 3px solid #1a4f8a; border-radius: 6px; padding: 5px 8px; line-height: 1.5; }
+    .cs-pub-entry.lab { background: #f0fdf4; border-color: #bbf7d0; border-left-color: #16a34a; }
+    .cs-pub-entry b { display: block; font-size: 12px; color: #1e3a6e; font-weight: 700; }
     .cs-pub-entry span { font-size: 11px; color: #4a5563; display: block; }
-    .cs-pub-entry.lab b { color: #136873; }
-    .cs-pub-empty { background: var(--cs-bg); }
-    .cs-pub-legend { display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; font-weight: 600; color: var(--cs-blue-mid); }
+    .cs-pub-entry.lab b { color: #14532d; }
+    .cs-pub-empty { background: #f5f7fa; }
+    .cs-pub-legend { display: flex; gap: 16px; margin-bottom: 12px; font-size: 12px; font-weight: 600; color: #6b7280; }
     .cs-pub-legend-item { display: flex; align-items: center; gap: 6px; }
     .cs-pub-legend-box { width: 14px; height: 14px; border-radius: 3px; }
     </style>
