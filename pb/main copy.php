@@ -1587,13 +1587,6 @@ function pb_settings_tab($business_id) {
     $allowed_types = bntm_get_setting('pb_allowed_types',    'jpeg,png,webp');
     $pwa_name      = bntm_get_setting('pb_pwa_name',         'Photo Booth');
     $pwa_color     = bntm_get_setting('pb_pwa_theme_color',  '#6366f1');
-    $ui_bg_style   = bntm_get_setting('pb_ui_bg_style',      'gradient');
-    $ui_bg_color_1 = bntm_get_setting('pb_ui_bg_color_1',    '#0f0f0f');
-    $ui_bg_color_2 = bntm_get_setting('pb_ui_bg_color_2',    '#1f2937');
-    $ui_text_color = bntm_get_setting('pb_ui_text_color',    '#f5f5f5');
-    $ui_muted_color= bntm_get_setting('pb_ui_muted_color',   '#94a3b8');
-    $ui_card_color = bntm_get_setting('pb_ui_card_color',    '#242424');
-    $ui_btn_text   = bntm_get_setting('pb_ui_button_text',   '#ffffff');
 
     ob_start();
     ?>
@@ -1653,39 +1646,6 @@ function pb_settings_tab($business_id) {
             <label>Theme Color</label>
             <input type="color" id="pb-pwa-color" value="<?php echo esc_attr($pwa_color); ?>">
         </div>
-        <div class="bntm-form-group">
-            <label>Upload Page Background Style</label>
-            <select id="pb-ui-bg-style">
-                <option value="gradient" <?php selected($ui_bg_style,'gradient'); ?>>Gradient</option>
-                <option value="solid"    <?php selected($ui_bg_style,'solid'); ?>>Solid Color</option>
-                <option value="mesh"     <?php selected($ui_bg_style,'mesh'); ?>>Mesh Glow</option>
-            </select>
-        </div>
-        <div class="bntm-form-group">
-            <label>Background Color 1</label>
-            <input type="color" id="pb-ui-bg-color-1" value="<?php echo esc_attr($ui_bg_color_1); ?>">
-        </div>
-        <div class="bntm-form-group">
-            <label>Background Color 2</label>
-            <input type="color" id="pb-ui-bg-color-2" value="<?php echo esc_attr($ui_bg_color_2); ?>">
-            <small style="color:#6b7280;">Used for Gradient and Mesh styles.</small>
-        </div>
-        <div class="bntm-form-group">
-            <label>Main Text Color</label>
-            <input type="color" id="pb-ui-text-color" value="<?php echo esc_attr($ui_text_color); ?>">
-        </div>
-        <div class="bntm-form-group">
-            <label>Muted Text Color</label>
-            <input type="color" id="pb-ui-muted-color" value="<?php echo esc_attr($ui_muted_color); ?>">
-        </div>
-        <div class="bntm-form-group">
-            <label>Card Color</label>
-            <input type="color" id="pb-ui-card-color" value="<?php echo esc_attr($ui_card_color); ?>">
-        </div>
-        <div class="bntm-form-group">
-            <label>Primary Button Text Color</label>
-            <input type="color" id="pb-ui-btn-text" value="<?php echo esc_attr($ui_btn_text); ?>">
-        </div>
     </div>
 
     <div class="bntm-form-section" style="background:transparent;border:none;padding:0;">
@@ -1707,13 +1667,6 @@ function pb_settings_tab($business_id) {
             fd.append('guest_name_mode',  document.getElementById('pb-guest-name').value);
             fd.append('pwa_name',         document.getElementById('pb-pwa-name').value);
             fd.append('pwa_theme_color',  document.getElementById('pb-pwa-color').value);
-            fd.append('ui_bg_style',      document.getElementById('pb-ui-bg-style').value);
-            fd.append('ui_bg_color_1',    document.getElementById('pb-ui-bg-color-1').value);
-            fd.append('ui_bg_color_2',    document.getElementById('pb-ui-bg-color-2').value);
-            fd.append('ui_text_color',    document.getElementById('pb-ui-text-color').value);
-            fd.append('ui_muted_color',   document.getElementById('pb-ui-muted-color').value);
-            fd.append('ui_card_color',    document.getElementById('pb-ui-card-color').value);
-            fd.append('ui_button_text',   document.getElementById('pb-ui-btn-text').value);
             fetch(ajaxurl,{method:'POST',body:fd}).then(r=>r.json()).then(json=>{
                 document.getElementById('pb-settings-msg').innerHTML=
                     '<div class="bntm-notice bntm-notice-'+(json.success?'success':'error')+'">'+json.data.message+'</div>';
@@ -2099,19 +2052,6 @@ function bntm_ajax_pb_save_settings() {
     bntm_set_setting('pb_pwa_name',        sanitize_text_field($_POST['pwa_name']));
     bntm_set_setting('pb_pwa_theme_color', sanitize_hex_color($_POST['pwa_theme_color']));
 
-    $ui_bg_style = sanitize_text_field($_POST['ui_bg_style'] ?? 'gradient');
-    if (!in_array($ui_bg_style, ['gradient', 'solid', 'mesh'], true)) {
-        $ui_bg_style = 'gradient';
-    }
-
-    bntm_set_setting('pb_ui_bg_style',    $ui_bg_style);
-    bntm_set_setting('pb_ui_bg_color_1',  sanitize_hex_color($_POST['ui_bg_color_1'] ?? '#0f0f0f'));
-    bntm_set_setting('pb_ui_bg_color_2',  sanitize_hex_color($_POST['ui_bg_color_2'] ?? '#1f2937'));
-    bntm_set_setting('pb_ui_text_color',  sanitize_hex_color($_POST['ui_text_color'] ?? '#f5f5f5'));
-    bntm_set_setting('pb_ui_muted_color', sanitize_hex_color($_POST['ui_muted_color'] ?? '#94a3b8'));
-    bntm_set_setting('pb_ui_card_color',  sanitize_hex_color($_POST['ui_card_color'] ?? '#242424'));
-    bntm_set_setting('pb_ui_button_text', sanitize_hex_color($_POST['ui_button_text'] ?? '#ffffff'));
-
     wp_send_json_success(['message' => 'Settings saved successfully!']);
 }
 
@@ -2303,23 +2243,6 @@ function bntm_ajax_pb_poll_gallery() {
 function bntm_shortcode_pb_upload() {
     $pwa_name  = bntm_get_setting('pb_pwa_name',        'Photo Booth');
     $pwa_color = bntm_get_setting('pb_pwa_theme_color', '#6366f1');
-    $ui_bg_style = bntm_get_setting('pb_ui_bg_style', 'gradient');
-    if (!in_array($ui_bg_style, ['gradient', 'solid', 'mesh'], true)) {
-        $ui_bg_style = 'gradient';
-    }
-    $ui_bg_color_1 = bntm_get_setting('pb_ui_bg_color_1', '#0f0f0f');
-    $ui_bg_color_2 = bntm_get_setting('pb_ui_bg_color_2', '#1f2937');
-    $ui_text_color = bntm_get_setting('pb_ui_text_color', '#f5f5f5');
-    $ui_muted_color = bntm_get_setting('pb_ui_muted_color', '#94a3b8');
-    $ui_card_color = bntm_get_setting('pb_ui_card_color', '#242424');
-    $ui_btn_text = bntm_get_setting('pb_ui_button_text', '#ffffff');
-
-    $ui_bg_color_1 = sanitize_hex_color($ui_bg_color_1) ?: '#0f0f0f';
-    $ui_bg_color_2 = sanitize_hex_color($ui_bg_color_2) ?: '#1f2937';
-    $ui_text_color = sanitize_hex_color($ui_text_color) ?: '#f5f5f5';
-    $ui_muted_color = sanitize_hex_color($ui_muted_color) ?: '#94a3b8';
-    $ui_card_color = sanitize_hex_color($ui_card_color) ?: '#242424';
-    $ui_btn_text = sanitize_hex_color($ui_btn_text) ?: '#ffffff';
     $ajax_url  = admin_url('admin-ajax.php', 'relative');
     $max_upload_mb = intval(bntm_get_setting('pb_max_upload_size', '10'));
     $max_upload_mb = $max_upload_mb > 0 ? $max_upload_mb : 10;
@@ -2342,32 +2265,18 @@ function bntm_shortcode_pb_upload() {
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
         --pb-accent: <?php echo esc_attr($pwa_color); ?>;
-        --pb-dark: <?php echo esc_attr($ui_bg_color_1); ?>;
-        --pb-bg-secondary: <?php echo esc_attr($ui_bg_color_2); ?>;
+        --pb-dark: #0f0f0f;
         --pb-surface: #1a1a1a;
-        --pb-card: <?php echo esc_attr($ui_card_color); ?>;
-        --pb-text: <?php echo esc_attr($ui_text_color); ?>;
-        --pb-muted: <?php echo esc_attr($ui_muted_color); ?>;
-        --pb-btn-text: <?php echo esc_attr($ui_btn_text); ?>;
+        --pb-card: #242424;
+        --pb-text: #f5f5f5;
+        --pb-muted: #888;
         --pb-radius: 16px;
     }
     html, body {
         width: 100%; height: 100%; overflow: hidden;
-        color: var(--pb-text);
+        background: var(--pb-dark); color: var(--pb-text);
         font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
         -webkit-tap-highlight-color: transparent;
-    }
-    body.pb-bg-gradient {
-        background: linear-gradient(145deg, var(--pb-dark) 0%, var(--pb-bg-secondary) 100%);
-    }
-    body.pb-bg-solid {
-        background: var(--pb-dark);
-    }
-    body.pb-bg-mesh {
-        background:
-            radial-gradient(circle at 20% 10%, color-mix(in srgb, var(--pb-accent) 28%, transparent) 0%, transparent 42%),
-            radial-gradient(circle at 85% 85%, color-mix(in srgb, var(--pb-bg-secondary) 65%, transparent) 0%, transparent 45%),
-            linear-gradient(155deg, var(--pb-dark) 0%, var(--pb-bg-secondary) 100%);
     }
     #pb-app { width: 100%; height: 100vh; position: relative; overflow: hidden; }
 
@@ -2398,7 +2307,7 @@ function bntm_shortcode_pb_upload() {
     /* Big button */
     .pb-btn-big {
         width: 100%; max-width: 320px; padding: 18px 32px;
-        background: var(--pb-accent); color: var(--pb-btn-text); border: none;
+        background: var(--pb-accent); color: #fff; border: none;
         border-radius: var(--pb-radius); font-size: 18px; font-weight: 700;
         cursor: pointer; letter-spacing: -0.3px;
         box-shadow: 0 8px 32px color-mix(in srgb, var(--pb-accent) 35%, transparent);
@@ -2617,20 +2526,11 @@ function bntm_shortcode_pb_upload() {
     #pb-error-screen p  { font-size: 15px; color: var(--pb-muted); }
 
     @media (min-width: 480px) {
-        #pb-app {
-            max-width: 430px;
-            height: calc(100vh - 28px);
-            margin: 14px auto;
-            border-radius: 24px;
-            border: 1px solid rgba(255,255,255,0.14);
-            box-shadow: 0 18px 80px rgba(0,0,0,0.45);
-            background: color-mix(in srgb, var(--pb-dark) 70%, transparent);
-            backdrop-filter: blur(6px);
-        }
+        #pb-app { max-width: 430px; margin: 0 auto; box-shadow: 0 0 80px rgba(0,0,0,0.5); }
     }
     </style>
     </head>
-    <body class="pb-bg-<?php echo esc_attr($ui_bg_style); ?>">
+    <body>
     <div id="pb-app">
         <!-- Loading -->
         <div id="pb-loading">
@@ -2993,84 +2893,25 @@ function bntm_shortcode_pb_upload() {
             startCamera();
         }
 
-        function isLocalHostName(host) {
-            const value = String(host || '').toLowerCase();
-            return value === 'localhost' || value === '127.0.0.1' || value === '::1';
-        }
-
-        function isCameraSecureContext() {
-            if (window.isSecureContext) return true;
-            return isLocalHostName(location.hostname);
-        }
-
-        function getUserMediaCompat(constraints) {
-            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                return navigator.mediaDevices.getUserMedia(constraints);
-            }
-
-            const legacy = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
-            if (!legacy) {
-                return Promise.reject(new Error('getUserMedia unsupported'));
-            }
-
-            return new Promise(function(resolve, reject) {
-                legacy.call(navigator, constraints, resolve, reject);
-            });
-        }
-
         async function startCamera() {
-            if (!isCameraSecureContext()) {
-                alert('Camera is blocked by browser security on this URL. Open this page using HTTPS, or open from localhost on this device. You can still use "Use Photo From Device".');
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                alert('Camera is not available on this browser. You can still upload from your device photos.');
                 showScreen('prompts');
                 return;
             }
 
-            const constraintsList = [
-                {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
                     video: {
-                        facingMode: { ideal: facingMode },
+                        facingMode: facingMode,
                         width: { ideal: 1920 },
                         height: { ideal: 1080 }
                     },
                     audio: false
-                },
-                {
-                    video: {
-                        facingMode: facingMode,
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 }
-                    },
-                    audio: false
-                },
-                { video: true, audio: false }
-            ];
-
-            let lastError = null;
-            for (let i = 0; i < constraintsList.length; i++) {
-                try {
-                    stream = await getUserMediaCompat(constraintsList[i]);
-                    const videoEl = document.getElementById('pb-video');
-                    if ('srcObject' in videoEl) {
-                        videoEl.srcObject = stream;
-                    } else {
-                        videoEl.src = URL.createObjectURL(stream);
-                    }
-                    if (typeof videoEl.play === 'function') {
-                        videoEl.play().catch(function() {});
-                    }
-                    return;
-                } catch (e) {
-                    lastError = e;
-                }
-            }
-
-            if (lastError && (lastError.name === 'NotAllowedError' || lastError.name === 'PermissionDeniedError')) {
-                alert('Camera permission was denied. Please allow camera access in browser settings, or use "Use Photo From Device".');
-            } else {
-                alert('Camera could not be started on this device/browser. You can still use "Use Photo From Device".');
-            }
-
-            if (!stream) {
+                });
+                document.getElementById('pb-video').srcObject = stream;
+            } catch (e) {
+                alert('Camera permission was denied. You can use "Use Photo From Device" instead.');
                 showScreen('prompts');
             }
         }
