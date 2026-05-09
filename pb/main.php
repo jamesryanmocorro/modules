@@ -2368,6 +2368,7 @@ function bntm_shortcode_pb_upload() {
         background: var(--pb-accent); color: var(--pb-btn-text); border: none;
         border-radius: var(--pb-radius); font-size: 18px; font-weight: 700;
         cursor: pointer; letter-spacing: -0.3px;
+        display: block; margin-left: auto; margin-right: auto;
         box-shadow: 0 8px 32px color-mix(in srgb, var(--pb-accent) 35%, transparent);
         transition: transform 0.15s, box-shadow 0.15s;
         -webkit-tap-highlight-color: transparent;
@@ -2379,6 +2380,7 @@ function bntm_shortcode_pb_upload() {
         border: 1.5px solid rgba(255,255,255,0.2);
         border-radius: var(--pb-radius); font-size: 16px; font-weight: 600;
         cursor: pointer; margin-top: 12px;
+        display: block; margin-left: auto; margin-right: auto;
         transition: background 0.15s, border-color 0.15s;
     }
     .pb-btn-outline:active { background: rgba(255,255,255,0.08); }
@@ -2496,7 +2498,7 @@ function bntm_shortcode_pb_upload() {
     }
     .pb-preview-actions {
         width: 100%; padding: 16px 20px;
-        display: flex; gap: 12px; flex-direction: column;
+        display: flex; gap: 12px; flex-direction: column; align-items: center;
     }
 
     /* Name screen */
