@@ -13,6 +13,9 @@ if (!defined('ABSPATH')) exit;
 define('BNTM_PB_PATH', dirname(__FILE__) . '/');
 define('BNTM_PB_URL', plugin_dir_url(__FILE__));
 define('BNTM_PB_DB_VERSION', '1.0.1');
+if (!defined('BNTM_PB_AUTO_CREATE_TABLES')) {
+    define('BNTM_PB_AUTO_CREATE_TABLES', false);
+}
 
 // ============================================================
 // MODULE CONFIGURATION
@@ -36,21 +39,18 @@ function bntm_pb_get_tables() {
         'pb_events' => "CREATE TABLE {$prefix}pb_events (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
-            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             title VARCHAR(255) NOT NULL,
             description TEXT,
             event_date DATE,
             max_photos INT DEFAULT 0,
             status VARCHAR(50) NOT NULL DEFAULT 'inactive',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_business (business_id)
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) {$charset};",
 
         'pb_prompts' => "CREATE TABLE {$prefix}pb_prompts (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
-            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             event_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             prompt_text VARCHAR(255) NOT NULL,
             sort_order INT DEFAULT 0,
@@ -58,14 +58,12 @@ function bntm_pb_get_tables() {
             is_free_capture TINYINT(1) DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_business (business_id),
             INDEX idx_event (event_id)
         ) {$charset};",
 
         'pb_photos' => "CREATE TABLE {$prefix}pb_photos (
             id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             rand_id VARCHAR(20) UNIQUE NOT NULL,
-            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             event_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
             prompt_id BIGINT UNSIGNED DEFAULT 0,
             guest_name VARCHAR(100),
@@ -77,7 +75,6 @@ function bntm_pb_get_tables() {
             guest_ip VARCHAR(45),
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_business (business_id),
             INDEX idx_event (event_id)
         ) {$charset};",
     ];
@@ -121,6 +118,10 @@ function bntm_pb_tables_exist() {
 }
 
 function bntm_pb_ensure_tables() {
+    if (!BNTM_PB_AUTO_CREATE_TABLES) {
+        return;
+    }
+
     $installed_version = get_option('bntm_pb_db_version', '');
     if ($installed_version === BNTM_PB_DB_VERSION && bntm_pb_tables_exist()) {
         return;
@@ -273,8 +274,7 @@ function bntm_shortcode_pb() {
 
     bntm_pb_ensure_tables();
 
-    $current_user = wp_get_current_user();
-    $business_id  = $current_user->ID;
+    $business_id  = 0;
     $active_tab   = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'overview';
 
     ob_start();
@@ -546,15 +546,12 @@ function pb_overview_tab($business_id) {
     $events_table = $wpdb->prefix . 'pb_events';
     $photos_table = $wpdb->prefix . 'pb_photos';
 
-    $total_events  = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$events_table} WHERE business_id = %d", $business_id));
-    $total_photos  = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$photos_table} WHERE business_id = %d", $business_id));
-    $pending_photos= (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$photos_table} WHERE business_id = %d AND status = 'pending'", $business_id));
-    $active_event  = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$events_table} WHERE business_id = %d AND status = 'active' LIMIT 1", $business_id));
+    $total_events  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$events_table}");
+    $total_photos  = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$photos_table}");
+    $pending_photos= (int) $wpdb->get_var("SELECT COUNT(*) FROM {$photos_table} WHERE status = 'pending'");
+    $active_event  = $wpdb->get_row("SELECT * FROM {$events_table} WHERE status = 'active' LIMIT 1");
 
-    $recent_photos = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM {$photos_table} WHERE business_id = %d AND status = 'approved' ORDER BY created_at DESC LIMIT 20",
-        $business_id
-    ));
+    $recent_photos = $wpdb->get_results("SELECT * FROM {$photos_table} WHERE status = 'approved' ORDER BY created_at DESC LIMIT 20");
 
     $upload_dir = wp_upload_dir();
 
@@ -753,10 +750,7 @@ function pb_events_tab($business_id) {
 
     // Load events with a simple query first, then attach photo counts.
     // This avoids correlated-subquery edge cases on some DB configurations.
-    $events = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM {$events_table} WHERE business_id = %d ORDER BY id DESC",
-        $business_id
-    ));
+    $events = $wpdb->get_results("SELECT * FROM {$events_table} ORDER BY id DESC");
 
     $photo_counts = [];
     if (!empty($events)) {
@@ -765,9 +759,9 @@ function pb_events_tab($business_id) {
         $count_rows = $wpdb->get_results($wpdb->prepare(
             "SELECT event_id, COUNT(*) as cnt
              FROM {$photos_table}
-             WHERE business_id = %d AND event_id IN ($placeholders)
+             WHERE event_id IN ($placeholders)
              GROUP BY event_id",
-            array_merge([$business_id], $event_ids)
+            $event_ids
         ));
         if (!empty($count_rows)) {
             foreach ($count_rows as $row) {
@@ -1046,13 +1040,12 @@ function pb_prompts_tab($business_id) {
     $events_table  = $wpdb->prefix . 'pb_events';
     $prompts_table = $wpdb->prefix . 'pb_prompts';
 
-    $events  = $wpdb->get_results($wpdb->prepare("SELECT id, title FROM {$events_table} WHERE business_id = %d ORDER BY created_at DESC", $business_id));
-    $prompts = $wpdb->get_results($wpdb->prepare(
+    $events  = $wpdb->get_results("SELECT id, title FROM {$events_table} ORDER BY created_at DESC");
+    $prompts = $wpdb->get_results(
         "SELECT p.*, e.title as event_title FROM {$prompts_table} p
          LEFT JOIN {$events_table} e ON p.event_id = e.id
-         WHERE p.business_id = %d ORDER BY p.event_id, p.sort_order ASC",
-        $business_id
-    ));
+         ORDER BY p.event_id, p.sort_order ASC"
+    );
 
     $nonce = wp_create_nonce('pb_nonce');
 
@@ -1061,7 +1054,7 @@ function pb_prompts_tab($business_id) {
     <div class="bntm-form-section" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
         <div>
             <h3 style="margin:0;">Photo Prompts</h3>
-            <p style="margin:4px 0 0;color:#6b7280;font-size:13px;">Prompts guide guests on what to photograph. Each event includes a Free Capture prompt automatically.</p>
+            <p style="margin:4px 0 0;color:#6b7280;font-size:13px;">Prompts guide guests on what to photograph. Add and delete prompts manually as needed.</p>
         </div>
         <button class="bntm-btn-primary" onclick="pbOpenModal('pb-add-prompt-modal')">
             <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin-right:4px;"><line x1="12" y1="5" x2="12" y2="19" stroke-width="2"/><line x1="5" y1="12" x2="19" y2="12" stroke-width="2"/></svg>
@@ -1111,7 +1104,6 @@ function pb_prompts_tab($business_id) {
                         <?php endif; ?>
                     </td>
                     <td>
-                        <?php if (!$pr->is_free_capture): ?>
                         <button class="bntm-btn-secondary bntm-btn-small pb-edit-prompt-btn"
                                 data-id="<?php echo $pr->id; ?>"
                                 data-text="<?php echo esc_attr($pr->prompt_text); ?>"
@@ -1129,9 +1121,6 @@ function pb_prompts_tab($business_id) {
                                 data-nonce="<?php echo $nonce; ?>">
                             Delete
                         </button>
-                        <?php else: ?>
-                        <span style="color:#9ca3af;font-size:12px;">Protected</span>
-                        <?php endif; ?>
                     </td>
                 </tr>
                 <?php endforeach; endif; ?>
@@ -1294,9 +1283,9 @@ function pb_photos_tab($business_id) {
     $filter_event  = isset($_GET['filter_event'])  ? intval($_GET['filter_event'])              : 0;
     $filter_status = isset($_GET['filter_status']) ? sanitize_text_field($_GET['filter_status']): '';
 
-    $events = $wpdb->get_results($wpdb->prepare("SELECT id, title FROM {$events_table} WHERE business_id = %d ORDER BY created_at DESC", $business_id));
+    $events = $wpdb->get_results("SELECT id, title FROM {$events_table} ORDER BY created_at DESC");
 
-    $where = "WHERE ph.business_id = {$business_id}";
+    $where = "WHERE 1=1";
     if ($filter_event)  $where .= " AND ph.event_id = {$filter_event}";
     if ($filter_status) $where .= " AND ph.status = '" . esc_sql($filter_status) . "'";
 
@@ -1737,7 +1726,6 @@ function bntm_ajax_pb_add_event() {
     bntm_pb_ensure_tables();
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $title       = sanitize_text_field($_POST['title']);
     $description = sanitize_textarea_field($_POST['description']);
     $event_date_raw = sanitize_text_field($_POST['event_date']);
@@ -1752,23 +1740,14 @@ function bntm_ajax_pb_add_event() {
     $rand_id = bntm_rand_id();
     $result  = $wpdb->insert(
         $wpdb->prefix . 'pb_events',
-        ['rand_id' => $rand_id, 'business_id' => $business_id, 'title' => $title,
+        ['rand_id' => $rand_id, 'title' => $title,
          'description' => $description, 'event_date' => $event_date, 'max_photos' => $max_photos, 'status' => 'inactive'],
-        ['%s','%d','%s','%s','%s','%d','%s']
+        ['%s','%s','%s','%s','%d','%s']
     );
 
     if (!$result) {
         wp_send_json_error(['message' => 'Failed to create event' . (!empty($wpdb->last_error) ? ': ' . $wpdb->last_error : '')]);
     }
-
-    $event_id = $wpdb->insert_id;
-    // Auto-create Free Capture prompt
-    $wpdb->insert(
-        $wpdb->prefix . 'pb_prompts',
-        ['rand_id' => bntm_rand_id(), 'business_id' => $business_id, 'event_id' => $event_id,
-         'prompt_text' => 'Free Capture', 'sort_order' => 0, 'status' => 'active', 'is_free_capture' => 1],
-        ['%s','%d','%d','%s','%d','%s','%d']
-    );
 
     wp_send_json_success(['message' => 'Event created successfully!']);
 }
@@ -1778,7 +1757,6 @@ function bntm_ajax_pb_edit_event() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
     $title       = sanitize_text_field($_POST['title']);
     $description = sanitize_textarea_field($_POST['description']);
@@ -1795,8 +1773,8 @@ function bntm_ajax_pb_edit_event() {
         $wpdb->prefix . 'pb_events',
         ['title' => $title, 'description' => $description,
          'event_date' => $event_date, 'max_photos' => $max_photos],
-        ['id' => $event_id, 'business_id' => $business_id],
-        ['%s','%s','%s','%d'], ['%d','%d']
+        ['id' => $event_id],
+        ['%s','%s','%s','%d'], ['%d']
     );
 
     if ($result === false) {
@@ -1810,13 +1788,12 @@ function bntm_ajax_pb_delete_event() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
 
     // Delete photos from filesystem
     $photos = $wpdb->get_results($wpdb->prepare(
-        "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE event_id = %d AND business_id = %d",
-        $event_id, $business_id
+        "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE event_id = %d",
+        $event_id
     ));
     $upload_dir = wp_upload_dir();
     foreach ($photos as $photo) {
@@ -1824,9 +1801,9 @@ function bntm_ajax_pb_delete_event() {
         if (file_exists($file)) @unlink($file);
     }
 
-    $wpdb->delete($wpdb->prefix . 'pb_photos',  ['event_id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
-    $wpdb->delete($wpdb->prefix . 'pb_prompts', ['event_id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
-    $result = $wpdb->delete($wpdb->prefix . 'pb_events', ['id' => $event_id, 'business_id' => $business_id], ['%d','%d']);
+    $wpdb->delete($wpdb->prefix . 'pb_photos',  ['event_id' => $event_id], ['%d']);
+    $wpdb->delete($wpdb->prefix . 'pb_prompts', ['event_id' => $event_id], ['%d']);
+    $result = $wpdb->delete($wpdb->prefix . 'pb_events', ['id' => $event_id], ['%d']);
 
     if ($result) wp_send_json_success(['message' => 'Event deleted successfully']);
     else         wp_send_json_error(['message' => 'Failed to delete event']);
@@ -1837,7 +1814,6 @@ function bntm_ajax_pb_toggle_event_status() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $event_id    = intval($_POST['event_id']);
     $new_status  = sanitize_text_field($_POST['new_status']);
 
@@ -1848,10 +1824,10 @@ function bntm_ajax_pb_toggle_event_status() {
         if ($new_status === 'active') {
             // Deactivate all other events
             $wpdb->update($wpdb->prefix . 'pb_events', ['status' => 'inactive'],
-                ['status' => 'active', 'business_id' => $business_id], ['%s'], ['%s','%d']);
+                ['status' => 'active'], ['%s'], ['%s']);
         }
         $r = $wpdb->update($wpdb->prefix . 'pb_events', ['status' => $new_status],
-            ['id' => $event_id, 'business_id' => $business_id], ['%s'], ['%d','%d']);
+            ['id' => $event_id], ['%s'], ['%d']);
         if ($r === false) throw new Exception('Update failed');
         $wpdb->query('COMMIT');
         wp_send_json_success(['message' => 'Event status updated']);
@@ -1866,7 +1842,6 @@ function bntm_ajax_pb_add_prompt() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $prompt_text = sanitize_text_field($_POST['prompt_text']);
     $event_id    = intval($_POST['event_id']);
 
@@ -1878,9 +1853,9 @@ function bntm_ajax_pb_add_prompt() {
 
     $result = $wpdb->insert(
         $wpdb->prefix . 'pb_prompts',
-        ['rand_id' => bntm_rand_id(), 'business_id' => $business_id, 'event_id' => $event_id,
+        ['rand_id' => bntm_rand_id(), 'event_id' => $event_id,
          'prompt_text' => $prompt_text, 'sort_order' => $max_order + 1, 'status' => 'active', 'is_free_capture' => 0],
-        ['%s','%d','%d','%s','%d','%s','%d']
+        ['%s','%d','%s','%d','%s','%d']
     );
 
     if ($result) wp_send_json_success(['message' => 'Prompt added successfully!']);
@@ -1892,7 +1867,6 @@ function bntm_ajax_pb_edit_prompt() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $prompt_id   = intval($_POST['prompt_id']);
     $prompt_text = sanitize_text_field($_POST['prompt_text']);
     $event_id    = intval($_POST['event_id']);
@@ -1900,8 +1874,8 @@ function bntm_ajax_pb_edit_prompt() {
     $result = $wpdb->update(
         $wpdb->prefix . 'pb_prompts',
         ['prompt_text' => $prompt_text, 'event_id' => $event_id],
-        ['id' => $prompt_id, 'business_id' => $business_id, 'is_free_capture' => 0],
-        ['%s','%d'], ['%d','%d','%d']
+        ['id' => $prompt_id],
+        ['%s','%d'], ['%d']
     );
 
     if ($result !== false) wp_send_json_success(['message' => 'Prompt updated']);
@@ -1913,17 +1887,16 @@ function bntm_ajax_pb_delete_prompt() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $prompt_id   = intval($_POST['prompt_id']);
 
     $result = $wpdb->delete(
         $wpdb->prefix . 'pb_prompts',
-        ['id' => $prompt_id, 'business_id' => $business_id, 'is_free_capture' => 0],
-        ['%d','%d','%d']
+        ['id' => $prompt_id],
+        ['%d']
     );
 
     if ($result) wp_send_json_success(['message' => 'Prompt deleted']);
-    else         wp_send_json_error(['message' => 'Cannot delete this prompt']);
+    else         wp_send_json_error(['message' => 'Failed to delete prompt']);
 }
 
 function bntm_ajax_pb_toggle_prompt_status() {
@@ -1931,7 +1904,6 @@ function bntm_ajax_pb_toggle_prompt_status() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $prompt_id   = intval($_POST['prompt_id']);
     $new_status  = sanitize_text_field($_POST['new_status']);
 
@@ -1940,8 +1912,8 @@ function bntm_ajax_pb_toggle_prompt_status() {
     $result = $wpdb->update(
         $wpdb->prefix . 'pb_prompts',
         ['status' => $new_status],
-        ['id' => $prompt_id, 'business_id' => $business_id],
-        ['%s'], ['%d','%d']
+        ['id' => $prompt_id],
+        ['%s'], ['%d']
     );
 
     if ($result !== false) wp_send_json_success(['message' => 'Status updated']);
@@ -1953,12 +1925,11 @@ function bntm_ajax_pb_reorder_prompt() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $prompt_id   = intval($_POST['prompt_id']);
     $direction   = sanitize_text_field($_POST['direction']);
 
     $current = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}pb_prompts WHERE id = %d AND business_id = %d", $prompt_id, $business_id
+        "SELECT * FROM {$wpdb->prefix}pb_prompts WHERE id = %d", $prompt_id
     ));
     if (!$current) { wp_send_json_error(['message' => 'Prompt not found']); }
 
@@ -1987,7 +1958,6 @@ function bntm_ajax_pb_update_photo_status() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $photo_id    = intval($_POST['photo_id']);
     $status      = sanitize_text_field($_POST['status']);
 
@@ -1996,8 +1966,8 @@ function bntm_ajax_pb_update_photo_status() {
     $result = $wpdb->update(
         $wpdb->prefix . 'pb_photos',
         ['status' => $status],
-        ['id' => $photo_id, 'business_id' => $business_id],
-        ['%s'], ['%d','%d']
+        ['id' => $photo_id],
+        ['%s'], ['%d']
     );
 
     if ($result !== false) wp_send_json_success(['message' => 'Photo status updated']);
@@ -2009,11 +1979,10 @@ function bntm_ajax_pb_delete_photo() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id = get_current_user_id();
     $photo_id    = intval($_POST['photo_id']);
 
     $photo = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}pb_photos WHERE id = %d AND business_id = %d", $photo_id, $business_id
+        "SELECT * FROM {$wpdb->prefix}pb_photos WHERE id = %d", $photo_id
     ));
     if (!$photo) { wp_send_json_error(['message' => 'Photo not found']); }
 
@@ -2021,7 +1990,7 @@ function bntm_ajax_pb_delete_photo() {
     $file = $upload_dir['basedir'] . '/' . $photo->file_path;
     if (file_exists($file)) @unlink($file);
 
-    $result = $wpdb->delete($wpdb->prefix . 'pb_photos', ['id' => $photo_id, 'business_id' => $business_id], ['%d','%d']);
+    $result = $wpdb->delete($wpdb->prefix . 'pb_photos', ['id' => $photo_id], ['%d']);
 
     if ($result) wp_send_json_success(['message' => 'Photo deleted']);
     else         wp_send_json_error(['message' => 'Failed to delete photo']);
@@ -2032,7 +2001,6 @@ function bntm_ajax_pb_bulk_action_photos() {
     if (!is_user_logged_in()) { wp_send_json_error(['message' => 'Unauthorized']); }
 
     global $wpdb;
-    $business_id  = get_current_user_id();
     $photo_ids    = json_decode(stripslashes($_POST['photo_ids']), true);
     $bulk_action  = sanitize_text_field($_POST['bulk_action']);
 
@@ -2043,8 +2011,8 @@ function bntm_ajax_pb_bulk_action_photos() {
 
     if ($bulk_action === 'delete') {
         $photos = $wpdb->get_results($wpdb->prepare(
-            "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE id IN ($placeholders) AND business_id = %d",
-            array_merge($photo_ids, [$business_id])
+            "SELECT file_path FROM {$wpdb->prefix}pb_photos WHERE id IN ($placeholders)",
+            $photo_ids
         ));
         $upload_dir = wp_upload_dir();
         foreach ($photos as $photo) {
@@ -2052,14 +2020,14 @@ function bntm_ajax_pb_bulk_action_photos() {
             if (file_exists($file)) @unlink($file);
         }
         $wpdb->query($wpdb->prepare(
-            "DELETE FROM {$wpdb->prefix}pb_photos WHERE id IN ($placeholders) AND business_id = %d",
-            array_merge($photo_ids, [$business_id])
+            "DELETE FROM {$wpdb->prefix}pb_photos WHERE id IN ($placeholders)",
+            $photo_ids
         ));
         wp_send_json_success(['message' => 'Photos deleted']);
     } elseif (in_array($bulk_action, ['approved','pending','flagged'])) {
         $wpdb->query($wpdb->prepare(
-            "UPDATE {$wpdb->prefix}pb_photos SET status = %s WHERE id IN ($placeholders) AND business_id = %d",
-            array_merge([$bulk_action], $photo_ids, [$business_id])
+            "UPDATE {$wpdb->prefix}pb_photos SET status = %s WHERE id IN ($placeholders)",
+            array_merge([$bulk_action], $photo_ids)
         ));
         wp_send_json_success(['message' => 'Photos updated to ' . $bulk_action]);
     } else {
@@ -2242,12 +2210,11 @@ function bntm_ajax_pb_upload_photo() {
 
     $result = $wpdb->insert(
         $wpdb->prefix . 'pb_photos',
-        ['rand_id' => $rand_id, 'business_id' => $event->business_id,
-         'event_id' => $event->id, 'prompt_id' => $prompt_id,
+        ['rand_id' => $rand_id, 'event_id' => $event->id, 'prompt_id' => $prompt_id,
          'guest_name' => $guest_name, 'file_path' => $file_path,
          'file_size' => $file_size, 'width' => $width, 'height' => $height,
          'status' => $status, 'guest_ip' => $guest_ip],
-        ['%s','%d','%d','%d','%s','%s','%d','%d','%d','%s','%s']
+        ['%s','%d','%d','%s','%s','%d','%d','%d','%s','%s']
     );
 
     if ($result) {
@@ -2677,13 +2644,27 @@ function bntm_shortcode_pb_upload() {
                 </div>
             </div>
             <div class="pb-prompts-list" id="pb-prompts-list"></div>
-            <div style="width:100%;padding:0 20px 20px;">
+        </div>
+
+        <!-- Screen 3: Capture Method -->
+        <div class="pb-screen" id="pb-screen-capture-method">
+            <div class="pb-screen-header">
+                <button class="pb-back-btn" onclick="pbShowScreen('prompts')">
+                    <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7" stroke-width="2" stroke-linecap="round"/></svg>
+                </button>
+                <div>
+                    <h2>Choose Capture Method</h2>
+                    <p id="pb-method-subtitle">How do you want to add your photo?</p>
+                </div>
+            </div>
+            <div style="width:100%;padding:20px;display:flex;flex-direction:column;gap:12px;">
+                <button class="pb-btn-big" id="pb-method-camera-btn" type="button">Use Camera</button>
+                <button class="pb-btn-outline" id="pb-method-upload-btn" type="button">Use Photo From Device</button>
                 <input type="file" accept="image/*" capture="environment" id="pb-file-input" style="display:none;">
-                <button class="pb-btn-outline" id="pb-file-btn" style="max-width:none;">Use Photo From Device</button>
             </div>
         </div>
 
-        <!-- Screen 3: Camera -->
+        <!-- Screen 4: Camera -->
         <div class="pb-screen" id="pb-screen-camera">
             <video id="pb-video" autoplay playsinline muted></video>
             <canvas id="pb-canvas"></canvas>
@@ -2695,7 +2676,7 @@ function bntm_shortcode_pb_upload() {
                     </button>
                 </div>
                 <div class="pb-camera-bottom">
-                    <button id="pb-camera-close" onclick="pbShowScreen('prompts')">
+                    <button id="pb-camera-close" onclick="pbShowScreen('capture-method')">
                         <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18" stroke-width="2"/><line x1="6" y1="6" x2="18" y2="18" stroke-width="2"/></svg>
                     </button>
                     <button class="pb-capture-btn" id="pb-capture-btn" aria-label="Take photo">
@@ -2705,7 +2686,7 @@ function bntm_shortcode_pb_upload() {
             </div>
         </div>
 
-        <!-- Screen 4: Preview -->
+        <!-- Screen 5: Preview -->
         <div class="pb-screen" id="pb-screen-preview">
             <img id="pb-preview-img" src="" alt="Preview">
             <div class="pb-preview-controls">
@@ -2733,11 +2714,11 @@ function bntm_shortcode_pb_upload() {
             </div>
             <div class="pb-preview-actions">
                 <button class="pb-btn-big" id="pb-confirm-btn">Confirm Photo</button>
-                <button class="pb-btn-outline" onclick="pbShowScreen('camera')">Retake</button>
+                <button class="pb-btn-outline" onclick="pbShowScreen('capture-method')">Retake</button>
             </div>
         </div>
 
-        <!-- Screen 5: Name -->
+        <!-- Screen 6: Name -->
         <div class="pb-screen" id="pb-screen-name">
             <h2>What's your name?</h2>
             <p id="pb-name-subtitle">Add your name to the photo (optional)</p>
@@ -2746,7 +2727,7 @@ function bntm_shortcode_pb_upload() {
             <button class="pb-btn-outline" id="pb-name-skip-btn" style="margin-top:10px;">Skip</button>
         </div>
 
-        <!-- Screen 6: Uploading -->
+        <!-- Screen 7: Uploading -->
         <div class="pb-screen" id="pb-screen-uploading">
             <div class="pb-spinner"></div>
             <h3>Uploading...</h3>
@@ -2754,7 +2735,7 @@ function bntm_shortcode_pb_upload() {
             <div class="pb-progress-bar"><div class="pb-progress-fill" id="pb-progress-fill"></div></div>
         </div>
 
-        <!-- Screen 7: Success -->
+        <!-- Screen 8: Success -->
         <div class="pb-screen" id="pb-screen-success">
             <div class="pb-success-icon">
                 <svg width="52" height="52" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2989,8 +2970,8 @@ function bntm_shortcode_pb_upload() {
         function selectPrompt(prompt) {
             selectedPrompt = prompt;
             document.getElementById('pb-camera-prompt-label').textContent = prompt.prompt_text || 'Free Capture';
-            showScreen('camera');
-            startCamera();
+            document.getElementById('pb-method-subtitle').textContent = 'Prompt: ' + (prompt.prompt_text || 'Free Capture');
+            showScreen('capture-method');
         }
 
         function isLocalHostName(host) {
@@ -3021,7 +3002,7 @@ function bntm_shortcode_pb_upload() {
         async function startCamera() {
             if (!isCameraSecureContext()) {
                 alert('Camera is blocked by browser security on this URL. Open this page using HTTPS, or open from localhost on this device. You can still use "Use Photo From Device".');
-                showScreen('prompts');
+                showScreen('capture-method');
                 return;
             }
 
@@ -3071,7 +3052,7 @@ function bntm_shortcode_pb_upload() {
             }
 
             if (!stream) {
-                showScreen('prompts');
+                showScreen('capture-method');
             }
         }
 
@@ -3127,9 +3108,19 @@ function bntm_shortcode_pb_upload() {
             }, 'image/jpeg', 0.88);
         });
 
-        document.getElementById('pb-file-btn').addEventListener('click', function() {
+        document.getElementById('pb-method-camera-btn').addEventListener('click', function() {
             if (!selectedPrompt) {
-                selectedPrompt = { id: 0, prompt_text: 'Free Capture' };
+                showScreen('prompts');
+                return;
+            }
+            showScreen('camera');
+            startCamera();
+        });
+
+        document.getElementById('pb-method-upload-btn').addEventListener('click', function() {
+            if (!selectedPrompt) {
+                showScreen('prompts');
+                return;
             }
             document.getElementById('pb-file-input').click();
         });
@@ -3880,9 +3871,9 @@ function pb_resize_image($file_path, $max_width, $mime) {
 function pb_get_stats($business_id) {
     global $wpdb;
     return [
-        'total_events'  => (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}pb_events WHERE business_id = %d", $business_id)),
-        'total_photos'  => (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}pb_photos WHERE business_id = %d", $business_id)),
-        'pending_photos'=> (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}pb_photos WHERE business_id = %d AND status='pending'", $business_id)),
-        'active_event'  => $wpdb->get_var($wpdb->prepare("SELECT title FROM {$wpdb->prefix}pb_events WHERE business_id = %d AND status='active' LIMIT 1", $business_id)),
+        'total_events'  => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}pb_events"),
+        'total_photos'  => (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}pb_photos"),
+        'pending_photos'=> (int) $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}pb_photos WHERE status='pending'"),
+        'active_event'  => $wpdb->get_var("SELECT title FROM {$wpdb->prefix}pb_events WHERE status='active' LIMIT 1"),
     ];
 }
