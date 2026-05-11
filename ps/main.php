@@ -176,6 +176,20 @@ function bntm_ps_get_tables() {
             INDEX idx_business (business_id),
             INDEX idx_loan (loan_id)
         ) {$charset};",
+
+        'ps_ticket_tags' => "CREATE TABLE {$prefix}ps_ticket_tags (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            rand_id VARCHAR(20) UNIQUE NOT NULL,
+            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            tag_name VARCHAR(100) NOT NULL DEFAULT '',
+            sort_order INT NOT NULL DEFAULT 0,
+            is_active TINYINT(1) NOT NULL DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_business_tag (business_id, tag_name),
+            INDEX idx_business (business_id),
+            INDEX idx_active (is_active)
+        ) {$charset};",
     ];
 }
 
@@ -237,8 +251,51 @@ add_action('wp_ajax_ps_get_ticket_history',       'bntm_ajax_ps_get_ticket_histo
 // ============================================================
 
 function bntm_ps_get_business_id() {
-    return (int) get_option('bntm_primary_business_id', 1);
+    // Enterprise mode: PS runs under a single global business context.
+    return 1;
 }
+
+function ps_enable_enterprise_single_scope_once(): void {
+    $flag = 'ps_enterprise_single_scope_migrated_v1';
+    if (get_option($flag) === '1') {
+        return;
+    }
+
+    global $wpdb;
+    $target_business_id = bntm_ps_get_business_id();
+
+    // Merge all PS module rows into one enterprise business scope.
+    $tables = [
+        $wpdb->prefix . 'ps_customers',
+        $wpdb->prefix . 'ps_collaterals',
+        $wpdb->prefix . 'ps_loans',
+        $wpdb->prefix . 'ps_payments',
+        $wpdb->prefix . 'ps_ticket_history',
+        $wpdb->prefix . 'ps_document_log',
+        $wpdb->prefix . 'ps_ticket_tags',
+    ];
+
+    foreach ($tables as $table) {
+        $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
+        if ($exists === $table) {
+            $wpdb->query($wpdb->prepare("UPDATE {$table} SET business_id=%d", $target_business_id));
+        }
+    }
+
+    // Keep finance exports visible after scope merge.
+    $fn_table = $wpdb->prefix . 'fn_transactions';
+    $fn_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $fn_table));
+    if ($fn_exists === $fn_table) {
+        $wpdb->query($wpdb->prepare(
+            "UPDATE {$fn_table} SET business_id=%d WHERE reference_type='ps_payment'",
+            $target_business_id
+        ));
+    }
+
+    update_option($flag, '1', false);
+}
+
+add_action('init', 'ps_enable_enterprise_single_scope_once', 12);
 
 function ps_user_can_manage_tickets(): bool {
     $current_user = wp_get_current_user();
@@ -247,12 +304,132 @@ function ps_user_can_manage_tickets(): bool {
     return $is_wp_admin || in_array($current_role, ['owner', 'manager'], true);
 }
 
-function ps_get_ticket_tags(): array {
-    $raw = (string) bntm_get_setting('ps_ticket_tags', '');
+function ps_parse_ticket_tags_from_text(string $raw): array {
     $tags = preg_split('/\r\n|\r|\n/', $raw);
     $tags = array_map(static fn($tag) => trim((string) $tag), $tags ?: []);
     $tags = array_values(array_unique(array_filter($tags, static fn($tag) => $tag !== '')));
     return $tags;
+}
+
+function ps_ensure_ticket_tags_table(): void {
+    static $done = false;
+    if ($done) {
+        return;
+    }
+
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    $tables = bntm_ps_get_tables();
+    if (!empty($tables['ps_ticket_tags'])) {
+        dbDelta($tables['ps_ticket_tags']);
+    }
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'ps_ticket_tags';
+    $business_id = bntm_ps_get_business_id();
+    $count = (int) $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM {$table} WHERE business_id=%d",
+        $business_id
+    ));
+
+    // Seed one sample row for business id 1 so first setup has a ready tag.
+    if ($count === 0) {
+        $rand_id = $wpdb->get_var($wpdb->prepare(
+            "SELECT rand_id FROM {$table} WHERE rand_id=%s LIMIT 1",
+            '1'
+        )) ? bntm_rand_id() : '1';
+
+        $wpdb->insert($table, [
+            'rand_id' => $rand_id,
+            'business_id' => $business_id,
+            'tag_name' => 'Sample',
+            'sort_order' => 1,
+            'is_active' => 1,
+        ]);
+    }
+
+    $done = true;
+}
+
+function ps_replace_ticket_tags(array $tags): void {
+    ps_ensure_ticket_tags_table();
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'ps_ticket_tags';
+    $business_id = bntm_ps_get_business_id();
+
+    $wpdb->delete($table, ['business_id' => $business_id], ['%d']);
+
+    foreach (array_values($tags) as $idx => $tag) {
+        $tag = sanitize_text_field((string) $tag);
+        if ($tag === '') {
+            continue;
+        }
+
+        $wpdb->insert($table, [
+            'rand_id' => bntm_rand_id(),
+            'business_id' => $business_id,
+            'tag_name' => $tag,
+            'sort_order' => $idx + 1,
+            'is_active' => 1,
+        ]);
+    }
+}
+
+function ps_get_ticket_tags(): array {
+    ps_ensure_ticket_tags_table();
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'ps_ticket_tags';
+    $business_id = bntm_ps_get_business_id();
+    $rows = $wpdb->get_col($wpdb->prepare(
+        "SELECT tag_name FROM {$table}
+         WHERE business_id=%d AND is_active=1
+         ORDER BY sort_order ASC, id ASC",
+        $business_id
+    ));
+
+    $rows = is_array($rows) ? $rows : [];
+    $tags = array_values(array_unique(array_filter(array_map('trim', $rows), static fn($tag) => $tag !== '')));
+    if (!empty($tags)) {
+        return $tags;
+    }
+
+    // Legacy fallback and one-time migration from text setting into table rows.
+    $legacy_tags = ps_parse_ticket_tags_from_text((string) bntm_get_setting('ps_ticket_tags', ''));
+    if (!empty($legacy_tags)) {
+        ps_replace_ticket_tags($legacy_tags);
+        return $legacy_tags;
+    }
+
+    return [];
+}
+
+function ps_customers_table_columns(): array {
+    global $wpdb;
+    static $columns = null;
+    if (is_array($columns)) {
+        return $columns;
+    }
+
+    $columns = [];
+    $rows = $wpdb->get_results("SHOW COLUMNS FROM {$wpdb->prefix}ps_customers", ARRAY_A);
+    if (is_array($rows)) {
+        foreach ($rows as $row) {
+            $field = (string)($row['Field'] ?? '');
+            if ($field !== '') {
+                $columns[$field] = true;
+            }
+        }
+    }
+    return $columns;
+}
+
+function ps_filter_customer_payload(array $payload): array {
+    $columns = ps_customers_table_columns();
+    if (empty($columns)) {
+        return $payload;
+    }
+    return array_intersect_key($payload, $columns);
 }
 
 function ps_normalize_ticket_tag(string $tag): string {
@@ -278,9 +455,8 @@ function ps_auto_mark_overdue($business_id) {
     $grace = (int)bntm_get_setting('ps_grace_period', '0');
     $wpdb->query($wpdb->prepare(
         "UPDATE {$wpdb->prefix}ps_loans SET status='overdue'
-         WHERE business_id=%d AND status='active'
-         AND DATEDIFF(CURDATE(), due_date) > %d",
-        $business_id, $grace
+         WHERE status='active'
+         AND DATEDIFF(CURDATE(), due_date) > %d",  $grace
     ));
 }
 
@@ -416,8 +592,7 @@ function ps_generate_ticket_number_by_date($business_id, $date = '') {
     $last = (int)$wpdb->get_var($wpdb->prepare(
         "SELECT MAX(CAST(SUBSTRING_INDEX(ticket_number,'-',-1) AS UNSIGNED))
          FROM {$wpdb->prefix}ps_loans
-         WHERE business_id=%d AND ticket_number LIKE %s",
-        $business_id, $like
+         WHERE ticket_number LIKE %s",  $like
     ));
     $next = max(1, $last + 1);
     return sprintf('%s-%s-%04d', $prefix, $stamp, $next);
@@ -481,6 +656,31 @@ function ps_parse_cash_breakdown($raw): array {
         ),
         'has_input' => $total > 0 || array_sum(array_column($rows, 'quantity')) > 0,
     ];
+}
+
+function ps_normalize_cash_flow_tag(string $tag): string {
+    $tag = trim($tag);
+    return $tag === '' ? 'all' : strtolower($tag);
+}
+
+function ps_cash_flow_breakdown_option_key(int $business_id, string $report_date, string $tag_filter = 'all'): string {
+    $normalized_tag = ps_normalize_cash_flow_tag($tag_filter);
+    $safe_date = preg_replace('/[^0-9\-]/', '', $report_date);
+    if ($safe_date === '') $safe_date = date('Y-m-d');
+    return 'ps_cf_breakdown_enterprise_' . $safe_date . '_' . md5($normalized_tag);
+}
+
+function ps_save_cash_flow_breakdown(int $business_id, string $report_date, array $cash_breakdown, string $tag_filter = 'all'): void {
+    if (empty($cash_breakdown['has_input'])) return;
+    $key = ps_cash_flow_breakdown_option_key($business_id, $report_date, $tag_filter);
+    update_option($key, $cash_breakdown['raw'] ?? [], false);
+}
+
+function ps_get_cash_flow_breakdown(int $business_id, string $report_date, string $tag_filter = 'all'): array {
+    $key = ps_cash_flow_breakdown_option_key($business_id, $report_date, $tag_filter);
+    $stored = get_option($key, []);
+    if (!is_array($stored)) $stored = [];
+    return ps_parse_cash_breakdown($stored);
 }
 
 function ps_is_cash_method($method): bool {
@@ -567,6 +767,7 @@ function bntm_shortcode_ps() {
     }
     $business_id  = bntm_ps_get_business_id();
     ps_ensure_ticket_tag_column();
+    ps_ensure_ticket_tags_table();
     $active_tab   = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'overview';
     ps_auto_mark_overdue($business_id);
 
@@ -913,10 +1114,11 @@ function ps_render_modals() {
                                 <option value="fair">Fair</option><option value="poor">Poor</option>
                             </select>
                         </div>
-                       <div class="bntm-form-group"><label>Weight (grams)</label><input type="number" name="collateral_weight" step=".01" placeholder="0.00"></div>
+                       <div class="bntm-form-group"><label>Weight (grams)</label>
+                       <input type="number" name="collateral_weight" step=".01" placeholder="0.00"required></div>
                         <div class="bntm-form-group">
                             <label>Karat</label>
-                            <select name="collateral_karat"><option value="">N/A</option><option value="10k">10k</option><option value="14k">14k</option><option value="18k">18k</option><option value="21k">21k</option><option value="22k">22k</option><option value="24k">24k</option></select>
+                            <select name="collateral_karat" required><option value="">N/A</option><option value="10k">10k</option><option value="14k">14k</option><option value="18k">18k</option><option value="21k">21k</option><option value="22k">22k</option><option value="24k">24k</option></select>
                         </div>
                       
                       
@@ -940,7 +1142,7 @@ function ps_render_modals() {
                         </div>
                         <div class="bntm-form-group">
                             <label>Ticket Tag</label>
-                            <select name="ticket_tag">
+                            <select name="ticket_tag"required>
                                 <option value="">No Tag</option>
                                 <?php foreach ($ticket_tags as $tag): ?>
                                     <option value="<?php echo esc_attr($tag); ?>"><?php echo esc_html($tag); ?></option>
@@ -958,7 +1160,7 @@ function ps_render_modals() {
                             </select>
                         </div>
                         <div class="bntm-form-group">
-                            <label>Service Fee (?)</label>
+                            <label>Service Fee</label>
                             <input type="number" name="service_fee" step=".01" placeholder="0.00" value="<?php echo esc_attr(bntm_get_setting('ps_service_fee','0.00')); ?>" id="loan-fee-input">
                         </div>
                         <div class="bntm-form-group">
@@ -1097,10 +1299,7 @@ function ps_render_modals() {
                         <label>Payment Method</label>
                         <select name="payment_method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank_transfer">Bank Transfer</option></select>
                     </div>
-                    <div class="bntm-form-group">
-                        <label>Reference Number</label>
-                        <input type="text" name="reference_number" placeholder="Enter reference number">
-                    </div>
+                   
                     <div class="bntm-form-group">
                         <label>Notes</label>
                         <textarea name="notes" rows="2" placeholder="Internal notes..."></textarea>
@@ -1989,7 +2188,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         const autoPrint = options.autoPrint === true;
         const modal = document.getElementById('ps-print-modal');
         const preview = document.getElementById('ps-print-preview');
-        const titles = { pawn_ticket:'Pawn Ticket', renewal_notice:'Renewal Notice', redemption_receipt:'Redemption Receipt', forfeiture_notice:'Forfeiture Notice', customer_statement:'Customer Statement', payment_receipt:'Payment Receipt', daily_summary:'Daily Summary', cash_flow_summary:'Cash Flow Summary' };
+        const titles = { pawn_ticket:'Pawn Ticket', renewal_notice:'Renewal Notice', redemption_receipt:'Redemption Receipt', forfeiture_notice:'Forfeiture Notice', customer_statement:'Customer Statement', payment_receipt:'Payment Receipt', daily_summary:'Cash Flow Summary', cash_flow_summary:'Cash Flow Summary' };
         document.getElementById('print-modal-title').textContent = titles[docType] || 'Document';
         document.getElementById('print-modal-subtitle').textContent = 'Loan ID: ' + loanId + ' - Review before printing';
         document.getElementById('print-modal-subtitle').textContent = autoPrint
@@ -2294,7 +2493,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
     };
     window.psGenerateDailySummaryFromOverview = function() {
         const dt = new Date().toISOString().slice(0,10);
-        window.location.href = '?tab=reports&report=daily_summary&rdate=' + encodeURIComponent(dt);
+        window.location.href = '?tab=reports&report=cash_flow_summary&rfrom=' + encodeURIComponent(dt) + '&rto=' + encodeURIComponent(dt);
     };
 
     // Backdrop close
@@ -2507,30 +2706,30 @@ function ps_overview_tab($business_id) {
     $ct  = $wpdb->prefix.'ps_customers';
     $colt= $wpdb->prefix.'ps_collaterals';
 
-    $total_active   = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$lt} WHERE business_id=%d AND status='active'", $business_id));
-    $total_overdue  = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$lt} WHERE business_id=%d AND status='overdue'", $business_id));
-    $total_custs    = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$ct} WHERE business_id=%d AND status='active'", $business_id));
-    $due_today      = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$lt} WHERE business_id=%d AND due_date=CURDATE() AND status='active'", $business_id));
-    $monthly_income = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(interest_amount+service_fee),0) FROM {$pt} WHERE business_id=%d AND MONTH(created_at)=MONTH(CURDATE()) AND YEAR(created_at)=YEAR(CURDATE())", $business_id));
-    $portfolio      = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(principal),0) FROM {$lt} WHERE business_id=%d AND status IN ('active','overdue')", $business_id));
+    $total_active   = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$lt} WHERE status='active'"));
+    $total_overdue  = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$lt} WHERE status='overdue'"));
+    $total_custs    = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$ct} WHERE status='active'"));
+    $due_today      = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$lt} WHERE due_date=CURDATE() AND status='active'"));
+    $monthly_income = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(interest_amount+service_fee),0) FROM {$pt} WHERE MONTH(created_at)=MONTH(CURDATE()) AND YEAR(created_at)=YEAR(CURDATE())"));
+    $portfolio      = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(principal),0) FROM {$lt} WHERE status IN ('active','overdue')"));
 
     $grace = (int)bntm_get_setting('ps_grace_period', '0');
     $due_loans = $wpdb->get_results($wpdb->prepare(
         "SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS customer_name,c.photo_path,col.description AS collateral_desc
          FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id JOIN {$colt} col ON col.id=l.collateral_id
-         WHERE l.business_id=%d AND l.due_date=CURDATE() AND l.status='active'
-         ORDER BY l.ticket_number DESC", $business_id));
+         WHERE l.due_date=CURDATE() AND l.status='active'
+         ORDER BY l.ticket_number DESC"));
 
     $overdue_loans = $wpdb->get_results($wpdb->prepare(
         "SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS customer_name,c.photo_path,col.description AS collateral_desc,
                 DATEDIFF(CURDATE(),l.due_date) AS days_overdue
          FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id JOIN {$colt} col ON col.id=l.collateral_id
-         WHERE l.business_id=%d AND l.status='overdue' ORDER BY l.due_date ASC LIMIT 10", $business_id));
+         WHERE l.status='overdue' ORDER BY l.due_date ASC LIMIT 10"));
 
     $recent_pay = $wpdb->get_results($wpdb->prepare(
         "SELECT p.*,l.ticket_number,l.root_ticket,CONCAT(c.last_name,', ',c.first_name) AS customer_name
          FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d ORDER BY p.created_at DESC LIMIT 8", $business_id));
+         ORDER BY p.created_at DESC LIMIT 8"));
 
     ob_start();
     ?>
@@ -2587,12 +2786,12 @@ function ps_overview_tab($business_id) {
  
         <button class="ps-qbtn"
                 onclick="psGenerateDailySummaryFromOverview()"
-                title="Daily Summary (Alt+D)"
+                title="Cash Flow (Alt+D)"
                 style="padding:9px 16px;font-size:13px;border-radius:8px;">
             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="flex-shrink:0;">
                 <path stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
             </svg>                                                                   
-            Daily Summary
+            Cash Flow
             <kbd class="ps-shortcut-key">Alt+D</kbd>
         </button>
     </div>
@@ -2820,9 +3019,9 @@ function ps_collaterals_tab($business_id) {
          LEFT JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
          {$w} ORDER BY col.created_at DESC LIMIT 200"
     );
-    $tp  = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$colt} WHERE business_id=%d AND status='pawned'", $business_id));
-    $ta  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(appraised_value),0) FROM {$colt} WHERE business_id=%d AND status='pawned'", $business_id));
-    $tfs = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$colt} WHERE business_id=%d AND status IN ('for_sale','for_auction','sold')", $business_id));
+    $tp  = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$colt} WHERE status='pawned'"));
+    $ta  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(appraised_value),0) FROM {$colt} WHERE status='pawned'"));
+    $tfs = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$colt} WHERE status IN ('for_sale','for_auction','sold')"));
 
     ob_start();
     ?>
@@ -3011,9 +3210,9 @@ function ps_payments_tab($business_id) {
          {$w} ORDER BY p.created_at DESC LIMIT 300"
     );
 
-    $today_col  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(amount),0) FROM {$pt} WHERE business_id=%d AND DATE(created_at)=CURDATE()", $business_id));
-    $month_col  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(amount),0) FROM {$pt} WHERE business_id=%d AND MONTH(created_at)=MONTH(CURDATE()) AND YEAR(created_at)=YEAR(CURDATE())", $business_id));
-    $month_int  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(interest_amount),0) FROM {$pt} WHERE business_id=%d AND MONTH(created_at)=MONTH(CURDATE()) AND YEAR(created_at)=YEAR(CURDATE())", $business_id));
+    $today_col  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(amount),0) FROM {$pt} WHERE DATE(created_at)=CURDATE()"));
+    $month_col  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(amount),0) FROM {$pt} WHERE MONTH(created_at)=MONTH(CURDATE()) AND YEAR(created_at)=YEAR(CURDATE())"));
+    $month_int  = (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(interest_amount),0) FROM {$pt} WHERE MONTH(created_at)=MONTH(CURDATE()) AND YEAR(created_at)=YEAR(CURDATE())"));
 
     ob_start();
     ?>
@@ -3074,12 +3273,11 @@ function ps_finance_tab($business_id) {
         "SELECT p.*,l.ticket_number,l.root_ticket,CONCAT(c.last_name,', ',c.first_name) AS customer_name,
                 (SELECT id FROM {$fn} WHERE reference_type='ps_payment' AND reference_id=p.id LIMIT 1) AS fn_id
          FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND p.payment_type IN ('interest','service_fee','penalty')
-         ORDER BY p.created_at DESC LIMIT 200", $business_id
-    ));
+         WHERE p.payment_type IN ('interest','service_fee','penalty')
+         ORDER BY p.created_at DESC LIMIT 200"));
 
-    $exported      = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(DISTINCT reference_id) FROM {$fn} WHERE business_id=%d AND reference_type='ps_payment'", $business_id));
-    $total_exported= (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(amount),0) FROM {$fn} WHERE business_id=%d AND reference_type='ps_payment'", $business_id));
+    $exported      = (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(DISTINCT reference_id) FROM {$fn} WHERE reference_type='ps_payment'"));
+    $total_exported= (float)$wpdb->get_var($wpdb->prepare("SELECT COALESCE(SUM(amount),0) FROM {$fn} WHERE reference_type='ps_payment'"));
 
     ob_start(); ?>
     <h3 style="margin:0 0 14px;">Finance Module Export</h3>
@@ -3117,9 +3315,7 @@ function ps_documents_tab( $business_id ) {
         "SELECT dl.*, l.ticket_number
          FROM {$wpdb->prefix}ps_document_log dl
          LEFT JOIN {$wpdb->prefix}ps_loans l ON l.id = dl.loan_id
-         WHERE dl.business_id = %d ORDER BY dl.created_at DESC LIMIT 40",
-        $business_id
-    ) );
+         ORDER BY dl.created_at DESC LIMIT 40") );
  
     ob_start(); ?>
     <h3 style="margin:0 0 16px;">Documents &amp; Print Center</h3>
@@ -3276,12 +3472,24 @@ function ps_reports_tab( $business_id ) {
     $denomination_data = sanitize_text_field($_GET['denomination_data'] ?? '');
     $cash_breakdown = ps_parse_cash_breakdown($denomination_data);
     $ticket_tags = ps_get_ticket_tags();
+
+    // Backward compatibility: old links with daily_summary now use cash_flow_summary.
+    if ($rtype === 'daily_summary') {
+        $rtype = 'cash_flow_summary';
+        if (!empty($rdate)) {
+            $rfrom = $rdate;
+            $rto = $rdate;
+        }
+    }
+
+    if ($rtype === 'cash_flow_summary' && !empty($cash_breakdown['has_input'])) {
+        ps_save_cash_flow_breakdown((int)$business_id, $rto, $cash_breakdown, $rtag);
+    }
  
     $reports = [
         'summary'           => ['label' => 'Summary (All Statuses)', 'date' => 'range'],
         'list_loans'        => ['label' => 'List of Loans Granted',  'date' => 'range'],
         'list_payments'     => ['label' => 'List of Payments',       'date' => 'range'],
-        'daily_summary'     => ['label' => 'Daily Summary',          'date' => 'single'],
         'cash_flow_summary' => ['label' => 'Cash Flow Summary',      'date' => 'range'],
         'tickets_by_status' => ['label' => 'Tickets by Status',      'date' => 'range'],
     ];
@@ -3320,17 +3528,20 @@ function ps_reports_tab( $business_id ) {
         </select>
         <?php endif; ?>
 
-        <?php if (in_array($rtype, ['daily_summary','cash_flow_summary'], true)): ?>
-        <select name="rtag" style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;">
-            <option value="all" <?php selected($rtag,'all'); ?>>All Tags</option>
+        <?php if ($rtype === 'cash_flow_summary'): ?>
+        <input type="text" name="rtag" list="ps-report-ticket-tags" value="<?php echo esc_attr($rtag); ?>" placeholder="Type tag (e.g. Ranaw)"
+               style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;min-width:210px;">
+        <datalist id="ps-report-ticket-tags">
+            <option value="all">All Branch Tags</option>
             <?php foreach ($ticket_tags as $tag): ?>
-            <option value="<?php echo esc_attr($tag); ?>" <?php selected($rtag,$tag); ?>><?php echo esc_html($tag); ?></option>
+            <option value="<?php echo esc_attr($tag); ?>"></option>
             <?php endforeach; ?>
-        </select>
+        </datalist>
         <?php endif; ?>
  
-        <?php if (in_array($rtype, ['daily_summary','cash_flow_summary'], true)): ?>
-        <button type="button" onclick="psGenerateDailySummaryPDF()" class="bntm-btn-primary" style="padding:7px 16px;">Generate <?php echo $rtype === 'cash_flow_summary' ? 'Cash Flow Summary' : 'Daily Summary'; ?></button>
+        <?php if ($rtype === 'cash_flow_summary'): ?>
+        <button type="button" onclick="psApplyReportFilters()" class="bntm-btn-secondary" style="padding:7px 14px;">Apply Filter</button>
+        <button type="button" onclick="psGenerateDailySummaryPDF()" class="bntm-btn-primary" style="padding:7px 16px;">Generate Cash Flow Summary</button>
         <button type="button" onclick="psOpenDenominationModal('edit')" class="bntm-btn-secondary" style="padding:7px 14px;">Cash Count</button>
         <?php else: ?>
         <button type="button" onclick="psReportPrepareGenerate()" class="bntm-btn-primary" style="padding:7px 16px;">Apply</button>
@@ -3338,10 +3549,6 @@ function ps_reports_tab( $business_id ) {
         <?php endif; ?>
     </form>
 
-    <?php if ($rtype === 'daily_summary'): ?>
-    
-    <?php endif; ?>
- 
     <style>
     .ps-report-hero { display:flex; justify-content:space-between; gap:16px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px; }
     .ps-report-title { font-size:22px; font-weight:800; color:#0f172a; margin:0; }
@@ -3381,7 +3588,6 @@ function ps_reports_tab( $business_id ) {
         case 'summary':           echo ps_analytics_summary($business_id, $rfrom, $rto);                      break;
         case 'list_loans':        echo ps_analytics_loans($business_id, $rfrom, $rto);                        break;
         case 'list_payments':     echo ps_analytics_payments($business_id, $rfrom, $rto);                     break;
-        case 'daily_summary':     echo ps_analytics_daily_summary($business_id, $rdate, $cash_breakdown, $rtag);     break;
         case 'cash_flow_summary': echo ps_analytics_cash_flow_summary($business_id, $rfrom, $rto, $cash_breakdown, $rtag); break;
         case 'tickets_by_status': echo ps_analytics_tickets_by_status($business_id, $rfrom, $rto, $rstatus); break;
         default:                  echo ps_analytics_summary($business_id, $rfrom, $rto);
@@ -3460,18 +3666,18 @@ function ps_reports_tab( $business_id ) {
         psDenominationModalAction = 'print_direct';
         psOpenDenominationModal('print_direct');
     };
+    window.psApplyReportFilters = function() {
+        psSyncReportParamsFromForm();
+        document.getElementById('ps-report-form').submit();
+    };
     window.psReportPrepareGenerate = function() {
         psSyncReportParamsFromForm();
-        if (['daily_summary','cash_flow_summary'].includes(psReportParams.rtype) && !document.getElementById('ps-denomination-data').value) {
-            psOpenDenominationModal('generate');
-            return;
-        }
         document.getElementById('ps-report-form').submit();
     };
     window.psReportOpenModal = function(skipPrompt) {
         psSyncReportParamsFromForm();
         var p = psReportParams;
-        if (!skipPrompt && ['daily_summary','cash_flow_summary'].includes(p.rtype) && !document.getElementById('ps-denomination-data').value) {
+        if (!skipPrompt && p.rtype === 'cash_flow_summary' && !document.getElementById('ps-denomination-data').value) {
             psOpenDenominationModal('print');
             return;
         }
@@ -3523,6 +3729,20 @@ function ps_reports_tab( $business_id ) {
         psReportParams.rtag = rtagEl ? (rtagEl.value || 'all') : 'all';
     };
     document.addEventListener('DOMContentLoaded', function() {
+        var form = document.getElementById('ps-report-form');
+        if (form) {
+            form.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter') return;
+                var target = e.target;
+                if (!target || target.name !== 'rtag') return;
+                e.preventDefault();
+                if (typeof psApplyReportFilters === 'function') {
+                    psApplyReportFilters();
+                } else {
+                    form.submit();
+                }
+            });
+        }
         document.querySelectorAll('[data-denom]').forEach(function(input){
             input.addEventListener('input', psUpdateDenominationTotals);
         });
@@ -3631,9 +3851,8 @@ function ps_analytics_summary($business_id, $from, $to): string {
          FROM {$wpdb->prefix}ps_loans l
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
          JOIN {$wpdb->prefix}ps_collaterals col ON col.id=l.collateral_id
-         WHERE l.business_id=%d AND l.loan_date BETWEEN %s AND %s
-         ORDER BY l.id DESC",
-        $business_id, $from, $to
+         WHERE l.loan_date BETWEEN %s AND %s
+         ORDER BY l.id DESC",  $from, $to
     ));
 
     $status_counts = ['active'=>0,'renewed'=>0,'overdue'=>0,'redeemed'=>0,'forfeited'=>0];
@@ -3707,9 +3926,8 @@ function ps_analytics_loans($business_id, $from, $to): string {
          FROM {$wpdb->prefix}ps_loans l
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
          JOIN {$wpdb->prefix}ps_collaterals col ON col.id=l.collateral_id
-         WHERE l.business_id=%d AND l.loan_date BETWEEN %s AND %s
-         ORDER BY l.loan_date DESC, l.id DESC",
-        $business_id, $from, $to
+         WHERE l.loan_date BETWEEN %s AND %s
+         ORDER BY l.loan_date DESC, l.id DESC",  $from, $to
     ));
     $total_principal = array_sum(array_column($rows, 'principal'));
     $total_net = 0;
@@ -3773,13 +3991,13 @@ function ps_cash_flow_data(int $business_id, string $from, string $to, string $t
         "SELECT p.amount,p.payment_method
          FROM {$pt} p
          JOIN {$lt} l ON l.id=p.loan_id
-         WHERE p.business_id=%d AND DATE(p.created_at)<%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : ""),
-        ...($has_tag_filter ? [$business_id, $from, $tag_filter_sql] : [$business_id, $from])
+         WHERE DATE(p.created_at)<%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : ""),
+        ...($has_tag_filter ? [ $from, $tag_filter_sql] : [ $from])
     ));
     $loans_before = $wpdb->get_results($wpdb->prepare(
         "SELECT principal,service_fee,additional_to_principal,transaction_type,payment_method
-         FROM {$lt} WHERE business_id=%d AND DATE(loan_date)<%s" . ($has_tag_filter ? " AND LOWER(TRIM(ticket_tag))=%s" : ""),
-        ...($has_tag_filter ? [$business_id, $from, $tag_filter_sql] : [$business_id, $from])
+         FROM {$lt} WHERE DATE(loan_date)<%s" . ($has_tag_filter ? " AND LOWER(TRIM(ticket_tag))=%s" : ""),
+        ...($has_tag_filter ? [ $from, $tag_filter_sql] : [ $from])
     ));
 
     $payments = $wpdb->get_results($wpdb->prepare(
@@ -3787,17 +4005,17 @@ function ps_cash_flow_data(int $business_id, string $from, string $to, string $t
          FROM {$pt} p
          JOIN {$lt} l ON l.id=p.loan_id
          JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND DATE(p.created_at) BETWEEN %s AND %s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
+         WHERE DATE(p.created_at) BETWEEN %s AND %s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY p.created_at ASC, p.id ASC",
-        ...($has_tag_filter ? [$business_id, $from, $to, $tag_filter_sql] : [$business_id, $from, $to])
+        ...($has_tag_filter ? [ $from, $to, $tag_filter_sql] : [ $from, $to])
     ));
     $loans = $wpdb->get_results($wpdb->prepare(
         "SELECT l.*, CONCAT(c.last_name, ', ', c.first_name) AS customer_name
          FROM {$lt} l
          JOIN {$ct} c ON c.id=l.customer_id
-         WHERE l.business_id=%d AND DATE(l.loan_date) BETWEEN %s AND %s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
+         WHERE DATE(l.loan_date) BETWEEN %s AND %s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY l.loan_date ASC, l.id ASC",
-        ...($has_tag_filter ? [$business_id, $from, $to, $tag_filter_sql] : [$business_id, $from, $to])
+        ...($has_tag_filter ? [ $from, $to, $tag_filter_sql] : [ $from, $to])
     ));
 
     $cash_in_before = 0;
@@ -3851,8 +4069,16 @@ function ps_analytics_cash_flow_summary($business_id, $from, $to, array $cash_br
     $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
     $counted = (float)($cash_breakdown['total_counted'] ?? 0);
     $over_short = round($counted - $data['cash_ending'], 2);
+    $yesterday_date = date('Y-m-d', strtotime($to . ' -1 day'));
+    $yesterday_breakdown = ps_get_cash_flow_breakdown((int)$business_id, $yesterday_date, $tag_filter);
+    $yesterday_total = (float)($yesterday_breakdown['total_counted'] ?? 0);
 
     ob_start(); ?>
+    <?php if ($has_tag_filter): ?>
+    <div style="margin-bottom:10px;padding:8px 10px;border:1px solid #dbe2ea;border-radius:10px;background:#fff;font-size:12px;color:#334155;">
+        Branch Tag: <strong><?php echo esc_html($tag_filter); ?></strong>
+    </div>
+    <?php endif; ?>
     <div class="ps-analytics-grid">
         <div class="ps-analytics-card"><div class="ps-analytics-label">Beginning Cash</div><div class="ps-analytics-value">P <?php echo number_format($data['beginning_cash'],2); ?></div></div>
         <div class="ps-analytics-card"><div class="ps-analytics-label">Cash In</div><div class="ps-analytics-value">P <?php echo number_format($data['payment_total'],2); ?></div><div class="ps-analytics-meta"><?php echo number_format(count($data['payments'])); ?> cash payment rows</div></div>
@@ -3872,7 +4098,25 @@ function ps_analytics_cash_flow_summary($business_id, $from, $to, array $cash_br
                     <tr><td>Total Loans Extended</td><td class="r">P <?php echo number_format($data['loan_total'],2); ?></td></tr>
                     <tr><td>Cash Ending Balance</td><td class="r">P <?php echo number_format($data['cash_ending'],2); ?></td></tr>
                     <tr><td>Counted Cash</td><td class="r">P <?php echo number_format($counted,2); ?></td></tr>
+                    <tr><td>Yesterday Counted Cash</td><td class="r">P <?php echo number_format($yesterday_total,2); ?></td></tr>
                 </tbody>
+            </table>
+            <h4 style="margin-top:16px;">Today Denominations</h4>
+            <table class="ps-analytics-table">
+                <thead><tr><th>Denom</th><th class="r">Today Qty</th><th class="r">Today Amount</th></tr></thead>
+                <tbody>
+                    <?php foreach (($cash_breakdown['rows'] ?? []) as $today_row):
+                    ?>
+                    <tr>
+                        <td>P <?php echo number_format((float)$today_row['denomination'], 0); ?></td>
+                        <td class="r"><?php echo number_format((int)$today_row['quantity']); ?></td>
+                        <td class="r">P <?php echo number_format((float)$today_row['amount'], 2); ?></td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+                <tfoot>
+                    <tr><td style="font-weight:700;">Yesterday Total Cash</td><td></td><td class="r" style="font-weight:700;">P <?php echo number_format($yesterday_total,2); ?></td></tr>
+                </tfoot>
             </table>
         </div>
         <div class="ps-analytics-panel">
@@ -3901,9 +4145,8 @@ function ps_analytics_payments($business_id, $from, $to): string {
          FROM {$wpdb->prefix}ps_payments p
          JOIN {$wpdb->prefix}ps_loans l ON l.id=p.loan_id
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND DATE(p.created_at) BETWEEN %s AND %s
-         ORDER BY p.created_at DESC",
-        $business_id, $from, $to
+         WHERE DATE(p.created_at) BETWEEN %s AND %s
+         ORDER BY p.created_at DESC",  $from, $to
     ));
     $total = array_sum(array_column($rows, 'amount'));
     $interest = array_sum(array_column($rows, 'interest_amount'));
@@ -3964,16 +4207,16 @@ function ps_analytics_daily_summary($business_id, $report_date, array $cash_brea
     $rows_loans = $wpdb->get_results($wpdb->prepare(
         "SELECT l.ticket_number,l.ticket_tag,l.principal,l.service_fee,l.payment_method,CONCAT(c.last_name, ', ', c.first_name) AS customer_name
          FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id
-         WHERE l.business_id=%d AND DATE(l.loan_date)=%s AND l.transaction_type='new'" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
+         WHERE DATE(l.loan_date)=%s AND l.transaction_type='new'" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY l.id DESC",
-        ...($has_tag_filter ? [$business_id, $report_date, $tag_filter_sql] : [$business_id, $report_date])
+        ...($has_tag_filter ? [ $report_date, $tag_filter_sql] : [ $report_date])
     ));
     $rows_payments = $wpdb->get_results($wpdb->prepare(
         "SELECT p.amount,p.payment_method,p.interest_amount,p.principal_amount,p.penalty_amount,l.ticket_number,l.ticket_tag,CONCAT(c.last_name, ', ', c.first_name) AS customer_name
          FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND DATE(p.created_at)=%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
+         WHERE DATE(p.created_at)=%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY p.id DESC",
-        ...($has_tag_filter ? [$business_id, $report_date, $tag_filter_sql] : [$business_id, $report_date])
+        ...($has_tag_filter ? [ $report_date, $tag_filter_sql] : [ $report_date])
     ));
     $loan_out = 0;
     foreach ($rows_loans as $row) $loan_out += (float)$row->principal - (float)$row->service_fee;
@@ -4072,9 +4315,8 @@ function ps_analytics_tickets_by_status($business_id, $from, $to, $filter_status
          FROM {$wpdb->prefix}ps_loans l
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
          JOIN {$wpdb->prefix}ps_collaterals col ON col.id=l.collateral_id
-         WHERE l.business_id=%d AND l.loan_date BETWEEN %s AND %s {$status_clause}
-         ORDER BY l.due_date ASC, l.id DESC",
-        $business_id, $from, $to
+         WHERE l.loan_date BETWEEN %s AND %s {$status_clause}
+         ORDER BY l.due_date ASC, l.id DESC",  $from, $to
     ));
     $total_principal = array_sum(array_column($rows, 'principal'));
     $avg_principal = count($rows) ? $total_principal / count($rows) : 0;
@@ -4131,9 +4373,8 @@ function ps_rpt_summary( int $business_id, string $from, string $to, array $b ):
          FROM   {$wpdb->prefix}ps_loans       l
          JOIN   {$wpdb->prefix}ps_customers   c   ON c.id  = l.customer_id
          JOIN   {$wpdb->prefix}ps_collaterals col ON col.id = l.collateral_id
-         WHERE  l.business_id = %d AND l.loan_date BETWEEN %s AND %s
-         ORDER  BY FIELD(l.status,'overdue','active','renewed','redeemed','forfeited'), l.due_date ASC",
-        $business_id, $from, $to
+         WHERE l.loan_date BETWEEN %s AND %s
+         ORDER  BY FIELD(l.status,'overdue','active','renewed','redeemed','forfeited'), l.due_date ASC",  $from, $to
     ) );
  
     $by_status = [];
@@ -4231,9 +4472,8 @@ function ps_rpt_list_loans( int $business_id, string $from, string $to, array $b
          FROM   {$wpdb->prefix}ps_loans       l
          JOIN   {$wpdb->prefix}ps_customers   c   ON c.id  = l.customer_id
          JOIN   {$wpdb->prefix}ps_collaterals col ON col.id = l.collateral_id
-         WHERE  l.business_id = %d AND l.loan_date BETWEEN %s AND %s
-         ORDER  BY l.ticket_number ASC",
-        $business_id, $from, $to
+         WHERE l.loan_date BETWEEN %s AND %s
+         ORDER  BY l.ticket_number ASC",  $from, $to
     ) );
  
     $sum_principal = array_sum(array_column($loans,'principal'));
@@ -4304,9 +4544,8 @@ function ps_rpt_list_payments( int $business_id, string $from, string $to, array
          FROM   {$wpdb->prefix}ps_payments   p
          JOIN   {$wpdb->prefix}ps_loans      l ON l.id  = p.loan_id
          JOIN   {$wpdb->prefix}ps_customers  c ON c.id  = l.customer_id
-         WHERE  p.business_id = %d AND DATE(p.created_at) BETWEEN %s AND %s
-         ORDER  BY l.ticket_number ASC, p.created_at ASC",
-        $business_id, $from, $to
+         WHERE DATE(p.created_at) BETWEEN %s AND %s
+         ORDER  BY l.ticket_number ASC, p.created_at ASC",  $from, $to
     ) );
  
     $s_cash = array_sum(array_column($rows,'amount'));
@@ -4367,9 +4606,13 @@ function ps_rpt_cash_flow_summary(int $business_id, string $from, string $to, ar
     $data = ps_cash_flow_data($business_id, $from, $to, $tag_filter);
     $tag_filter = trim($tag_filter);
     $has_tag_filter = ($tag_filter !== '' && $tag_filter !== 'all');
+    $tag_label = $has_tag_filter ? $tag_filter : 'All Branch Tags';
     $dlabel = date('F d, Y', strtotime($from)) . ' to ' . date('F d, Y', strtotime($to)) . ($has_tag_filter ? ' | Tag: ' . $tag_filter : '');
     $counted_cash = (float)($cash_breakdown['total_counted'] ?? 0);
     $over_short = round($counted_cash - $data['cash_ending'], 2);
+    $yesterday_date = date('Y-m-d', strtotime($to . ' -1 day'));
+    $yesterday_breakdown = ps_get_cash_flow_breakdown($business_id, $yesterday_date, $tag_filter);
+    $yesterday_total = (float)($yesterday_breakdown['total_counted'] ?? 0);
     $fmt = static fn($n) => number_format((float)$n, 2);
     $row = static function(string $label, $amount = '', bool $bold = false) use ($fmt): string {
         $amount_text = $amount === '' ? '' : 'P ' . $fmt($amount);
@@ -4402,6 +4645,7 @@ function ps_rpt_cash_flow_summary(int $business_id, string $from, string $to, ar
         <?php echo ps_corp_header($b); ?>
         <h2>CASH FLOW SUMMARY</h2>
         <div class="date">Date Covered: <?php echo esc_html($dlabel); ?></div>
+        <div class="date" style="margin-top:-8px;">Branch Tag: <?php echo esc_html($tag_label); ?></div>
         <div class="section">Cash In</div>
         <div class="rule">--------</div>
         <table>
@@ -4428,13 +4672,20 @@ function ps_rpt_cash_flow_summary(int $business_id, string $from, string $to, ar
             <tr class="total-line"><td style="font-weight:700;">Cash Ending Balance</td><td class="r">P <?php echo $fmt($data['cash_ending']); ?></td></tr>
         </table>
         <div style="height:20px;"></div>
-        <div class="section">Denomination</div>
-        <div class="rule">------------</div>
+        <div class="section">Denomination (Today)</div>
+        <div class="rule">--------------------</div>
         <table>
-            <?php foreach (($cash_breakdown['rows'] ?? []) as $denom): ?>
-            <tr><td><?php echo number_format((float)$denom['denomination'], 0); ?></td><td>x <?php echo number_format((int)$denom['quantity']); ?></td><td class="r">P <?php echo $fmt($denom['amount']); ?></td></tr>
+            <tr><td><strong>Denom</strong></td><td class="r"><strong>Qty</strong></td><td class="r"><strong>Amount</strong></td></tr>
+            <?php foreach (($cash_breakdown['rows'] ?? []) as $denom):
+            ?>
+            <tr>
+                <td>P <?php echo number_format((float)$denom['denomination'], 0); ?></td>
+                <td class="r"><?php echo number_format((int)$denom['quantity']); ?></td>
+                <td class="r">P <?php echo $fmt($denom['amount']); ?></td>
+            </tr>
             <?php endforeach; ?>
-            <tr><td>Counted Cash</td><td></td><td class="r">P <?php echo $fmt($counted_cash); ?></td></tr>
+            <tr><td>Yesterday Total Cash</td><td></td><td class="r">P <?php echo $fmt($yesterday_total); ?></td></tr>
+            <tr><td>Today Counted Cash</td><td></td><td class="r">P <?php echo $fmt($counted_cash); ?></td></tr>
             <tr><td>Over / Short</td><td></td><td class="r"><?php echo ($over_short >= 0 ? 'P ' : '-P ') . $fmt(abs($over_short)); ?></td></tr>
         </table>
         <div class="sign"><div>Noted by:</div><div>Approved by:</div></div>
@@ -4459,16 +4710,16 @@ function ps_rpt_daily_summary( int $business_id, string $report_date, array $b, 
         "SELECT l.*, CONCAT(c.last_name,', ',c.first_name) AS cname, c.address,
                 col.description AS col_desc, col.karat, col.weight_grams, col.appraised_value
          FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id JOIN {$colt} col ON col.id=l.collateral_id
-         WHERE l.business_id=%d AND DATE(l.loan_date)=%s AND l.transaction_type='new'" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
+         WHERE DATE(l.loan_date)=%s AND l.transaction_type='new'" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . "
          ORDER BY l.ticket_number ASC",
-        ...($has_tag_filter ? [$business_id, $rd, $tag_filter_sql] : [$business_id, $rd])
+        ...($has_tag_filter ? [ $rd, $tag_filter_sql] : [ $rd])
     ) );
  
     $payments_today = $wpdb->get_results( $wpdb->prepare(
         "SELECT p.*, l.ticket_number, l.root_ticket, l.ticket_tag, CONCAT(c.last_name,', ',c.first_name) AS cname
          FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id
-         WHERE p.business_id=%d AND DATE(p.created_at)=%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . " ORDER BY l.ticket_number ASC",
-        ...($has_tag_filter ? [$business_id, $rd, $tag_filter_sql] : [$business_id, $rd])
+         WHERE DATE(p.created_at)=%s" . ($has_tag_filter ? " AND LOWER(TRIM(l.ticket_tag))=%s" : "") . " ORDER BY l.ticket_number ASC",
+        ...($has_tag_filter ? [ $rd, $tag_filter_sql] : [ $rd])
     ) );
  
     $sum_loan = array_sum(array_column($loans_today,    'principal'));
@@ -4658,10 +4909,9 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
          FROM   {$wpdb->prefix}ps_loans       l
          JOIN   {$wpdb->prefix}ps_customers   c   ON c.id  = l.customer_id
          JOIN   {$wpdb->prefix}ps_collaterals col ON col.id = l.collateral_id
-         WHERE  l.business_id = %d AND l.loan_date BETWEEN %s AND %s
+         WHERE l.loan_date BETWEEN %s AND %s
                 {$status_clause}
-         ORDER  BY FIELD(l.status,'overdue','active','renewed','redeemed','forfeited'), l.due_date ASC",
-        $business_id, $from, $to
+         ORDER  BY FIELD(l.status,'overdue','active','renewed','redeemed','forfeited'), l.due_date ASC",  $from, $to
     ) );
  
     $by_status = [];
@@ -4754,6 +5004,7 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
 function ps_settings_tab($business_id) {
     $pm = json_decode(bntm_get_setting('ps_payment_methods', '[]'), true);
     $doc_defs = ps_get_document_definitions();
+    $ticket_tags_text = implode("\n", ps_get_ticket_tags());
     if (!is_array($pm)) $pm = [];
     ob_start();
     ?>
@@ -4882,7 +5133,7 @@ function ps_settings_tab($business_id) {
             <h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Ticket Tags</h4>
             <div class="bntm-form-group">
                 <label>Available Tags</label>
-                <textarea name="ps_ticket_tags" rows="5" placeholder="VIP&#10;Auction&#10;Special Terms"><?php echo esc_textarea(bntm_get_setting('ps_ticket_tags','')); ?></textarea>
+                <textarea name="ps_ticket_tags" rows="5" placeholder="VIP&#10;Auction&#10;Special Terms"><?php echo esc_textarea($ticket_tags_text); ?></textarea>
                 <div style="font-size:11px;color:#6b7280;margin-top:3px;">Enter one tag per line. These appear as optional choices when creating or editing pawn tickets.</div>
             </div>
         </div>
@@ -5031,9 +5282,8 @@ function bntm_ajax_ps_get_loan_edit() {
                 col.karat, col.weight_grams, col.serial_number
          FROM {$wpdb->prefix}ps_loans l
          JOIN {$wpdb->prefix}ps_collaterals col ON col.id=l.collateral_id
-         WHERE l.id=%d AND l.business_id=%d",
-        $loan_id, $business_id
-    ), ARRAY_A);
+         WHERE l.id=%d ",
+        $loan_id), ARRAY_A);
     if (!$loan) { wp_send_json_error(['message'=>'Ticket not found.']); return; }
 
     wp_send_json_success(['loan'=>$loan]);
@@ -5059,9 +5309,8 @@ function bntm_ajax_ps_update_loan() {
     }
 
     $loan = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d AND business_id=%d",
-        $loan_id, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d ",
+        $loan_id));
     if (!$loan) { wp_send_json_error(['message'=>'Ticket not found.']); return; }
 
     $exists = (int)$wpdb->get_var($wpdb->prepare(
@@ -5134,9 +5383,8 @@ function bntm_ajax_ps_forfeit_loan() {
     $loan_id     = intval($_POST['loan_id'] ?? 0);
 
     $loan = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d AND business_id=%d AND status IN ('active','overdue')",
-        $loan_id, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d  AND status IN ('active','overdue')",
+        $loan_id));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found or cannot be forfeited.']); return; }
 
     $wpdb->update($wpdb->prefix.'ps_loans',
@@ -5180,9 +5428,8 @@ function bntm_ajax_ps_compute_interest() {
         "SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS customer_name
          FROM {$wpdb->prefix}ps_loans l
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
-         WHERE l.id=%d AND l.business_id=%d",
-        $loan_id, $business_id
-    ));
+         WHERE l.id=%d ",
+        $loan_id));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found.']); return; }
 
     $bd = ps_compute_interest_breakdown($loan);
@@ -5235,9 +5482,8 @@ function bntm_ajax_ps_get_loan_detail() {
          FROM {$wpdb->prefix}ps_loans l
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
          JOIN {$wpdb->prefix}ps_collaterals col ON col.id=l.collateral_id
-         WHERE l.id=%d AND l.business_id=%d",
-        $loan_id, $business_id
-    ));
+         WHERE l.id=%d ",
+        $loan_id));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found.']); return; }
 
     $bd = ps_compute_interest_breakdown($loan);
@@ -5246,10 +5492,9 @@ function bntm_ajax_ps_get_loan_detail() {
     $chain = $wpdb->get_results($wpdb->prepare(
         "SELECT id,ticket_number,transaction_type,loan_date,due_date,principal,status,accrued_interest_carried
          FROM {$wpdb->prefix}ps_loans
-         WHERE root_ticket=%s AND business_id=%d
+         WHERE root_ticket=%s 
          ORDER BY id ASC",
-        $loan->root_ticket, $business_id
-    ));
+        $loan->root_ticket));
 
     // Payments on this loan
     $payments = $wpdb->get_results($wpdb->prepare(
@@ -5417,9 +5662,8 @@ function bntm_ajax_ps_get_ticket_history() {
     $root_ticket = sanitize_text_field($_POST['root_ticket'] ?? '');
 
     $events = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_ticket_history WHERE root_ticket=%s AND business_id=%d ORDER BY created_at ASC",
-        $root_ticket, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_ticket_history WHERE root_ticket=%s  ORDER BY created_at ASC",
+        $root_ticket));
 
     ob_start();
     ?>
@@ -5473,10 +5717,9 @@ function bntm_ajax_ps_search_customers() {
         "SELECT c.*,
             (SELECT COUNT(*) FROM {$wpdb->prefix}ps_loans WHERE customer_id=c.id AND status IN ('active','overdue')) AS active_loans
          FROM {$wpdb->prefix}ps_customers c
-         WHERE c.business_id=%d AND c.status='active'
+         WHERE c.status='active'
            AND (c.first_name LIKE %s OR c.last_name LIKE %s OR c.contact_number LIKE %s OR c.id_number LIKE %s)
-         ORDER BY c.last_name ASC LIMIT 15",
-        $business_id, "%{$q}%", "%{$q}%", "%{$q}%", "%{$q}%"
+         ORDER BY c.last_name ASC LIMIT 15",  "%{$q}%", "%{$q}%", "%{$q}%", "%{$q}%"
     ));
 
     wp_send_json_success(['customers' => $customers]);
@@ -5490,7 +5733,6 @@ function bntm_ajax_ps_add_customer() {
     check_ajax_referer('ps_customer_nonce', 'nonce');
     if (!is_user_logged_in()) { wp_send_json_error(['message'=>'Unauthorized']); }
     global $wpdb;
-    $business_id = bntm_ps_get_business_id();
 
     $fn   = sanitize_text_field($_POST['first_name'] ?? '');
     $ln   = sanitize_text_field($_POST['last_name'] ?? '');
@@ -5511,12 +5753,11 @@ function bntm_ajax_ps_add_customer() {
     // Save photo
     $photo_path = '';
     if (!empty($photo_data) && strpos($photo_data, 'data:image') === 0) {
-        $photo_path = ps_save_customer_photo($photo_data, $business_id, 0);
+        $photo_path = ps_save_customer_photo($photo_data,  0);
     }
 
-    $r = $wpdb->insert($wpdb->prefix.'ps_customers', [
+    $customer_payload = [
         'rand_id'       => bntm_rand_id(),
-        'business_id'   => $business_id,
         'first_name'    => $fn,
         'last_name'     => $ln,
         'middle_name'   => $mn,
@@ -5531,14 +5772,32 @@ function bntm_ajax_ps_add_customer() {
         'photo_path'    => $photo_path,
         'notes'         => $notes,
         'status'        => 'active',
-    ]);
+    ];
 
-    if (!$r) { wp_send_json_error(['message'=>'Failed to add customer.']); return; }
+    $customer_columns = ps_customers_table_columns();
+    // Keep compatibility with older schemas that still have business_id.
+    if (!empty($customer_columns['business_id'])) {
+        $customer_payload['business_id'] = bntm_ps_get_business_id();
+    }
+
+    $customer_payload = ps_filter_customer_payload($customer_payload);
+
+    $r = $wpdb->insert($wpdb->prefix.'ps_customers', $customer_payload);
+
+    if (!$r) {
+        $db_error = trim((string)$wpdb->last_error);
+        $message = 'Failed to add customer.';
+        if ($db_error !== '') {
+            $message .= ' DB: ' . $db_error;
+        }
+        wp_send_json_error(['message' => $message]);
+        return;
+    }
     $cid = $wpdb->insert_id;
 
     // Update photo with real customer ID
     if ($photo_path && $photo_path !== '') {
-        $new_path = ps_save_customer_photo($photo_data, $business_id, $cid);
+        $new_path = ps_save_customer_photo($photo_data,  $cid);
         if ($new_path) {
             $wpdb->update($wpdb->prefix.'ps_customers', ['photo_path'=>$new_path], ['id'=>$cid]);
             $photo_path = $new_path;
@@ -5579,14 +5838,21 @@ function bntm_ajax_ps_edit_customer() {
         'customer_flag' => sanitize_text_field($_POST['customer_flag'] ?? 'normal'),
         'notes'         => sanitize_textarea_field($_POST['notes'] ?? ''),
     ];
+    $data = ps_filter_customer_payload($data);
 
     $photo_data = $_POST['photo_data'] ?? '';
     if (!empty($photo_data) && strpos($photo_data, 'data:image') === 0) {
-        $photo_path = ps_save_customer_photo($photo_data, $business_id, $cid);
+        $photo_path = ps_save_customer_photo($photo_data,  $cid);
         if ($photo_path) $data['photo_path'] = $photo_path;
     }
 
-    $r = $wpdb->update($wpdb->prefix.'ps_customers', $data, ['id'=>$cid,'business_id'=>$business_id]);
+    $where = ['id' => $cid];
+    $customer_columns = ps_customers_table_columns();
+    if (!empty($customer_columns['business_id'])) {
+        $where['business_id'] = $business_id;
+    }
+
+    $r = $wpdb->update($wpdb->prefix.'ps_customers', $data, $where);
     $updated_customer = $wpdb->get_row($wpdb->prepare("SELECT * FROM {$wpdb->prefix}ps_customers WHERE id=%d", $cid));
     wp_send_json_success(['message'=>'Customer updated!', 'customer'=>$updated_customer, 'photo_path'=>$updated_customer->photo_path ?? '']);
 }
@@ -5608,7 +5874,13 @@ function bntm_ajax_ps_delete_customer() {
     ));
     if ($active > 0) { wp_send_json_error(['message'=>'Cannot delete customer with active loans.']); return; }
 
-    $wpdb->update($wpdb->prefix.'ps_customers', ['status'=>'deleted'], ['id'=>$cid,'business_id'=>$business_id]);
+    $where = ['id' => $cid];
+    $customer_columns = ps_customers_table_columns();
+    if (!empty($customer_columns['business_id'])) {
+        $where['business_id'] = $business_id;
+    }
+
+    $wpdb->update($wpdb->prefix.'ps_customers', ['status'=>'deleted'], $where);
     wp_send_json_success(['message'=>'Customer deleted.']);
 }
 
@@ -5624,9 +5896,8 @@ function bntm_ajax_ps_get_customer_profile() {
     $cid = intval($_POST['customer_id'] ?? 0);
 
     $c = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_customers WHERE id=%d AND business_id=%d",
-        $cid, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_customers WHERE id=%d ",
+        $cid));
     if (!$c) { wp_send_json_error(['message'=>'Customer not found.']); return; }
 
     $loans = $wpdb->get_results($wpdb->prepare(
@@ -5749,7 +6020,6 @@ function bntm_ajax_ps_update_collateral_status() {
  *  redemption_receipt ? Short (8.5in - 11in)      Portrait
  *  renewal_notice     ? Short (8.5in - 11in)      Portrait
  *  customer_statement ? Short (8.5in - 11in)      Portrait
- *  daily_summary      ? Short (8.5in - 11in)      Portrait
  *  cash_flow_summary  ? Short (8.5in - 11in)      Portrait
  *  loan_list          ? Long  (13in - 11in)        Landscape
  *  payments_list      ? Long  (13in - 11in)        Landscape
@@ -5776,12 +6046,19 @@ function bntm_ajax_ps_generate_document() {
     $rstatus     = sanitize_text_field( $_POST['rstatus']     ?? 'all' );
     $rtag        = sanitize_text_field( $_POST['rtag']        ?? 'all' );
     $cash_breakdown = ps_parse_cash_breakdown($_POST['denomination_data'] ?? '');
+
+    // Backward compatibility: treat legacy daily_summary as cash_flow_summary.
+    if ($doc_type === 'daily_summary') {
+        $doc_type = 'cash_flow_summary';
+        $rfrom = $report_date;
+        $rto = $report_date;
+    }
  
     /* -- shared business info -- */
     $b = ps_biz();
  
     /* -- report types (no loan required) -- */
-    $report_types = ['summary', 'list_loans', 'list_payments', 'daily_summary', 'cash_flow_summary', 'tickets_by_status'];
+    $report_types = ['summary', 'list_loans', 'list_payments', 'cash_flow_summary', 'tickets_by_status'];
  
     if ( in_array( $doc_type, $report_types ) ) {
         $GLOBALS['ps_current_doc_type'] = $doc_type;
@@ -5795,11 +6072,9 @@ function bntm_ajax_ps_generate_document() {
             case 'list_payments':
                 $html = ps_rpt_list_payments( $business_id, $rfrom, $rto, $b );
                 break;
-            case 'daily_summary':
-                $html = ps_rpt_daily_summary( $business_id, $report_date, $b, $cash_breakdown, $rtag );
-                break;
             case 'cash_flow_summary':
                 $html = ps_rpt_cash_flow_summary( $business_id, $rfrom, $rto, $b, $cash_breakdown, $rtag );
+                ps_save_cash_flow_breakdown($business_id, $rto, $cash_breakdown, $rtag);
                 break;
             case 'tickets_by_status':
                 $html = ps_rpt_tickets_by_status( $business_id, $rfrom, $rto, $rstatus, $b );
@@ -5829,9 +6104,8 @@ function bntm_ajax_ps_generate_document() {
          FROM   {$wpdb->prefix}ps_loans        l
          JOIN   {$wpdb->prefix}ps_customers    c   ON c.id  = l.customer_id
          JOIN   {$wpdb->prefix}ps_collaterals  col ON col.id = l.collateral_id
-         WHERE  l.id = %d AND l.business_id = %d",
-        $loan_id, $business_id
-    ) );
+         WHERE  l.id = %d ",
+        $loan_id) );
  
     if ( ! $loan ) {
         wp_send_json_error( ['message' => 'Loan not found.'] );
@@ -5899,7 +6173,6 @@ function ps_get_document_definitions(): array {
         'summary'            => 'Summary Report',
         'list_loans'         => 'List of Loans Granted',
         'list_payments'      => 'List of Payments',
-        'daily_summary'      => 'Daily Summary',
         'cash_flow_summary'  => 'Cash Flow Summary',
         'tickets_by_status'  => 'Tickets by Status',
     ];
@@ -6135,7 +6408,7 @@ function ps_doc_pawn_ticket( $loan, $bd, array $b ): string {
     $previous_ticket_number = '';
     if ((int)($loan->parent_loan_id ?? 0) > 0) {
         $previous_ticket_number = (string)$wpdb->get_var($wpdb->prepare(
-            "SELECT ticket_number FROM {$wpdb->prefix}ps_loans WHERE id=%d AND business_id=%d",
+            "SELECT ticket_number FROM {$wpdb->prefix}ps_loans WHERE id=%d ",
             (int)$loan->parent_loan_id, (int)$loan->business_id
         ));
     }
@@ -6422,13 +6695,13 @@ function ps_doc_payment_receipt( $loan, array $b ): string {
 function ps_doc_customer_statement( $loan, array $b ): string {
     global $wpdb;
     $all_loans = $wpdb->get_results( $wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE root_ticket=%s AND business_id=%d ORDER BY id ASC",
+        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE root_ticket=%s  ORDER BY id ASC",
         $loan->root_ticket, bntm_ps_get_business_id()
     ) );
     $all_pays  = $wpdb->get_results( $wpdb->prepare(
         "SELECT p.*,l.ticket_number FROM {$wpdb->prefix}ps_payments p
          JOIN {$wpdb->prefix}ps_loans l ON l.id=p.loan_id
-         WHERE l.root_ticket=%s AND p.business_id=%d ORDER BY p.created_at ASC",
+         WHERE l.root_ticket=%s  ORDER BY p.created_at ASC",
         $loan->root_ticket, bntm_ps_get_business_id()
     ) );
     $total_paid = array_sum( array_column($all_pays, 'amount') );
@@ -6504,7 +6777,7 @@ function ps_doc_customer_statement( $loan, array $b ): string {
 function ps_doc_ticket_chain( $loan, array $b ): string {
     global $wpdb;
     $events = $wpdb->get_results( $wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_ticket_history WHERE root_ticket=%s AND business_id=%d ORDER BY created_at ASC",
+        "SELECT * FROM {$wpdb->prefix}ps_ticket_history WHERE root_ticket=%s  ORDER BY created_at ASC",
         $loan->root_ticket, bntm_ps_get_business_id()
     ) );
  
@@ -6606,7 +6879,11 @@ function bntm_ajax_ps_save_settings() {
         bntm_set_setting('ps_doc_custom_css', sanitize_textarea_field($_POST['ps_doc_custom_css']));
     }
     if (isset($_POST['ps_ticket_tags'])) {
-        bntm_set_setting('ps_ticket_tags', sanitize_textarea_field($_POST['ps_ticket_tags']));
+        $raw_tags = sanitize_textarea_field($_POST['ps_ticket_tags']);
+        $tags = ps_parse_ticket_tags_from_text($raw_tags);
+        ps_replace_ticket_tags($tags);
+        // Backward compatibility for any old code reading this setting directly.
+        bntm_set_setting('ps_ticket_tags', implode("\n", $tags));
     }
 
     foreach (array_keys(ps_get_document_definitions()) as $doc_key) {
@@ -6729,10 +7006,10 @@ function ps_generate_daily_summary_html($business_id, $date, $bname, $baddr, $bf
     $pt = $wpdb->prefix.'ps_payments';
     $ct = $wpdb->prefix.'ps_customers';
 
-    $new_loans   = $wpdb->get_results($wpdb->prepare("SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id WHERE l.business_id=%d AND l.loan_date=%s AND l.transaction_type='new' ORDER BY l.id ASC", $business_id, $date));
-    $renewals    = $wpdb->get_results($wpdb->prepare("SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id WHERE l.business_id=%d AND l.loan_date=%s AND l.transaction_type='renewal' ORDER BY l.id ASC", $business_id, $date));
-    $payments    = $wpdb->get_results($wpdb->prepare("SELECT p.*,l.ticket_number,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id WHERE p.business_id=%d AND DATE(p.created_at)=%s ORDER BY p.created_at ASC", $business_id, $date));
-    $redeemed    = $wpdb->get_results($wpdb->prepare("SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id WHERE l.business_id=%d AND DATE(l.redeemed_at)=%s ORDER BY l.redeemed_at ASC", $business_id, $date));
+    $new_loans   = $wpdb->get_results($wpdb->prepare("SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id WHERE l.loan_date=%s AND l.transaction_type='new' ORDER BY l.id ASC",  $date));
+    $renewals    = $wpdb->get_results($wpdb->prepare("SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id WHERE l.loan_date=%s AND l.transaction_type='renewal' ORDER BY l.id ASC",  $date));
+    $payments    = $wpdb->get_results($wpdb->prepare("SELECT p.*,l.ticket_number,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$pt} p JOIN {$lt} l ON l.id=p.loan_id JOIN {$ct} c ON c.id=l.customer_id WHERE DATE(p.created_at)=%s ORDER BY p.created_at ASC",  $date));
+    $redeemed    = $wpdb->get_results($wpdb->prepare("SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS cname FROM {$lt} l JOIN {$ct} c ON c.id=l.customer_id WHERE DATE(l.redeemed_at)=%s ORDER BY l.redeemed_at ASC",  $date));
 
     $total_collections = array_sum(array_map(fn($p)=>$p->amount, $payments));
     $total_interest    = array_sum(array_map(fn($p)=>$p->interest_amount, $payments));
@@ -6780,7 +7057,7 @@ function ps_generate_daily_summary_html($business_id, $date, $bname, $baddr, $bf
 // HELPER: SAVE CUSTOMER PHOTO
 // ============================================================
 
-function ps_save_customer_photo($base64_data, $business_id, $customer_id) {
+function ps_save_customer_photo($base64_data,  $customer_id) {
     if (empty($base64_data)) return '';
 
     // Handle URL-encoded base64 (FormData sometimes encodes the + as space or %2B)
@@ -6852,14 +7129,15 @@ function ps_save_customer_photo($base64_data, $business_id, $customer_id) {
         return '';
     }
 
-    $filename = 'cust_' . absint($business_id) . '_' . absint($customer_id) . '_' . time() . '.jpg';
+    $scope = 'enterprise';
+    $filename = 'cust_' . $scope . '_' . absint($customer_id) . '_' . time() . '.jpg';
     $filepath = $upload_dir . $filename;
     $written  = file_put_contents($filepath, $image_data);
     if ($written === false || $written === 0) return '';
 
     // Delete old photos for same customer (keep storage clean)
     if ($customer_id > 0) {
-        $old_files = glob($upload_dir . 'cust_' . absint($business_id) . '_' . absint($customer_id) . '_*.jpg');
+        $old_files = glob($upload_dir . 'cust_' . $scope . '_' . absint($customer_id) . '_*.jpg');
         if ($old_files) {
             foreach ($old_files as $old) {
                 if (basename($old) !== $filename) @unlink($old);
@@ -6907,9 +7185,8 @@ function bntm_ajax_ps_create_loan() {
         wp_send_json_error(['message' => 'Pawn ticket number is required.']); return;
     }
     $flag = $wpdb->get_var($wpdb->prepare(
-        "SELECT customer_flag FROM {$wpdb->prefix}ps_customers WHERE id=%d AND business_id=%d",
-        $customer_id, $business_id
-    ));
+        "SELECT customer_flag FROM {$wpdb->prefix}ps_customers WHERE id=%d ",
+        $customer_id));
     if ($flag === 'blacklisted') {
         wp_send_json_error(['message' => 'Blacklisted customer cannot create new loans.']); return;
     }
@@ -7075,9 +7352,8 @@ function bntm_ajax_ps_renew_loan() {
     $principal_adj = max(0, $principal_adj);
 
     $loan = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d AND business_id=%d AND status IN ('active','overdue')",
-        $loan_id, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d  AND status IN ('active','overdue')",
+        $loan_id));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found or cannot be processed.']); return; }
     $previous_ticket_number = $previous_ticket_number !== '' ? $previous_ticket_number : strtoupper(trim((string)$loan->ticket_number));
     if ($previous_ticket_number !== strtoupper(trim((string)$loan->ticket_number))) {
@@ -7279,9 +7555,8 @@ function bntm_ajax_ps_redeem_loan() {
     $extra_total      = array_sum(array_column($extra_fees, 'amt'));
 
     $loan = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d AND business_id=%d AND status IN ('active','overdue')",
-        $loan_id, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_loans WHERE id=%d  AND status IN ('active','overdue')",
+        $loan_id));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found or cannot be redeemed.']); return; }
 
     $breakdown = ps_compute_interest_breakdown($loan);
@@ -7372,7 +7647,7 @@ function bntm_ajax_ps_generate_auction_notice() {
          FROM {$wpdb->prefix}ps_collaterals col
          LEFT JOIN {$wpdb->prefix}ps_loans l ON l.id=col.loan_id
          LEFT JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
-         WHERE col.id IN ($placeholders) AND col.business_id=%d
+         WHERE col.id IN ($placeholders) 
          ORDER BY col.category, col.description",
         array_merge($ids, [$business_id])
     ));
@@ -7517,7 +7792,7 @@ function bntm_ajax_ps_get_customers_list() {
     $business_id = bntm_ps_get_business_id();
     $q = sanitize_text_field($_POST['q'] ?? '');
 
-    $where = "WHERE c.business_id={$business_id} AND c.status='active'";
+    $where = "WHERE c.status='active'";
     if ($q) $where .= $wpdb->prepare(" AND (c.first_name LIKE %s OR c.last_name LIKE %s OR c.contact_number LIKE %s)",
         "%{$q}%","%{$q}%","%{$q}%");
 
@@ -7542,7 +7817,7 @@ function bntm_ajax_ps_save_customer_photo() {
     $photo_data  = $_POST['photo_data'] ?? ''; // raw: base64 data URI - validated by ps_save_customer_photo
 
     if (!$customer_id || !$photo_data) { wp_send_json_error(['message'=>'Missing data.']); return; }
-    $filename = ps_save_customer_photo($photo_data, $business_id, $customer_id);
+    $filename = ps_save_customer_photo($photo_data,  $customer_id);
     if (!$filename) { wp_send_json_error(['message'=>'Failed to save photo.']); return; }
 
     global $wpdb;
@@ -7592,9 +7867,8 @@ function bntm_ajax_ps_get_collateral_detail() {
     $collateral_id = intval($_POST['collateral_id'] ?? 0);
 
     $col = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_collaterals WHERE id=%d AND business_id=%d",
-        $collateral_id, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_collaterals WHERE id=%d ",
+        $collateral_id));
     if (!$col) { wp_send_json_error(['message'=>'Not found.']); return; }
     wp_send_json_success(['collateral'=>$col]);
 }
@@ -7638,9 +7912,8 @@ function bntm_ajax_ps_get_payment_history() {
     $loan_id     = intval($_POST['loan_id'] ?? 0);
 
     $payments = $wpdb->get_results($wpdb->prepare(
-        "SELECT * FROM {$wpdb->prefix}ps_payments WHERE loan_id=%d AND business_id=%d ORDER BY created_at DESC",
-        $loan_id, $business_id
-    ));
+        "SELECT * FROM {$wpdb->prefix}ps_payments WHERE loan_id=%d  ORDER BY created_at DESC",
+        $loan_id));
     wp_send_json_success(['payments'=>$payments]);
 }
 
@@ -7658,8 +7931,7 @@ function bntm_ajax_ps_get_document_history() {
     $docs = $wpdb->get_results($wpdb->prepare(
         "SELECT d.*,l.ticket_number FROM {$wpdb->prefix}ps_document_log d
          LEFT JOIN {$wpdb->prefix}ps_loans l ON l.id=d.loan_id
-         WHERE d.business_id=%d ORDER BY d.created_at DESC LIMIT %d",
-        $business_id, $limit
+         ORDER BY d.created_at DESC LIMIT %d",  $limit
     ));
     wp_send_json_success(['documents'=>$docs]);
 }
@@ -7696,9 +7968,7 @@ function bntm_ajax_ps_bulk_mark_overdue() {
 
     $count = $wpdb->query($wpdb->prepare(
         "UPDATE {$wpdb->prefix}ps_loans SET status='overdue'
-         WHERE business_id=%d AND status='active' AND due_date < CURDATE()",
-        $business_id
-    ));
+         WHERE status='active' AND due_date < CURDATE()"));
     wp_send_json_success(['message'=>"Marked {$count} loan(s) as overdue.",'count'=>$count]);
 }
 
@@ -7738,9 +8008,8 @@ function bntm_ajax_ps_get_loan_compute() {
         "SELECT l.*,CONCAT(c.last_name,', ',c.first_name) AS customer_name
          FROM {$wpdb->prefix}ps_loans l
          JOIN {$wpdb->prefix}ps_customers c ON c.id=l.customer_id
-         WHERE l.id=%d AND l.business_id=%d",
-        $loan_id, $business_id
-    ));
+         WHERE l.id=%d ",
+        $loan_id));
     if (!$loan) { wp_send_json_error(['message'=>'Loan not found.']); return; }
 
     $bd = ps_compute_interest_breakdown($loan);
