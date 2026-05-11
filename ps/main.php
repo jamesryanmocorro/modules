@@ -845,106 +845,413 @@ function bntm_shortcode_ps() {
     <?php echo ps_render_modals(); ?>
 
     <style>
-    :root{--ps-primary:#1e40af;--ps-primary-h:#1d3a9d;--ps-green:#059669;--ps-red:#dc2626;--ps-amber:#d97706;--ps-purple:#7c3aed;--ps-cyan:#0891b2;}
-    .bntm-ps-container{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}
-    .ps-status-badge{display:inline-flex;align-items:center;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;gap:4px;}
-    .ps-status-active{background:#dcfce7;color:#166534;}.ps-status-renewed{background:#dbeafe;color:#1e40af;}
-    .ps-status-redeemed{background:#f3f4f6;color:#374151;}.ps-status-overdue{background:#fef3c7;color:#92400e;}
-    .ps-status-forfeited{background:#fee2e2;color:#991b1b;}
-    .ps-flag-normal{background:#f3f4f6;color:#374151;}.ps-flag-vip{background:#fef9c3;color:#854d0e;}
-    .ps-flag-delinquent{background:#fef3c7;color:#92400e;}.ps-flag-blacklisted{background:#fee2e2;color:#991b1b;}
-    .ps-collateral-cat{display:inline-block;padding:2px 7px;border-radius:4px;font-size:11px;background:#e0e7ff;color:#3730a3;}
-    .ps-action-btn{border:none;cursor:pointer;border-radius:6px;padding:5px 9px;font-size:12px;font-weight:600;display:inline-flex;align-items:center;gap:3px;transition:opacity .15s;}
-    .ps-action-btn:hover{opacity:.8;}
-    .ps-btn-view{background:#eff6ff;color:#1d4ed8;}.ps-btn-renew{background:#f0fdf4;color:#15803d;}
-    .ps-btn-redeem{background:#ecfdf5;color:#059669;}.ps-btn-forfeit{background:#fef2f2;color:#dc2626;}
-    .ps-btn-print{background:#f5f3ff;color:#7c3aed;}
-    .bntm-form-group{margin-bottom:12px;}
-    .bntm-form-group label{display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px;}
-    .bntm-form-group input,.bntm-form-group select,.bntm-form-group textarea{width:100%;padding:8px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;color:#111827;background:#fff;box-sizing:border-box;transition:border-color .15s;}
-    .bntm-form-group input:focus,.bntm-form-group select:focus,.bntm-form-group textarea:focus{outline:none;border-color:var(--bntm-primary,#1e40af);box-shadow:0 0 0 3px rgba(30,64,175,.1);}
-    .bntm-form-group textarea{resize:vertical;}
-    .bntm-form-group input[readonly]{background:#f9fafb;cursor:not-allowed;}
-    .ps-search-bar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
-    .ps-search-bar input,.ps-search-bar select{padding:7px 10px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;}
-    /* Print doc styles */
-    .ps-doc-preview{padding:24px 28px;font-family:'Arial',sans-serif;font-size:12px;line-height:1.5;color:#000;}
-    .ps-doc-header{text-align:center;border-bottom:2px solid #000;padding-bottom:8px;margin-bottom:12px;}
-    .ps-doc-title{font-size:18px;font-weight:900;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:2px;}
-    .ps-doc-subtitle{font-size:11px;color:#333;}
-    .ps-doc-section-title{font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #000;padding-bottom:2px;margin:10px 0 6px;color:#000;}
-    .ps-doc-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px;}
-    .ps-doc-field{display:flex;gap:6px;font-size:11px;padding:1px 0;}
-    .ps-doc-field-label{font-weight:700;color:#000;min-width:110px;flex-shrink:0;}
-    .ps-doc-amounts{width:100%;border-collapse:collapse;margin:6px 0;font-size:11px;}
-    .ps-doc-amounts th{background:#000;color:#fff;padding:4px 7px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:.3px;}
-    .ps-doc-amounts td{padding:4px 7px;border-bottom:1px solid #ddd;}
-    .ps-doc-amounts tr:last-child td{border-bottom:2px solid #000;font-weight:700;background:#f0f0f0;}
-    .ps-doc-signatures{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:28px;}
-    .ps-doc-sig-block{text-align:center;}
-    .ps-doc-sig-line{border-top:1px solid #000;padding-top:4px;font-size:10px;color:#333;margin-top:24px;}
-    /* Camera styles */
-    #ps-camera-preview{width:100%;border-radius:8px;background:#000;aspect-ratio:4/3;object-fit:cover;}
-    #ps-camera-canvas{display:none;}
-    .ps-photo-thumb{width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid #e5e7eb;}
-    /* Quick action bar */
-    .ps-quick-bar{display:flex;gap:8px;flex-wrap:wrap;padding:10px 14px;background:var(--bntm-primary,#1e40af);border-radius:8px;margin-bottom:16px;align-items:center;}
-    .ps-quick-bar .ps-qbar-label{color:rgba(255,255,255,.55);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-right:4px;white-space:nowrap;}
-    .ps-quick-bar .ps-qbtn{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.22);border-radius:5px;padding:5px 11px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:5px;transition:background .15s;white-space:nowrap;}
-    .ps-quick-bar .ps-qbtn:hover{background:rgba(255,255,255,.26);}
-    .ps-quick-bar .ps-qbtn.primary{background:#fff;color:var(--bntm-primary,#1e40af);}
-    .ps-quick-bar .ps-qbtn.primary:hover{background:#f0f9ff;}
-    /* Ticket chain badge */
-    .ps-ticket-chain{font-size:10px;color:#6366f1;font-weight:700;font-family:monospace;background:#eef2ff;padding:1px 6px;border-radius:10px;display:inline-block;margin-top:2px;}
-    .ps-shortcut-key {
+    :root {
+        --ps-bg: #f8fafc;
+        --ps-surface: #ffffff;
+        --ps-border: #e2e8f0;
+        --ps-primary: #0ea5e9; /* friendlier Sky Blue */
+        --ps-primary-h: #0284c7;
+        --ps-primary-light: #f0f9ff;
+        --ps-text-main: #334155;
+        --ps-text-muted: #64748b;
+        --ps-green: #10b981;
+        --ps-green-light: #ecfdf5;
+        --ps-red: #ef4444;
+        --ps-red-light: #fef2f2;
+        --ps-amber: #f59e0b;
+        --ps-amber-light: #fffbeb;
+        --ps-purple: #8b5cf6;
+        --ps-purple-light: #f5f3ff;
+        --ps-radius: 10px;
+        --ps-radius-sm: 6px;
+        --ps-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+        --ps-shadow-hover: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+    }
+    
+    .bntm-ps-container {
+        font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+        background-color: var(--ps-bg);
+        border-radius: var(--ps-radius);
+        padding: 28px;
+        color: var(--ps-text-main);
+    }
+
+    /* Tabs Styling */
+    .bntm-tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 28px;
+        border-bottom: 2px solid var(--ps-border);
+        overflow-x: auto;
+        padding-bottom: 4px;
+    }
+    .bntm-tab {
         display: inline-flex;
         align-items: center;
-        background: rgba(255,255,255,.15);
-        color: rgba(255,255,255,.85);
-        border: 1px solid rgba(255,255,255,.28);
-        border-bottom-width: 2px;
-        border-radius: 4px;
-        padding: 1px 6px;
-        font-size: 10px;
-        font-family: 'Courier New', monospace;
+        gap: 8px;
+        padding: 12px 20px;
+        background: transparent;
+        color: var(--ps-text-muted);
         font-weight: 600;
-        line-height: 1.6;
-        margin-left: 3px;
-        letter-spacing: .2px;
+        font-size: 14px;
+        border-radius: var(--ps-radius) var(--ps-radius) 0 0;
+        text-decoration: none;
+        transition: all 0.2s ease;
+        border-bottom: 3px solid transparent;
+        margin-bottom: -6px;
+    }
+    .bntm-tab:hover {
+        color: var(--ps-text-main);
+        background: #f1f5f9;
+        border-bottom-color: #cbd5e1;
+    }
+    .bntm-tab.active {
+        color: var(--ps-primary-h);
+        border-bottom: 3px solid var(--ps-primary);
+        background: var(--ps-surface);
+    }
+
+    /* Status Badges */
+    .ps-status-badge, .ps-flag-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 12px;
+        border-radius: 20px; /* Fully rounded for badges */
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .ps-status-active { background: var(--ps-green-light); color: #047857; }
+    .ps-status-renewed { background: var(--ps-primary-light); color: var(--ps-primary-h); }
+    .ps-status-redeemed { background: #f8fafc; color: var(--ps-text-muted); border: 1px solid var(--ps-border); }
+    .ps-status-overdue { background: var(--ps-amber-light); color: #b45309; }
+    .ps-status-forfeited { background: var(--ps-red-light); color: #b91c1c; }
+    
+    .ps-flag-normal { background: #f8fafc; color: var(--ps-text-muted); border: 1px solid var(--ps-border); }
+    .ps-flag-vip { background: var(--ps-amber-light); color: #b45309; }
+    .ps-flag-delinquent { background: #ffedd5; color: #c2410c; }
+    .ps-flag-blacklisted { background: var(--ps-red-light); color: #b91c1c; }
+    
+    .ps-collateral-cat {
+        display: inline-block;
+        padding: 5px 12px;
+        border-radius: var(--ps-radius-sm);
+        font-size: 12px;
+        font-weight: 600;
+        background: var(--ps-purple-light);
+        color: #6d28d9;
+    }
+
+    /* Buttons */
+    .ps-action-btn {
+        border: none;
+        cursor: pointer;
+        border-radius: var(--ps-radius-sm);
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.2s ease;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    }
+    .ps-action-btn:hover { transform: translateY(-1px); box-shadow: var(--ps-shadow); }
+    .ps-btn-view { background: var(--ps-primary-light); color: var(--ps-primary-h); }
+    .ps-btn-renew { background: var(--ps-green-light); color: #047857; }
+    .ps-btn-redeem { background: #ecfdf5; color: #047857; }
+    .ps-btn-forfeit { background: var(--ps-red-light); color: #b91c1c; }
+    .ps-btn-print { background: var(--ps-purple-light); color: #6d28d9; }
+
+    /* Form Styles */
+    .bntm-form-group { margin-bottom: 20px; }
+    .bntm-form-group label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--ps-text-main);
+        margin-bottom: 8px;
+    }
+    .bntm-form-group input, .bntm-form-group select, .bntm-form-group textarea {
+        width: 100%;
+        padding: 12px 16px;
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius-sm);
+        font-size: 14px;
+        color: var(--ps-text-main);
+        background: var(--ps-surface);
+        box-sizing: border-box;
+        transition: all 0.2s;
+    }
+    .bntm-form-group input:focus, .bntm-form-group select:focus, .bntm-form-group textarea:focus {
+        outline: none;
+        border-color: var(--ps-primary);
+        box-shadow: 0 0 0 3px var(--ps-primary-light);
+    }
+    .bntm-form-group textarea { resize: vertical; }
+    .bntm-form-group input[readonly] { background: #f8fafc; cursor: not-allowed; color: var(--ps-text-muted); border-color: transparent; }
+
+    /* Search & Tools */
+    .ps-search-bar { display: flex; gap: 16px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
+    .ps-search-bar input, .ps-search-bar select {
+        padding: 12px 16px;
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius-sm);
+        font-size: 14px;
+        background: var(--ps-surface);
+        flex: 1;
+        min-width: 200px;
+    }
+
+    /* Quick Action Bar */
+    .ps-quick-bar {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 20px 24px;
+        background: var(--ps-surface);
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius);
+        margin-bottom: 28px;
+        align-items: center;
+        box-shadow: var(--ps-shadow);
+    }
+    .ps-quick-bar .ps-qbar-label {
+        color: var(--ps-text-muted);
+        font-size: 13px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-right: 12px;
+    }
+    .ps-quick-bar .ps-qbtn {
+        background: var(--ps-surface);
+        color: var(--ps-text-main);
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius-sm);
+        padding: 10px 18px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s;
+    }
+    .ps-quick-bar .ps-qbtn:hover { background: #f1f5f9; border-color: #cbd5e1; }
+    .ps-quick-bar .ps-qbtn.primary { background: var(--ps-primary); color: #fff; border: none; }
+    .ps-quick-bar .ps-qbtn.primary:hover { background: var(--ps-primary-h); transform: translateY(-1px); box-shadow: var(--ps-shadow); }
+
+    /* Tables */
+    .bntm-table-wrapper {
+        background: var(--ps-surface);
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius);
+        overflow-x: auto; /* Restored to auto to prevent horizontal bleeding */
+        margin-bottom: 28px;
+        box-shadow: var(--ps-shadow);
+        padding-bottom: 120px; /* Gives space for the dropdown menu at the bottom so it doesn't get cut off by overflow-x */
+    }
+    .bntm-table {
+        width: 100%;
+        min-width: 800px; /* Reduced slightly to fit better, but still forces scroll on small screens */
+        border-collapse: collapse;
+        text-align: left;
+    }
+    .bntm-table th {
+        background: #f8fafc;
+        padding: 16px 20px; /* slightly less padding */
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--ps-text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        border-bottom: 1px solid var(--ps-border);
+        white-space: nowrap;
+    }
+    .bntm-table td {
+        padding: 16px 20px; /* slightly tighter padding */
+        font-size: 14px;
+        border-bottom: 1px solid var(--ps-border);
+        vertical-align: middle;
+        word-break: normal;
+        white-space: normal; /* wrap between words normally */
+        line-height: 1.4;
+    }
+    .bntm-table tr:last-child td { border-bottom: none; }
+    .bntm-table tr:hover td { background: #f8fafc; }
+    
+    /* Table Action Cell Container */
+    .bntm-table td:last-child {
+        text-align: right;
+    }
+    .bntm-table td:last-child .ps-dropdown, 
+    .bntm-table td:last-child .ps-dropdown-btn {
+        margin-left: auto;
+    }
+    .bntm-table tr:last-child td:last-child { 
+        border-bottom: none; 
+    }
+    .ps-table-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        justify-content: flex-start;
+    }
+    
+    /* Cascading Actions Dropdown */
+    .ps-dropdown {
+        position: relative;
+        display: inline-block;
+    }
+    .ps-dropdown-btn {
+        background: var(--ps-surface);
+        border: 1px solid var(--ps-border);
+        color: var(--ps-text-main);
+        padding: 6px 12px;
+        border-radius: var(--ps-radius-sm);
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.2s;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    }
+    .ps-dropdown-btn:hover {
+        background: var(--ps-primary-light);
+        border-color: var(--ps-primary);
+        color: var(--ps-primary-h);
+    }
+    .ps-dropdown-content {
+        display: none;
+        position: absolute;
+        right: 0;
+        top: 100%;
+        margin-top: 4px;
+        background-color: var(--ps-surface);
+        min-width: 140px;
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius-sm);
+        z-index: 9999;
+        overflow: hidden;
+    }
+    .ps-dropdown-content.show {
+        display: block;
+        animation: psDropdownFade 0.15s ease;
+    }
+    @keyframes psDropdownFade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+    .ps-dropdown-content .ps-action-btn {
+        width: 100%;
+        text-align: left;
+        background: transparent !important;
+        color: var(--ps-text-main) !important;
+        border: none;
+        border-radius: 0;
+        padding: 10px 16px;
+        justify-content: flex-start;
+        box-shadow: none;
+    }
+    .ps-dropdown-content .ps-action-btn:hover {
+        background: var(--ps-primary-light) !important;
+        color: var(--ps-primary-h) !important;
+        transform: none;
+    }
+
+    .bntm-table td button,
+    .bntm-table td .ps-action-btn {
+        margin: 0;
         flex-shrink: 0;
     }
-    .ps-qbtn.primary .ps-shortcut-key {
-        background: rgba(30,64,175,.15);
-        color: var(--ps-primary, #1e40af);
-        border-color: rgba(30,64,175,.25);
+
+    /* Stats Cards */
+    .bntm-stats-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 24px;
+        margin-bottom: 32px;
     }
-    /* Stats styles */
-    .bntm-stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:20px;}
-    .bntm-stat-card{display:flex;align-items:center;gap:14px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.08);}
-    .stat-icon{width:50px;height:50px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
-    .bntm-ps-container .bntm-tab svg,
-    .bntm-ps-container .ps-action-btn svg{
-        display:inline-block !important;
-        width:14px;
-        height:14px;
-        min-width:14px;
-        min-height:14px;
-        stroke:currentColor;
-        fill:none;
-        flex-shrink:0;
+    .bntm-stat-card {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        background: var(--ps-surface);
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius);
+        padding: 24px;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        box-shadow: var(--ps-shadow);
     }
-    .bntm-ps-container .stat-icon svg{
-        display:inline-block !important;
-        width:24px;
-        height:24px;
-        stroke:#fff;
-        fill:none;
-        flex-shrink:0;
+    .bntm-stat-card:hover { transform: translateY(-3px); box-shadow: var(--ps-shadow-hover); }
+    .stat-icon {
+        width: 56px;
+        height: 56px;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--ps-primary-light);
+        color: white;
+        flex-shrink: 0;
     }
-    .stat-content{flex:1;}
-    .stat-content h3{margin:0;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;}
-    .stat-number{margin:6px 0 0;font-size:18px;font-weight:800;color:#111827;word-break: break-word;display:flex;align-items:center;flex-wrap:wrap;width:100%;}
-    .stat-label{display:block;margin:4px 0 0;font-size:11px;color:#9ca3af;}
+    .stat-icon svg { width: 28px; height: 28px; stroke: currentColor; fill: none; }
+
+    .stat-content { flex: 1; }
+    .stat-content h3 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--ps-text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .stat-number { margin: 8px 0 0; font-size: 28px; font-weight: 800; color: var(--ps-text-main); }
+    .stat-label { margin: 6px 0 0; font-size: 13px; color: var(--ps-text-muted); }
+
+    /* Picture Boxes / Avatars / Camera Preview */
+    #ps-camera-preview {
+        width: 100%;
+        border-radius: var(--ps-radius);
+        background: #f1f5f9;
+        aspect-ratio: 4/3;
+        object-fit: cover;
+        border: 2px dashed #cbd5e1;
+    }
+    .ps-photo-thumb, #cl-cust-photo {
+        width: 80px;
+        height: 80px;
+        border-radius: var(--ps-radius); /* Softer squircle instead of harsh circle */
+        object-fit: cover;
+        border: 3px solid var(--ps-surface);
+        box-shadow: var(--ps-shadow);
+    }
+    #cl-selected-customer {
+        background: var(--ps-surface);
+        border: 1px solid var(--ps-border);
+        border-radius: var(--ps-radius);
+        padding: 20px;
+        box-shadow: var(--ps-shadow);
+    }
+
+    /* Modals & Layout Adjustments */
+    .bntm-ps-container .bntm-tab svg, .bntm-ps-container .ps-action-btn svg {
+        display: inline-block !important; width: 18px; height: 18px; stroke: currentColor; fill: none; flex-shrink: 0;
+    }
+
+    /* Print Document Enhancements */
+    .ps-doc-preview { padding: 32px; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.6; color: #111; }
+    .ps-doc-header { text-align: center; border-bottom: 3px solid #111; padding-bottom: 12px; margin-bottom: 16px; }
+    .ps-doc-title { font-size: 20px; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+    
+    .ps-shortcut-key {
+        display: inline-flex; align-items: center; background: #e2e8f0; color: #475569;
+        border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 700; margin-left: 6px;
+    }
+    .ps-qbtn.primary .ps-shortcut-key { background: rgba(255,255,255,0.2); color: #fff; }
     </style>
     <?php
     $content = ps_normalize_ui_output(ob_get_clean());
@@ -1300,6 +1607,7 @@ function ps_render_modals() {
                         <select name="payment_method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank_transfer">Bank Transfer</option></select>
                     </div>
                    
+
                     <div class="bntm-form-group">
                         <label>Notes</label>
                         <textarea name="notes" rows="2" placeholder="Internal notes..."></textarea>
@@ -2336,11 +2644,16 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
                         </div>
                         <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;flex-shrink:0;">
                             <span style="font-size:11px;font-weight:700;color:${col};text-transform:uppercase;padding:2px 7px;background:${col}18;border-radius:4px;">${l.status}</span>
-                            <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">
-                                <button class="ps-action-btn ps-btn-view" onclick="psViewLoanDetail(${l.id})">View</button>
-                                ${canAct ? `<button class="ps-action-btn ps-btn-renew" onclick="psOpenRenewModal(${l.id})">Renew</button>` : ''}
-                                ${canAct ? `<button class="ps-action-btn ps-btn-redeem" onclick="psOpenRedeemModal(${l.id})">Redeem</button>` : ''}
-                                <button class="ps-action-btn ps-btn-print" onclick="psShowPrintModal(${l.id},'pawn_ticket')">Print</button>
+                            <div class="ps-dropdown" tabindex="0" onmouseleave="setTimeout(() => { this.querySelector('.ps-dropdown-content').classList.remove('show') }, 300)">
+                                <button type="button" class="ps-dropdown-btn" onclick="this.nextElementSibling.classList.toggle('show');">
+                                    Actions <svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                </button>
+                                <div class="ps-dropdown-content">
+                                    <button class="ps-action-btn" onclick="psViewLoanDetail(${l.id})">View</button>
+                                    ${canAct ? `<button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRenewModal(${l.id})">Renew</button>` : ''}
+                                    ${canAct ? `<button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRedeemModal(${l.id})">Redeem</button>` : ''}
+                                    <button class="ps-action-btn" style="color: #6d28d9 !important;" onclick="psShowPrintModal(${l.id},'pawn_ticket')">Print</button>
+                                </div>
                             </div>
                         </div>
                     </div>`;
@@ -2831,12 +3144,19 @@ function ps_overview_tab($business_id) {
             <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><?php echo esc_html($loan->collateral_desc); ?></td>
             <td>&#8369;<?php echo number_format($loan->principal,2); ?></td>
             <td><?php echo $loan->interest_rate; ?>%/mo</td>
-            <td><div style="display:flex;gap:4px;">
-                <button class="ps-action-btn ps-btn-view" onclick="psViewLoanDetail(<?php echo $loan->id; ?>)">View</button>
-                <button class="ps-action-btn ps-btn-renew" onclick="psOpenRenewModal(<?php echo $loan->id; ?>)">Renew</button>
-                <button class="ps-action-btn ps-btn-redeem" onclick="psOpenRedeemModal(<?php echo $loan->id; ?>)">Redeem</button>
-                <button class="ps-action-btn ps-btn-print" onclick="psShowPrintModal(<?php echo $loan->id; ?>,'pawn_ticket')" title="Print">Print</button>
-            </div></td>
+            <td>
+                <div class="ps-dropdown" tabindex="0" onmouseleave="setTimeout(() => { this.querySelector('.ps-dropdown-content').classList.remove('show') }, 300)">
+                    <button type="button" class="ps-dropdown-btn" onclick="this.nextElementSibling.classList.toggle('show');">
+                        Actions <svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <div class="ps-dropdown-content">
+                        <button class="ps-action-btn" onclick="psViewLoanDetail(<?php echo $loan->id; ?>)">View</button>
+                        <button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRenewModal(<?php echo $loan->id; ?>)">Renew</button>
+                        <button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRedeemModal(<?php echo $loan->id; ?>)">Redeem</button>
+                        <button class="ps-action-btn" style="color: #6d28d9 !important;" onclick="psShowPrintModal(<?php echo $loan->id; ?>,'pawn_ticket')">Print</button>
+                    </div>
+                </div>
+            </td>
         </tr>
         <?php endforeach; ?>
         </tbody></table></div>
@@ -2854,11 +3174,18 @@ function ps_overview_tab($business_id) {
             <td>&#8369;<?php echo number_format($loan->principal,2); ?></td>
             <td><?php echo date('M d, Y',strtotime($loan->due_date)); ?></td>
             <td><span style="color:#dc2626;font-weight:700;"><?php echo $loan->days_overdue; ?>d</span><?php if ($grace > 0 && $loan->days_overdue <= $grace): ?><span style="color:#059669;font-size:11px;margin-left:4px;">(grace)</span><?php endif; ?></td>
-            <td><div style="display:flex;gap:4px;">
-                <button class="ps-action-btn ps-btn-renew" onclick="psOpenRenewModal(<?php echo $loan->id; ?>)">Renew</button>
-                <button class="ps-action-btn ps-btn-redeem" onclick="psOpenRedeemModal(<?php echo $loan->id; ?>)">Redeem</button>
-                <button class="ps-action-btn ps-btn-view" onclick="psViewLoanDetail(<?php echo $loan->id; ?>)">View</button>
-            </div></td>
+            <td>
+                <div class="ps-dropdown" tabindex="0" onmouseleave="setTimeout(() => { this.querySelector('.ps-dropdown-content').classList.remove('show') }, 300)">
+                    <button type="button" class="ps-dropdown-btn" onclick="this.nextElementSibling.classList.toggle('show');">
+                        Actions <svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </button>
+                    <div class="ps-dropdown-content">
+                        <button class="ps-action-btn" onclick="psViewLoanDetail(<?php echo $loan->id; ?>)">View</button>
+                        <button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRenewModal(<?php echo $loan->id; ?>)">Renew</button>
+                        <button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRedeemModal(<?php echo $loan->id; ?>)">Redeem</button>
+                    </div>
+                </div>
+            </td>
         </tr>
         <?php endforeach; ?>
         </tbody></table></div>
@@ -2975,20 +3302,27 @@ function ps_loans_tab($business_id) {
             <?php endif; ?>
         </td>
         <td><span class="ps-status-badge ps-status-<?php echo $loan->status; ?>"><?php echo ucfirst($loan->status); ?></span></td>
-        <td><div style="display:flex;gap:3px;flex-wrap:wrap;">
-            <button class="ps-action-btn ps-btn-view" onclick="psViewLoanDetail(<?php echo $loan->id; ?>)" title="Details">View</button>
-            <?php if ($can_manage): ?>
-            <button class="ps-action-btn ps-btn-print" onclick="psOpenEditTicket(<?php echo $loan->id; ?>)" title="Edit">Edit</button>
-            <?php endif; ?>
-            <?php if ($loan->status === 'active' || $loan->status === 'overdue'): ?>
-            <button class="ps-action-btn ps-btn-renew" onclick="psOpenRenewModal(<?php echo $loan->id; ?>)">Renew</button>
-            <button class="ps-action-btn ps-btn-redeem" onclick="psOpenRedeemModal(<?php echo $loan->id; ?>)">Redeem</button>
-            <button class="ps-action-btn ps-btn-forfeit" onclick="psConfirmForfeit(<?php echo $loan->id; ?>,'<?php echo esc_js($loan->ticket_number); ?>')">Forfeit</button>
-            <?php elseif ($loan->status === 'renewed'): ?>
-            <span style="font-size:11px;color:#9ca3af;padding:4px 6px;background:#f9fafb;border-radius:4px;border:1px solid #e5e7eb;">Superseded</span>
-            <?php endif; ?>
-            <button class="ps-action-btn ps-btn-print" onclick="psShowPrintModal(<?php echo $loan->id; ?>,'pawn_ticket')" title="Print">Print</button>
-        </div></td>
+        <td>
+            <div class="ps-dropdown" tabindex="0" onmouseleave="setTimeout(() => { this.querySelector('.ps-dropdown-content').classList.remove('show') }, 300)">
+                <button type="button" class="ps-dropdown-btn" onclick="this.nextElementSibling.classList.toggle('show');">
+                    Actions <svg width="12" height="12" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="ps-dropdown-content">
+                    <button class="ps-action-btn" onclick="psViewLoanDetail(<?php echo $loan->id; ?>)">View</button>
+                    <?php if ($can_manage): ?>
+                    <button class="ps-action-btn" onclick="psOpenEditTicket(<?php echo $loan->id; ?>)">Edit</button>
+                    <?php endif; ?>
+                    <?php if ($loan->status === 'active' || $loan->status === 'overdue'): ?>
+                    <button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRenewModal(<?php echo $loan->id; ?>)">Renew</button>
+                    <button class="ps-action-btn" style="color: #047857 !important;" onclick="psOpenRedeemModal(<?php echo $loan->id; ?>)">Redeem</button>
+                    <button class="ps-action-btn" style="color: #b91c1c !important;" onclick="psConfirmForfeit(<?php echo $loan->id; ?>,'<?php echo esc_js($loan->ticket_number); ?>')">Forfeit</button>
+                    <?php elseif ($loan->status === 'renewed'): ?>
+                    <button class="ps-action-btn" disabled style="color: #9ca3af !important; cursor: not-allowed;">Superseded</button>
+                    <?php endif; ?>
+                    <button class="ps-action-btn" style="color: #6d28d9 !important;" onclick="psShowPrintModal(<?php echo $loan->id; ?>,'pawn_ticket')">Print</button>
+                </div>
+            </div>
+        </td>
     </tr>
     <?php endforeach; endif; ?>
     </tbody></table></div>
@@ -3059,7 +3393,7 @@ function ps_collaterals_tab($business_id) {
     </div>
 
     <div class="bntm-table-wrapper"><table class="bntm-table">
-    <thead><tr><th style="width:32px;"></th><th>Category</th><th>Description</th><th>Brand/Model</th><th>Condition</th><th>Appraised Value</th><th>Ticket / Root</th><th>Customer</th><th>Status</th><th>Actions</th></tr></thead>
+    <thead><tr><th style="width:32px;"></th><th>Description</th><th>Condition</th><th>Appraised Value</th><th>Ticket / Root</th><th>Customer</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>
     <?php if (empty($collaterals)): ?><tr><td colspan="10" style="text-align:center;color:#9ca3af;padding:40px;">No collateral records found</td></tr>
     <?php else: foreach ($collaterals as $col):
@@ -3075,11 +3409,9 @@ function ps_collaterals_tab($business_id) {
             <input type="checkbox" class="collat-auction-cb" value="<?php echo $col->id; ?>" style="width:16px;height:16px;cursor:pointer;">
             <?php endif; ?>
         </td>
-        <td><span class="ps-collateral-cat"><?php echo ucfirst($col->category); ?></span></td>
         <td><div style="font-weight:600;font-size:13px;max-width:180px;"><?php echo esc_html($col->description); ?></div>
             <?php if ($col->karat||$col->weight_grams>0): ?><div style="font-size:11px;color:#9ca3af;"><?php echo $col->karat; ?> <?php echo $col->weight_grams>0?$col->weight_grams.'g':''; ?></div><?php endif; ?>
         </td>
-        <td><?php echo $col->brand ? esc_html($col->brand) : '<span style="color:#d1d5db;">-</span>'; ?><?php if ($col->model): ?><div style="font-size:11px;color:#9ca3af;"><?php echo esc_html($col->model); ?></div><?php endif; ?></td>
         <td><span style="color:<?php echo $cc; ?>;font-weight:600;font-size:12px;text-transform:capitalize;"><?php echo $col->item_condition; ?></span></td>
         <td style="font-weight:700;">&#8369;<?php echo number_format($col->appraised_value,2); ?></td>
         <td><?php if ($col->ticket_number): ?>
