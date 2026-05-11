@@ -1583,7 +1583,6 @@ function pb_settings_tab($business_id) {
     $max_width     = bntm_get_setting('pb_max_image_width',  '1280');
     $moderation    = bntm_get_setting('pb_moderation_mode',  'auto');
     $guest_name    = bntm_get_setting('pb_guest_name_mode',  'optional');
-    $cooldown      = bntm_get_setting('pb_upload_cooldown',  '30');
     $allowed_types = bntm_get_setting('pb_allowed_types',    'jpeg,png,webp');
     $pwa_name      = bntm_get_setting('pb_pwa_name',         'Photo Booth');
     $pwa_color     = bntm_get_setting('pb_pwa_theme_color',  '#6366f1');
@@ -1612,11 +1611,6 @@ function pb_settings_tab($business_id) {
             <label>Allowed File Types</label>
             <input type="text" id="pb-allowed-types" value="<?php echo esc_attr($allowed_types); ?>">
             <small style="color:#6b7280;">Comma-separated: jpeg, png, webp</small>
-        </div>
-        <div class="bntm-form-group">
-            <label>Upload Cooldown (seconds per guest IP)</label>
-            <input type="number" id="pb-cooldown" value="<?php echo esc_attr($cooldown); ?>" min="0" max="3600">
-            <small style="color:#6b7280;">Minimum seconds between uploads from the same IP. Set 0 to disable.</small>
         </div>
     </div>
 
@@ -1702,7 +1696,6 @@ function pb_settings_tab($business_id) {
             fd.append('max_upload_size',  document.getElementById('pb-max-size').value);
             fd.append('max_image_width',  document.getElementById('pb-max-width').value);
             fd.append('allowed_types',    document.getElementById('pb-allowed-types').value);
-            fd.append('cooldown',         document.getElementById('pb-cooldown').value);
             fd.append('moderation_mode',  document.getElementById('pb-moderation').value);
             fd.append('guest_name_mode',  document.getElementById('pb-guest-name').value);
             fd.append('pwa_name',         document.getElementById('pb-pwa-name').value);
@@ -2072,7 +2065,6 @@ function bntm_ajax_pb_save_settings() {
     bntm_set_setting('pb_max_upload_size', intval($_POST['max_upload_size']));
     bntm_set_setting('pb_max_image_width', intval($_POST['max_image_width']));
     bntm_set_setting('pb_allowed_types',   sanitize_text_field($_POST['allowed_types']));
-    bntm_set_setting('pb_upload_cooldown', intval($_POST['cooldown']));
     bntm_set_setting('pb_moderation_mode', sanitize_text_field($_POST['moderation_mode']));
     bntm_set_setting('pb_guest_name_mode', sanitize_text_field($_POST['guest_name_mode']));
     bntm_set_setting('pb_pwa_name',        sanitize_text_field($_POST['pwa_name']));
@@ -2129,6 +2121,7 @@ function bntm_ajax_pb_get_event_data() {
         'max_reached'     => $max_reached,
         'guest_name_mode' => $guest_name_mode,
         'moderation'      => $moderation,
+        'gallery_url'     => pb_get_frontend_page_url('photo-gallery', 'pb_gallery', ['event_id' => $event->rand_id]),
     ]);
 }
 
@@ -2148,21 +2141,8 @@ function bntm_ajax_pb_upload_photo() {
         if ($count >= $event->max_photos) { wp_send_json_error(['message' => 'Photo limit reached for this event']); }
     }
 
-    // Cooldown check
-    $cooldown = intval(bntm_get_setting('pb_upload_cooldown', '30'));
+    // Cooldown removed: keep guest IP for analytics/moderation metadata only.
     $guest_ip = sanitize_text_field($_SERVER['REMOTE_ADDR'] ?? '');
-    if ($cooldown > 0 && $guest_ip) {
-        $last_upload = $wpdb->get_var($wpdb->prepare(
-            "SELECT created_at FROM {$wpdb->prefix}pb_photos WHERE event_id = %d AND guest_ip = %s ORDER BY created_at DESC LIMIT 1",
-            $event->id, $guest_ip
-        ));
-        if ($last_upload) {
-            $seconds_since = time() - strtotime($last_upload);
-            if ($seconds_since < $cooldown) {
-                wp_send_json_error(['message' => "Please wait " . ($cooldown - $seconds_since) . " seconds before uploading again"]);
-            }
-        }
-    }
 
     // Validate file
     if (empty($_FILES['photo']) || $_FILES['photo']['error'] !== UPLOAD_ERR_OK) {
@@ -2233,6 +2213,7 @@ function bntm_ajax_pb_upload_photo() {
             'message'  => 'Photo uploaded successfully!',
             'status'   => $status,
             'photo_id' => $rand_id,
+            'gallery_url' => pb_get_frontend_page_url('photo-gallery', 'pb_gallery', ['event_id' => $event->rand_id]),
         ]);
     } else {
         @unlink($full_path);
@@ -2497,6 +2478,15 @@ function bntm_shortcode_pb_upload() {
         border: none; cursor: pointer; color: #fff;
         display: flex; align-items: center; justify-content: center;
     }
+    #pb-camera-upload {
+        position: absolute; right: 0;
+        width: auto; min-width: 44px; height: 44px; border-radius: 22px;
+        padding: 0 14px;
+        background: rgba(0,0,0,0.6); backdrop-filter: blur(10px);
+        border: 1px solid rgba(255,255,255,0.2); cursor: pointer; color: #fff;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 700; letter-spacing: 0.2px;
+    }
     #pb-canvas { display: none; }
 
     /* Preview screen */
@@ -2691,8 +2681,8 @@ function bntm_shortcode_pb_upload() {
             </div>
             <div style="width:100%;padding:20px;display:flex;flex-direction:column;gap:16px;flex:1;justify-content:center;padding-bottom:15%;">
                 <button class="pb-btn-big" id="pb-method-camera-btn" type="button">Use Camera</button>
-                <button class="pb-btn-outline" id="pb-method-upload-btn" type="button">Use Photo From Device</button>
-                <input type="file" accept="image/*" capture="environment" id="pb-file-input" style="display:none;">
+                <button class="pb-btn-outline" id="pb-method-upload-btn" type="button">Use Photo / Add From Gallery</button>
+                <input type="file" accept="image/*" id="pb-file-input" style="display:none;">
             </div>
         </div>
 
@@ -2714,6 +2704,7 @@ function bntm_shortcode_pb_upload() {
                     <button class="pb-capture-btn" id="pb-capture-btn" aria-label="Take photo">
                         <div class="pb-capture-btn-inner"></div>
                     </button>
+                    <button id="pb-camera-upload" type="button">Add From Gallery</button>
                 </div>
             </div>
         </div>
@@ -3157,6 +3148,10 @@ function bntm_shortcode_pb_upload() {
             document.getElementById('pb-file-input').click();
         });
 
+        document.getElementById('pb-camera-upload').addEventListener('click', function() {
+            document.getElementById('pb-file-input').click();
+        });
+
         document.getElementById('pb-file-input').addEventListener('change', function(e) {
             const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
             if (!file) return;
@@ -3240,6 +3235,24 @@ function bntm_shortcode_pb_upload() {
             fd.append('guest_name', payload.guestName || '');
             fd.append('photo', payload.blob, 'photo.jpg');
             return fetch(AJAX, { method: 'POST', body: fd }).then(r => r.json());
+        }
+
+        function redirectToGallery(responseData) {
+            let galleryUrl = (responseData && responseData.gallery_url)
+                || (eventData && eventData.gallery_url)
+                || '';
+
+            if (!galleryUrl || galleryUrl === '#') {
+                const fallback = new URL(location.href);
+                fallback.searchParams.set('event_id', eventId || '');
+                const replacedPath = fallback.pathname.replace(/photo-booth-upload\/?$/i, 'photo-gallery/');
+                fallback.pathname = replacedPath !== fallback.pathname ? replacedPath : '/photo-gallery/';
+                galleryUrl = fallback.toString();
+            }
+
+            if (!galleryUrl || galleryUrl === '#') return false;
+            location.assign(galleryUrl);
+            return true;
         }
 
         function openQueueDb() {
@@ -3348,7 +3361,9 @@ function bntm_shortcode_pb_upload() {
                     animateProgress(true);
                     const pending = response.data && response.data.status === 'pending';
                     document.getElementById('pb-pending-note').style.display = pending ? 'block' : 'none';
-                    showScreen('success');
+                    if (!redirectToGallery(response.data || {})) {
+                        showScreen('success');
+                    }
                     return;
                 }
 
