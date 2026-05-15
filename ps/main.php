@@ -2619,7 +2619,7 @@ if (appraisedEl) appraisedEl.value = appraisedVal.toFixed(2);
         const autoPrint = options.autoPrint === true;
         const modal = document.getElementById('ps-print-modal');
         const preview = document.getElementById('ps-print-preview');
-        const titles = { pawn_ticket:'Pawn Ticket', renewal_notice:'Renewal Notice', redemption_receipt:'Redemption Receipt', forfeiture_notice:'Forfeiture Notice', customer_statement:'Customer Statement', payment_receipt:'Payment Receipt', daily_summary:'Cash Flow Summary', cash_flow_summary:'Cash Flow Summary' };
+        const titles = { pawn_ticket:'Pawn Ticket', renewal_notice:'Renewal Notice', redemption_receipt:'Redemption Receipt', forfeiture_notice:'Notice of Auction', customer_statement:'Customer Statement', payment_receipt:'Payment Receipt', daily_summary:'Cash Flow Summary', cash_flow_summary:'Cash Flow Summary' };
         document.getElementById('print-modal-title').textContent = titles[docType] || 'Document';
         document.getElementById('print-modal-subtitle').textContent = 'Loan ID: ' + loanId + ' - Review before printing';
         document.getElementById('print-modal-subtitle').textContent = autoPrint
@@ -3801,7 +3801,7 @@ function ps_documents_tab( $business_id ) {
                         'pawn_ticket'        => 'Pawn Ticket',
                         'renewal_notice'     => 'Renewal Notice',
                         'redemption_receipt' => 'Redemption Receipt',
-                        'forfeiture_notice'  => 'Forfeiture Notice',
+                        'forfeiture_notice'  => 'Notice of Auction',
                         'payment_receipt'    => 'Payment Receipt',
                         'customer_statement' => 'Customer Statement',
                         'ticket_chain'       => 'Ticket Chain History',
@@ -6834,7 +6834,7 @@ function ps_get_document_definitions(): array {
         'pawn_ticket'        => 'Pawn Ticket',
         'renewal_notice'     => 'Renewal Notice',
         'redemption_receipt' => 'Redemption Receipt',
-        'forfeiture_notice'  => 'Forfeiture Notice',
+        'forfeiture_notice'  => 'Notice of Auction',
         'payment_receipt'    => 'Payment Receipt',
         'customer_statement' => 'Customer Statement',
         'ticket_chain'       => 'Ticket Chain History',
@@ -7286,33 +7286,72 @@ function ps_doc_redemption_receipt( $loan, $bd, array $b ): string {
 // ? FORFEITURE NOTICE
 // ============================================================
 function ps_doc_forfeiture_notice( $loan, array $b ): string {
-    $body  = ps_corp_header( $b )
-           . ps_doc_title('FORFEITURE NOTICE', 'Date: ' . date('F d, Y'))
-           . ps_divider()
-           . "<div style='display:flex;justify-content:space-between;margin-bottom:5px;font-size:9.5px;'>"
-           . "<span>Ticket No.: <strong>" . esc_html($loan->ticket_number) . "</strong></span>"
-           . "<span>Status: <strong>FORFEITED</strong></span></div>"
-           . ps_pawner_block( $loan )
-           . ps_divider()
-           . "<div style='font-size:9px;font-weight:700;text-transform:uppercase;margin:4px 0;text-decoration:underline;'>Forfeited Collateral</div>"
-           . ps_cf_line('Description', esc_html($loan->collateral_desc))
-           . ps_cf_line('Category', ucfirst(esc_html($loan->category)))
-           . ($loan->karat ? ps_cf_line('Karat / Weight', esc_html($loan->karat . ' / ' . $loan->weight_grams . ' GMS.')) : '')
-           . ps_cf_line('Condition', ucfirst(esc_html($loan->item_condition)))
-           . ps_divider()
-           . ps_cf_line('Appraised Value',   'P ' . number_format($loan->appraised_value, 2))
-           . ps_cf_line('Principal Amount',  'P ' . number_format($loan->principal, 2))
-           . ps_cf_line('Loan Date',         date('F d, Y', strtotime($loan->loan_date)))
-           . ps_cf_line('Original Due Date', date('F d, Y', strtotime($loan->due_date)))
-           . ps_divider()
-           . "<div style='font-size:9px;line-height:1.7;margin-top:6px;border-left:3px solid #000;padding-left:7px;'>"
-           . "<strong>NOTICE:</strong> The above-described collateral has been declared forfeited due to non-redemption "
-           . "past the grace period as stipulated in the Pawn Ticket. The pawner was duly notified per terms of the "
-           . "pawn agreement. This document serves as the official notice of forfeiture per BSP regulations.</div>"
-           . ps_sig_footer(['Authorized Signatory', 'Witness', 'Date'])
-           . ps_footer_line($b['footer']);
- 
-    return ps_wrap_page( $body );
+    $letter_date    = date('F d, Y');
+    $pawner_name    = trim($loan->customer_name);
+    $pawner_address = trim($loan->address);
+    $ticket_no      = esc_html($loan->ticket_number);
+    $item_desc      = esc_html($loan->collateral_desc);
+    $shop_name      = esc_html($b['name']);
+    $shop_addr      = esc_html($b['addr'] ?? '');
+    $due_date       = date('F d, Y', strtotime($loan->due_date));
+    $appraised      = 'P ' . number_format($loan->appraised_value, 2);
+    $karat_line     = $loan->karat ? ' (' . esc_html($loan->karat . ', ' . $loan->weight_grams . ' grams') . ')' : '';
+
+    $body  = ps_corp_header($b);
+    $body .= ps_divider();
+
+    // Date & ticket reference block (top right, letter style)
+    $body .= "<div style='margin:10px 0 4px;font-size:9.5px;line-height:1.8;'>"
+           . "<div><strong>Date:</strong> " . $letter_date . "</div>"
+           . "<div><strong>Pawn Ticket No.:</strong> " . $ticket_no . "</div>"
+           . "</div>";
+
+    $body .= ps_divider();
+
+    // Recipient address
+    $body .= "<div style='margin:10px 0 14px;font-size:9.5px;line-height:1.8;'>"
+           . "<div><strong>" . esc_html($pawner_name) . "</strong></div>"
+           . ($pawner_address ? "<div>" . esc_html($pawner_address) . "</div>" : '')
+           . "</div>";
+
+    // Salutation
+    $body .= "<div style='font-size:9.5px;margin-bottom:10px;'>"
+           . "Dear <strong>" . esc_html($pawner_name) . "</strong>,</div>";
+
+    // Document title
+    $body .= "<div style='text-align:center;margin:6px 0 10px;'>"
+           . "<span style='font-size:11px;font-weight:900;font-family:\"Times New Roman\",serif;"
+           . "text-decoration:underline;text-transform:uppercase;letter-spacing:.5px;'>"
+           . "NOTICE OF AUCTION</span></div>";
+
+    // Opening paragraph
+    $body .= "<div style='font-size:9.5px;line-height:1.9;text-align:justify;margin-bottom:8px;'>"
+           . "We wish to inform you that your pledged item described as "
+           . "<strong>" . $item_desc . $karat_line . "</strong>, "
+           . "covered under Pawn Ticket No. <strong>" . $ticket_no . "</strong>, "
+           . "has <strong>not been redeemed</strong> on or before the maturity date of "
+           . "<strong>" . $due_date . "</strong>. "
+           . "In accordance with the terms and conditions of your pawn agreement and the provisions of "
+           . "Presidential Decree No. 114 (Pawnshop Regulation Act), the said item has been declared "
+           . "<strong>forfeited</strong> and is hereby subject to <strong>public auction</strong>.</div>";
+
+    // Closing paragraph
+    $body .= "<div style='font-size:9.5px;line-height:1.9;text-align:justify;margin-bottom:10px;'>"
+           . "You may still redeem your item prior to the actual date of auction by settling the full "
+           . "outstanding obligation including accrued interest and applicable penalties. "
+           . "Should you wish to redeem or have any inquiries, please visit our office or contact us "
+           . "at your earliest convenience.</div>";
+
+    $body .= "<div style='font-size:9.5px;line-height:1.9;text-align:justify;margin-bottom:14px;'>"
+           . "This notice is issued pursuant to applicable regulations governing pawnshop operations.</div>";
+
+    // Closing
+    $body .= "<div style='font-size:9.5px;margin-bottom:20px;'>Respectfully yours,</div>";
+
+    $body .= ps_sig_footer(['Authorized Signatory', 'Position / Title', 'Date Signed']);
+    $body .= ps_footer_line($b['footer']);
+
+    return ps_wrap_page($body);
 }
  
  
