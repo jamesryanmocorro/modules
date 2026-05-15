@@ -123,6 +123,8 @@ add_action('wp_ajax_vm_add_category', 'bntm_ajax_vm_add_category');
 add_action('wp_ajax_vm_delete_category', 'bntm_ajax_vm_delete_category');
 add_action('wp_ajax_vm_import_company_expense', 'bntm_ajax_vm_import_company_expense');
 add_action('wp_ajax_vm_revert_company_expense', 'bntm_ajax_vm_revert_company_expense');
+add_action('wp_ajax_vm_import_sales',           'bntm_ajax_vm_import_sales');
+add_action('wp_ajax_vm_revert_sales',           'bntm_ajax_vm_revert_sales');
 
 // ============================================================================
 // MAIN DASHBOARD SHORTCODE
@@ -1815,6 +1817,17 @@ function vat_import_tab() {
         ORDER BY r.transaction_date DESC, r.created_at DESC
     "));
 
+    $sales_receipts = $wpdb->get_results($wpdb->prepare("
+        SELECT r.*,
+            (SELECT COUNT(*) FROM {$fn_table} f
+             WHERE f.reference_type = 'vm_sales'
+               AND f.reference_id = r.id) as is_imported
+        FROM {$receipts_table} r
+        WHERE r.receipt_type = 'sales'
+            AND r.status = 'active'
+        ORDER BY r.transaction_date DESC, r.created_at DESC
+    "));
+
     $nonce = wp_create_nonce('vm_fn_action');
 
     ob_start();
@@ -1898,6 +1911,204 @@ function vat_import_tab() {
         </div>
     </div>
 
+    <div class="bntm-form-section" style="margin-top: 40px;">
+        <h3>Import Sales to Finance</h3>
+        <p>Import VAT sales receipts as income transactions in the Finance module.</p>
+
+        <div style="margin-bottom: 15px;">
+            <label style="cursor: pointer; margin-right: 20px;">
+                <input type="checkbox" id="select-all-sales-not-imported">
+                <strong>Select All (Not Imported)</strong>
+            </label>
+            <label style="cursor: pointer;">
+                <input type="checkbox" id="select-all-sales-imported">
+                <strong>Select All (Imported)</strong>
+            </label>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <button id="bulk-import-sales-btn" class="bntm-btn-primary" style="margin-right: 10px;">Import Selected</button>
+            <button id="bulk-revert-sales-btn" class="bntm-btn-secondary">Revert Selected</button>
+            <span id="selected-sales-count" style="margin-left: 15px; color: #6b7280;"></span>
+        </div>
+
+        <div class="bntm-table-container">
+            <table class="bntm-table">
+                <thead>
+                    <tr>
+                        <th width="40"></th>
+                        <th>Date</th>
+                        <th>OR #</th>
+                        <th>Customer</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>VAT</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($sales_receipts)): ?>
+                    <tr>
+                        <td colspan="8" style="text-align: center;">No active sales receipts found.</td>
+                    </tr>
+                    <?php else: ?>
+                        <?php foreach ($sales_receipts as $receipt): ?>
+                        <tr>
+                            <td>
+                                <input type="checkbox"
+                                    class="sales-receipt-checkbox <?php echo $receipt->is_imported ? 'imported-sales' : 'not-imported-sales'; ?>"
+                                    data-id="<?php echo $receipt->id; ?>"
+                                    data-amount="<?php echo esc_attr($receipt->amount); ?>"
+                                    data-or="<?php echo esc_attr($receipt->or_number); ?>"
+                                    data-customer="<?php echo esc_attr($receipt->store_name); ?>"
+                                    data-category="<?php echo esc_attr($receipt->category ?: 'Sales Income'); ?>"
+                                    data-date="<?php echo esc_attr($receipt->transaction_date); ?>"
+                                    data-imported="<?php echo $receipt->is_imported ? '1' : '0'; ?>">
+                            </td>
+                            <td><?php echo date('M d, Y', strtotime($receipt->transaction_date)); ?></td>
+                            <td><strong><?php echo esc_html($receipt->or_number); ?></strong></td>
+                            <td><?php echo esc_html($receipt->store_name); ?></td>
+                            <td><?php echo esc_html($receipt->category ?: 'Uncategorized'); ?></td>
+                            <td class="bntm-stat-income"><?php echo vat_format_currency($receipt->amount); ?></td>
+                            <td><?php echo vat_format_currency($receipt->vat_amount); ?></td>
+                            <td>
+                                <?php if ($receipt->is_imported): ?>
+                                <span style="color:#059669;">Imported</span>
+                                <?php else: ?>
+                                <span style="color:#6b7280;">Not Imported</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const nonce = '<?php echo $nonce; ?>';
+
+        // ── Sales section ──────────────────────────────────────────
+        function updateSalesCount() {
+            const selected = document.querySelectorAll('.sales-receipt-checkbox:checked').length;
+            document.getElementById('selected-sales-count').textContent = selected > 0 ? `${selected} selected` : '';
+        }
+
+        const selectAllSalesNotImported = document.getElementById('select-all-sales-not-imported');
+        const selectAllSalesImported    = document.getElementById('select-all-sales-imported');
+
+        if (selectAllSalesNotImported) {
+            selectAllSalesNotImported.addEventListener('change', function() {
+                document.querySelectorAll('.not-imported-sales').forEach(cb => { cb.checked = this.checked; });
+                if (this.checked && selectAllSalesImported) selectAllSalesImported.checked = false;
+                updateSalesCount();
+            });
+        }
+
+        if (selectAllSalesImported) {
+            selectAllSalesImported.addEventListener('change', function() {
+                document.querySelectorAll('.imported-sales').forEach(cb => { cb.checked = this.checked; });
+                if (this.checked && selectAllSalesNotImported) selectAllSalesNotImported.checked = false;
+                updateSalesCount();
+            });
+        }
+
+        document.querySelectorAll('.sales-receipt-checkbox').forEach(cb => {
+            cb.addEventListener('change', updateSalesCount);
+        });
+
+        const bulkImportSalesBtn = document.getElementById('bulk-import-sales-btn');
+        if (bulkImportSalesBtn) bulkImportSalesBtn.addEventListener('click', function() {
+            const selected = Array.from(document.querySelectorAll('.sales-receipt-checkbox:checked'))
+                .filter(cb => cb.dataset.imported === '0');
+
+            if (selected.length === 0) {
+                alert('Please select at least one sales receipt that is not imported.');
+                return;
+            }
+
+            const totalAmount = selected.reduce((sum, cb) => sum + parseFloat(cb.dataset.amount || '0'), 0);
+            if (!confirm(`Import ${selected.length} sales receipt(s) to Finance?\n\nTotal Amount: ₱${totalAmount.toFixed(2)}`)) return;
+
+            this.disabled = true;
+            this.textContent = 'Importing...';
+
+            let completed = 0;
+            const total = selected.length;
+            const btn = this;
+
+            selected.forEach(cb => {
+                const data = new FormData();
+                data.append('action', 'vm_import_sales');
+                data.append('receipt_id', cb.dataset.id);
+                data.append('nonce', nonce);
+
+                fetch(ajaxurl, {method: 'POST', body: data})
+                    .then(r => r.json())
+                    .then(() => {
+                        completed++;
+                        if (completed === total) {
+                            alert(`Successfully imported ${total} sales receipt(s).`);
+                            location.reload();
+                        }
+                    })
+                    .catch(() => {
+                        completed++;
+                        if (completed === total) {
+                            alert('Import completed with some errors. Please review the records.');
+                            location.reload();
+                        }
+                    });
+            });
+        });
+
+        const bulkRevertSalesBtn = document.getElementById('bulk-revert-sales-btn');
+        if (bulkRevertSalesBtn) bulkRevertSalesBtn.addEventListener('click', function() {
+            const selected = Array.from(document.querySelectorAll('.sales-receipt-checkbox:checked'))
+                .filter(cb => cb.dataset.imported === '1');
+
+            if (selected.length === 0) {
+                alert('Please select at least one imported sales receipt.');
+                return;
+            }
+
+            if (!confirm(`Remove ${selected.length} sales receipt(s) from Finance?`)) return;
+
+            this.disabled = true;
+            this.textContent = 'Reverting...';
+
+            let completed = 0;
+            const total = selected.length;
+
+            selected.forEach(cb => {
+                const data = new FormData();
+                data.append('action', 'vm_revert_sales');
+                data.append('receipt_id', cb.dataset.id);
+                data.append('nonce', nonce);
+
+                fetch(ajaxurl, {method: 'POST', body: data})
+                    .then(r => r.json())
+                    .then(() => {
+                        completed++;
+                        if (completed === total) {
+                            alert(`Successfully reverted ${total} sales receipt(s).`);
+                            location.reload();
+                        }
+                    })
+                    .catch(() => {
+                        completed++;
+                        if (completed === total) {
+                            alert('Revert completed with some errors. Please review the records.');
+                            location.reload();
+                        }
+                    });
+            });
+        });
+    })();
+    </script>
+
     <script>
     (function() {
         const nonce = '<?php echo $nonce; ?>';
@@ -1934,7 +2145,8 @@ function vat_import_tab() {
             cb.addEventListener('change', updateSelectedCount);
         });
 
-        document.getElementById('bulk-import-btn').addEventListener('click', function() {
+        const bulkImportBtn = document.getElementById('bulk-import-btn');
+        if (bulkImportBtn) bulkImportBtn.addEventListener('click', function() {
             const selected = Array.from(document.querySelectorAll('.company-expense-checkbox:checked'))
                 .filter(cb => cb.dataset.imported === '0');
 
@@ -1977,7 +2189,8 @@ function vat_import_tab() {
             });
         });
 
-        document.getElementById('bulk-revert-btn').addEventListener('click', function() {
+        const bulkRevertBtn = document.getElementById('bulk-revert-btn');
+        if (bulkRevertBtn) bulkRevertBtn.addEventListener('click', function() {
             const selected = Array.from(document.querySelectorAll('.company-expense-checkbox:checked'))
                 .filter(cb => cb.dataset.imported === '1');
 
@@ -2435,6 +2648,92 @@ function bntm_ajax_vm_revert_company_expense() {
         wp_send_json_success(['message' => 'Company expense removed from Finance.']);
     } else {
         wp_send_json_error(['message' => 'Failed to revert company expense.']);
+    }
+}
+
+function bntm_ajax_vm_import_sales() {
+    check_ajax_referer('vm_fn_action', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+    $receipts_table = $wpdb->prefix . 'vat_receipts';
+    $fn_table       = $wpdb->prefix . 'fn_transactions';
+    $receipt_id     = intval($_POST['receipt_id']);
+    $business_id    = get_current_user_id();
+
+    $receipt = $wpdb->get_row($wpdb->prepare("
+        SELECT * FROM {$receipts_table}
+        WHERE id = %d AND receipt_type = 'sales' AND status = 'active'
+    ", $receipt_id));
+
+    if (!$receipt) {
+        wp_send_json_error(['message' => 'Sales receipt not found.']);
+    }
+
+    $exists = $wpdb->get_var($wpdb->prepare("
+        SELECT id FROM {$fn_table}
+        WHERE reference_type = 'vm_sales'
+          AND reference_id = %d
+          AND business_id = %d
+    ", $receipt_id, $business_id));
+
+    if ($exists) {
+        wp_send_json_error(['message' => 'This sales receipt has already been imported.']);
+    }
+
+    $notes = "VAT Sales Import\n"
+        . "Date: {$receipt->transaction_date}\n"
+        . "OR #: {$receipt->or_number}\n"
+        . "Customer: {$receipt->store_name}\n"
+        . "Category: " . ($receipt->category ?: 'Uncategorized') . "\n"
+        . "VAT: {$receipt->vat_amount}";
+
+    $data = [
+        'rand_id'        => bntm_rand_id(),
+        'business_id'    => $business_id,
+        'type'           => 'income',
+        'amount'         => $receipt->amount,
+        'category'       => $receipt->category ?: 'Sales Income',
+        'notes'          => $notes,
+        'reference_type' => 'vm_sales',
+        'reference_id'   => $receipt_id,
+        'created_at'     => $receipt->transaction_date . ' ' . date('H:i:s'),
+    ];
+
+    $result = $wpdb->insert($fn_table, $data);
+
+    if ($result) {
+        if (function_exists('bntm_fn_update_cashflow_summary')) {
+            bntm_fn_update_cashflow_summary();
+        }
+        wp_send_json_success(['message' => 'Sales receipt imported to Finance successfully.']);
+    } else {
+        wp_send_json_error(['message' => 'Failed to import sales receipt.']);
+    }
+}
+
+function bntm_ajax_vm_revert_sales() {
+    check_ajax_referer('vm_fn_action', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    global $wpdb;
+    $fn_table    = $wpdb->prefix . 'fn_transactions';
+    $receipt_id  = intval($_POST['receipt_id']);
+    $business_id = get_current_user_id();
+
+    $result = $wpdb->delete($fn_table, [
+        'reference_type' => 'vm_sales',
+        'reference_id'   => $receipt_id,
+        'business_id'    => $business_id,
+    ], ['%s', '%d', '%d']);
+
+    if ($result) {
+        if (function_exists('bntm_fn_update_cashflow_summary')) {
+            bntm_fn_update_cashflow_summary();
+        }
+        wp_send_json_success(['message' => 'Sales receipt removed from Finance.']);
+    } else {
+        wp_send_json_error(['message' => 'Failed to revert sales receipt.']);
     }
 }
 
