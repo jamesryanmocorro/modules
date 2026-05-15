@@ -1733,10 +1733,10 @@ function ps_render_modals() {
                                 <div class="bntm-form-group" style="grid-column:1/-1;"><label>Address <span style="color:#ef4444;">*</span></label><textarea name="address" rows="2" required placeholder="Complete address"></textarea></div>
                                 <div class="bntm-form-group"><label>City <span style="color:#ef4444;">*</span></label><input type="text" name="city" required placeholder="City"></div>
                                 <div class="bntm-form-group"><label>ZIP Code <span style="color:#ef4444;">*</span></label><input type="text" name="zip_code" required placeholder="ZIP code"></div>
-                                <div class="bntm-form-group"><label>Contact <span style="color:#ef4444;">*</span></label><input type="text" name="contact_number" required placeholder="09XX XXX XXXX"></div>
+                                <div class="bntm-form-group"><label>Contact</label><input type="text" name="contact_number" placeholder="09XX XXX XXXX"></div>
                                 <div class="bntm-form-group"><label>Email</label><input type="email" name="email" placeholder="email@example.com"></div>
                                 <div class="bntm-form-group">
-                                    <label>ID Type <span style="color:#ef4444;">*</span></label>
+                                    <label>ID Type</label>
                                     <select name="id_type" >
                                         <option value="none">Select ID</option>
                                         <option>National ID</option><option>Driver's License</option><option>Passport</option>
@@ -1744,7 +1744,7 @@ function ps_render_modals() {
                                         <option>Voter's ID</option><option>Barangay ID</option><option>Other</option>
                                     </select>
                                 </div>
-                                <div class="bntm-form-group"><label>ID Number <span style="color:#ef4444;">*</span></label><input type="text" name="id_number" placeholder="ID number"></div>
+                                <div class="bntm-form-group"><label>ID Number</label><input type="text" name="id_number" placeholder="ID number"></div>
                                 <div class="bntm-form-group">
                                     <label>Customer Flag</label>
                                     <select name="customer_flag">
