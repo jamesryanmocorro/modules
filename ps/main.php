@@ -244,6 +244,8 @@ add_action('wp_ajax_ps_delete_customer',          'bntm_ajax_ps_delete_customer'
 add_action('wp_ajax_ps_generate_auction_notice',  'bntm_ajax_ps_generate_auction_notice');
 add_action('wp_ajax_ps_get_loan_compute',         'bntm_ajax_ps_get_loan_compute');
 add_action('wp_ajax_ps_get_ticket_history',       'bntm_ajax_ps_get_ticket_history');
+add_action('wp_ajax_ps_add_branch',               'bntm_ajax_ps_add_branch');
+add_action('wp_ajax_ps_delete_branch',            'bntm_ajax_ps_delete_branch');
 
 
 // ============================================================
@@ -784,6 +786,7 @@ function bntm_shortcode_ps() {
         'doc'      => wp_create_nonce('ps_doc_nonce'),
         'settings' => wp_create_nonce('ps_settings_nonce'),
         'fn'       => wp_create_nonce('ps_fn_action'),
+        'branch'   => wp_create_nonce('ps_branch_nonce'),
     ];
 
     ob_start();
@@ -806,6 +809,7 @@ function bntm_shortcode_ps() {
                 'payments'    => ['icon'=>'credit-card','label'=>'Payments'],
                 'documents'   => ['icon'=>'printer','label'=>'Documents'],
                 'reports'     => ['icon'=>'bar-chart','label'=>'Reports'],
+                'branches'    => ['icon'=>'branch','label'=>'Branches'],
                 'settings'    => ['icon'=>'settings','label'=>'Settings'],
             ];
             $icons = [
@@ -816,6 +820,7 @@ function bntm_shortcode_ps() {
                 'credit-card' => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" stroke-width="2"/><line x1="1" y1="10" x2="23" y2="10" stroke-width="2"/></svg>',
                 'printer'     => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline stroke-width="2" points="6 9 6 2 18 2 18 9"/><path stroke-width="2" d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8" stroke-width="2"/></svg>',
                 'bar-chart'   => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10" stroke-width="2"/><line x1="12" y1="20" x2="12" y2="4" stroke-width="2"/><line x1="6" y1="20" x2="6" y2="14" stroke-width="2"/><line x1="2" y1="20" x2="22" y2="20" stroke-width="2"/></svg>',
+                'branch'      => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>',
                 'settings'    => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="2"/><path stroke-width="2" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
             ];
             foreach ($tabs as $key => $tab) {
@@ -836,6 +841,7 @@ function bntm_shortcode_ps() {
                 case 'finance':     echo ps_finance_tab($business_id);     break;
                 case 'documents':   echo ps_documents_tab($business_id);   break;
                 case 'reports':     echo ps_reports_tab($business_id);     break;
+                case 'branches':    echo ps_branches_tab($business_id);    break;
                 case 'settings':    echo ps_settings_tab($business_id);    break;
             }
             ?>
@@ -1448,9 +1454,9 @@ function ps_render_modals() {
                             <div style="font-size:11px;color:#6b7280;margin-top:4px;">Manual entry required for every transaction. Existing ticket numbers are not allowed.</div>
                         </div>
                         <div class="bntm-form-group">
-                            <label>Ticket Tag</label>
+                            <label>Branch</label>
                             <select name="ticket_tag"required>
-                                <option value="">No Tag</option>
+                                <option value="">No Branch</option>
                                 <?php foreach ($ticket_tags as $tag): ?>
                                     <option value="<?php echo esc_attr($tag); ?>"><?php echo esc_html($tag); ?></option>
                                 <?php endforeach; ?>
@@ -3861,14 +3867,12 @@ function ps_reports_tab( $business_id ) {
         <?php endif; ?>
 
         <?php if ($rtype === 'cash_flow_summary'): ?>
-        <input type="text" name="rtag" list="ps-report-ticket-tags" value="<?php echo esc_attr($rtag); ?>" placeholder="Type tag (e.g. Ranaw)"
-               style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;min-width:210px;">
-        <datalist id="ps-report-ticket-tags">
-            <option value="all">All Branch Tags</option>
+        <select name="rtag" style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;min-width:180px;">
+            <option value="all" <?php selected($rtag, 'all'); ?>>All Branches</option>
             <?php foreach ($ticket_tags as $tag): ?>
-            <option value="<?php echo esc_attr($tag); ?>"></option>
+            <option value="<?php echo esc_attr($tag); ?>" <?php selected($rtag, $tag); ?>><?php echo esc_html($tag); ?></option>
             <?php endforeach; ?>
-        </datalist>
+        </select>
         <?php endif; ?>
  
         <?php if ($rtype === 'cash_flow_summary'): ?>
@@ -5330,13 +5334,153 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
  
 
 // ============================================================
+// TAB: BRANCHES
+// ============================================================
+
+function ps_branches_tab($business_id) {
+    $branches = ps_get_ticket_tags();
+    $nonce    = wp_create_nonce('ps_branch_nonce');
+    ob_start();
+    ?>
+    <div class="bntm-form-section">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+            <div>
+                <h3 style="margin:0 0 4px;">Branches</h3>
+                <p style="margin:0;color:#6b7280;font-size:14px;">Manage your pawnshop branches. These appear as selectable options when creating pawn tickets.</p>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:10px;margin-bottom:24px;">
+            <input type="text" id="ps-new-branch-input" class="bntm-input" placeholder="e.g. Main Branch, North Branch" style="flex:1;max-width:360px;">
+            <button id="ps-add-branch-btn" class="bntm-btn-primary">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                Add Branch
+            </button>
+        </div>
+        <div id="ps-branch-message"></div>
+
+        <div id="ps-branches-list">
+            <?php if (empty($branches)): ?>
+            <div id="ps-no-branches" style="text-align:center;padding:48px 20px;background:#f9fafb;border-radius:12px;color:#9ca3af;">
+                <svg width="48" height="48" fill="none" stroke="#d1d5db" viewBox="0 0 24 24" style="margin:0 auto 12px;display:block;"><path stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>
+                <p style="margin:0;font-size:14px;">No branches yet. Add your first branch above.</p>
+            </div>
+            <?php else: ?>
+            <?php foreach ($branches as $branch): ?>
+            <div class="ps-branch-row" data-branch="<?php echo esc_attr($branch); ?>" style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <svg width="16" height="16" fill="none" stroke="#6b7280" viewBox="0 0 24 24"><path stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>
+                    <span style="font-weight:600;font-size:14px;color:#111827;"><?php echo esc_html($branch); ?></span>
+                </div>
+                <button class="ps-delete-branch-btn bntm-btn-danger" data-branch="<?php echo esc_attr($branch); ?>" style="padding:6px 12px;font-size:12px;">Delete</button>
+            </div>
+            <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const nonce = '<?php echo $nonce; ?>';
+
+        function showMsg(msg, ok) {
+            const el = document.getElementById('ps-branch-message');
+            el.innerHTML = '<div style="padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;background:' + (ok ? '#dcfce7' : '#fee2e2') + ';color:' + (ok ? '#166534' : '#991b1b') + ';">' + msg + '</div>';
+            setTimeout(() => { el.innerHTML = ''; }, 3000);
+        }
+
+        function addBranchRow(name) {
+            const noEl = document.getElementById('ps-no-branches');
+            if (noEl) noEl.remove();
+
+            const list = document.getElementById('ps-branches-list');
+            const row = document.createElement('div');
+            row.className = 'ps-branch-row';
+            row.dataset.branch = name;
+            row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;';
+            row.innerHTML = `
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <svg width="16" height="16" fill="none" stroke="#6b7280" viewBox="0 0 24 24"><path stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>
+                    <span style="font-weight:600;font-size:14px;color:#111827;">${name}</span>
+                </div>
+                <button class="ps-delete-branch-btn bntm-btn-danger" data-branch="${name}" style="padding:6px 12px;font-size:12px;">Delete</button>
+            `;
+            list.appendChild(row);
+            bindDelete(row.querySelector('.ps-delete-branch-btn'));
+        }
+
+        function bindDelete(btn) {
+            btn.addEventListener('click', function() {
+                const branchName = this.dataset.branch;
+                if (!confirm('Delete branch "' + branchName + '"?')) return;
+
+                const fd = new FormData();
+                fd.append('action', 'ps_delete_branch');
+                fd.append('branch_name', branchName);
+                fd.append('nonce', nonce);
+
+                fetch(ajaxurl, {method:'POST', body:fd})
+                    .then(r => r.json())
+                    .then(res => {
+                        if (res.success) {
+                            const row = document.querySelector('.ps-branch-row[data-branch="' + branchName + '"]');
+                            if (row) row.remove();
+                            showMsg('Branch deleted.', true);
+                            if (!document.querySelector('.ps-branch-row')) {
+                                document.getElementById('ps-branches-list').innerHTML = '<div id="ps-no-branches" style="text-align:center;padding:48px 20px;background:#f9fafb;border-radius:12px;color:#9ca3af;"><p style="margin:0;font-size:14px;">No branches yet.</p></div>';
+                            }
+                        } else {
+                            showMsg(res.data.message || 'Failed to delete.', false);
+                        }
+                    });
+            });
+        }
+
+        document.querySelectorAll('.ps-delete-branch-btn').forEach(bindDelete);
+
+        const addBtn = document.getElementById('ps-add-branch-btn');
+        const input  = document.getElementById('ps-new-branch-input');
+
+        addBtn.addEventListener('click', function() {
+            const name = input.value.trim();
+            if (!name) { showMsg('Please enter a branch name.', false); return; }
+
+            addBtn.disabled = true;
+            const fd = new FormData();
+            fd.append('action', 'ps_add_branch');
+            fd.append('branch_name', name);
+            fd.append('nonce', nonce);
+
+            fetch(ajaxurl, {method:'POST', body:fd})
+                .then(r => r.json())
+                .then(res => {
+                    addBtn.disabled = false;
+                    if (res.success) {
+                        addBranchRow(name);
+                        input.value = '';
+                        showMsg('Branch added.', true);
+                    } else {
+                        showMsg(res.data.message || 'Failed to add.', false);
+                    }
+                });
+        });
+
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); addBtn.click(); }
+        });
+    })();
+    </script>
+    <?php
+    return ob_get_clean();
+}
+
+// ============================================================
 // TAB: SETTINGS
 // ============================================================
 
 function ps_settings_tab($business_id) {
     $pm = json_decode(bntm_get_setting('ps_payment_methods', '[]'), true);
     $doc_defs = ps_get_document_definitions();
-    $ticket_tags_text = implode("\n", ps_get_ticket_tags());
     if (!is_array($pm)) $pm = [];
     ob_start();
     ?>
@@ -5427,7 +5571,8 @@ function ps_settings_tab($business_id) {
                 <?php endforeach; ?>
             </div>
         </div>
-        <div class="bntm-form-section"><h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Ticket Numbering</h4>
+        <div class="bntm-form-section">
+            <h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Ticket Numbering</h4>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
                 <div class="bntm-form-group">
                     <label>Ticket Prefix</label>
@@ -5458,15 +5603,6 @@ function ps_settings_tab($business_id) {
                     else echo esc_html(sprintf('%s-%s-%04d',$pfx,date('Ym'),$st));
                 ?></strong></span>
                 <button type="button" onclick="psPreviewTicket()" style="background:#1e40af;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;">Refresh</button>
-            </div>
-        </div>
-
-        <div class="bntm-form-section">
-            <h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Ticket Tags</h4>
-            <div class="bntm-form-group">
-                <label>Available Tags</label>
-                <textarea name="ps_ticket_tags" rows="5" placeholder="VIP&#10;Auction&#10;Special Terms"><?php echo esc_textarea($ticket_tags_text); ?></textarea>
-                <div style="font-size:11px;color:#6b7280;margin-top:3px;">Enter one tag per line. These appear as optional choices when creating or editing pawn tickets.</div>
             </div>
         </div>
 
@@ -5985,6 +6121,41 @@ function bntm_ajax_ps_get_loan_detail() {
 // ============================================================
 // AJAX: GET TICKET HISTORY
 // ============================================================
+
+function bntm_ajax_ps_add_branch() {
+    check_ajax_referer('ps_branch_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    $name = sanitize_text_field($_POST['branch_name'] ?? '');
+    if ($name === '') wp_send_json_error(['message' => 'Branch name cannot be empty.']);
+
+    $existing = ps_get_ticket_tags();
+    if (in_array($name, $existing, true)) {
+        wp_send_json_error(['message' => 'Branch already exists.']);
+    }
+
+    $existing[] = $name;
+    ps_replace_ticket_tags($existing);
+    wp_send_json_success(['message' => 'Branch added.']);
+}
+
+function bntm_ajax_ps_delete_branch() {
+    check_ajax_referer('ps_branch_nonce', 'nonce');
+    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
+
+    $name = sanitize_text_field($_POST['branch_name'] ?? '');
+    if ($name === '') wp_send_json_error(['message' => 'Branch name cannot be empty.']);
+
+    $existing = ps_get_ticket_tags();
+    $updated  = array_values(array_filter($existing, fn($t) => $t !== $name));
+
+    if (count($updated) === count($existing)) {
+        wp_send_json_error(['message' => 'Branch not found.']);
+    }
+
+    ps_replace_ticket_tags($updated);
+    wp_send_json_success(['message' => 'Branch deleted.']);
+}
 
 function bntm_ajax_ps_get_ticket_history() {
     check_ajax_referer('ps_loan_nonce', 'nonce');
@@ -7217,7 +7388,6 @@ function bntm_ajax_ps_save_settings() {
         // Backward compatibility for any old code reading this setting directly.
         bntm_set_setting('ps_ticket_tags', implode("\n", $tags));
     }
-
     foreach (array_keys(ps_get_document_definitions()) as $doc_key) {
         $prefix = 'ps_doc_' . $doc_key . '_';
         $doc_text_fields = [
