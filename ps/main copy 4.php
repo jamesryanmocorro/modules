@@ -190,23 +190,6 @@ function bntm_ps_get_tables() {
             INDEX idx_business (business_id),
             INDEX idx_active (is_active)
         ) {$charset};",
-
-        'ps_cash_counts' => "CREATE TABLE {$prefix}ps_cash_counts (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-            rand_id VARCHAR(20) UNIQUE NOT NULL,
-            business_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-            count_date DATE NOT NULL,
-            branch_filter VARCHAR(100) NOT NULL DEFAULT 'all',
-            denominations LONGTEXT NOT NULL DEFAULT '{}',
-            total_amount DECIMAL(14,2) NOT NULL DEFAULT 0,
-            submitted_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uniq_date_branch (business_id, count_date, branch_filter),
-            INDEX idx_business (business_id),
-            INDEX idx_date (count_date),
-            INDEX idx_branch (branch_filter)
-        ) {$charset};",
     ];
 }
 
@@ -261,8 +244,6 @@ add_action('wp_ajax_ps_delete_customer',          'bntm_ajax_ps_delete_customer'
 add_action('wp_ajax_ps_generate_auction_notice',  'bntm_ajax_ps_generate_auction_notice');
 add_action('wp_ajax_ps_get_loan_compute',         'bntm_ajax_ps_get_loan_compute');
 add_action('wp_ajax_ps_get_ticket_history',       'bntm_ajax_ps_get_ticket_history');
-add_action('wp_ajax_ps_add_branch',               'bntm_ajax_ps_add_branch');
-add_action('wp_ajax_ps_delete_branch',            'bntm_ajax_ps_delete_branch');
 
 
 // ============================================================
@@ -689,117 +670,17 @@ function ps_cash_flow_breakdown_option_key(int $business_id, string $report_date
     return 'ps_cf_breakdown_enterprise_' . $safe_date . '_' . md5($normalized_tag);
 }
 
-function ps_ensure_cash_counts_table(): void {
-    static $done = false;
-    if ($done) return;
-    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-    $tables = bntm_ps_get_tables();
-    if (!empty($tables['ps_cash_counts'])) {
-        dbDelta($tables['ps_cash_counts']);
-    }
-    $done = true;
-}
-
 function ps_save_cash_flow_breakdown(int $business_id, string $report_date, array $cash_breakdown, string $tag_filter = 'all'): void {
     if (empty($cash_breakdown['has_input'])) return;
-
-    // Legacy option (keep for backward compat read in older installs)
     $key = ps_cash_flow_breakdown_option_key($business_id, $report_date, $tag_filter);
     update_option($key, $cash_breakdown['raw'] ?? [], false);
-
-    // Upsert into ps_cash_counts — one row per day per branch
-    ps_ensure_cash_counts_table();
-    global $wpdb;
-
-    $safe_date      = preg_replace('/[^0-9\-]/', '', $report_date);
-    if ($safe_date === '') $safe_date = date('Y-m-d');
-    $normalized_tag = ps_normalize_cash_flow_tag($tag_filter);
-    $table          = $wpdb->prefix . 'ps_cash_counts';
-    $denoms_json    = wp_json_encode($cash_breakdown['raw'] ?? []);
-    $total          = (float)($cash_breakdown['total_counted'] ?? 0);
-    $user_id        = get_current_user_id();
-
-    $existing_id = $wpdb->get_var($wpdb->prepare(
-        "SELECT id FROM {$table} WHERE business_id=%d AND count_date=%s AND branch_filter=%s LIMIT 1",
-        $business_id, $safe_date, $normalized_tag
-    ));
-
-    if ($existing_id) {
-        // Update the existing record for today
-        $wpdb->update(
-            $table,
-            [
-                'denominations' => $denoms_json,
-                'total_amount'  => $total,
-                'submitted_by'  => $user_id,
-            ],
-            ['id' => (int)$existing_id],
-            ['%s','%f','%d'],
-            ['%d']
-        );
-    } else {
-        // First entry for this date + branch
-        $wpdb->insert(
-            $table,
-            [
-                'rand_id'       => bntm_rand_id(),
-                'business_id'   => $business_id,
-                'count_date'    => $safe_date,
-                'branch_filter' => $normalized_tag,
-                'denominations' => $denoms_json,
-                'total_amount'  => $total,
-                'submitted_by'  => $user_id,
-            ],
-            ['%s','%d','%s','%s','%s','%f','%d']
-        );
-    }
 }
 
 function ps_get_cash_flow_breakdown(int $business_id, string $report_date, string $tag_filter = 'all'): array {
-    ps_ensure_cash_counts_table();
-    global $wpdb;
-
-    $safe_date = preg_replace('/[^0-9\-]/', '', $report_date);
-    if ($safe_date === '') $safe_date = date('Y-m-d');
-    $normalized_tag = ps_normalize_cash_flow_tag($tag_filter);
-
-    // Get most recent entry for this date + branch from the DB table
-    $row = $wpdb->get_row($wpdb->prepare(
-        "SELECT denominations FROM {$wpdb->prefix}ps_cash_counts
-         WHERE business_id=%d AND count_date=%s AND branch_filter=%s
-         ORDER BY id DESC LIMIT 1",
-        $business_id, $safe_date, $normalized_tag
-    ));
-
-    if ($row) {
-        $decoded = json_decode($row->denominations, true);
-        return ps_parse_cash_breakdown(is_array($decoded) ? $decoded : []);
-    }
-
-    // Fall back to legacy wp_options entry
-    $key    = ps_cash_flow_breakdown_option_key($business_id, $report_date, $tag_filter);
+    $key = ps_cash_flow_breakdown_option_key($business_id, $report_date, $tag_filter);
     $stored = get_option($key, []);
     if (!is_array($stored)) $stored = [];
     return ps_parse_cash_breakdown($stored);
-}
-
-function ps_get_cash_count_history(int $business_id, int $limit = 30, string $branch_filter = ''): array {
-    ps_ensure_cash_counts_table();
-    global $wpdb;
-
-    $where = $wpdb->prepare("WHERE business_id=%d", $business_id);
-    if ($branch_filter !== '' && $branch_filter !== 'all') {
-        $where .= $wpdb->prepare(" AND branch_filter=%s", ps_normalize_cash_flow_tag($branch_filter));
-    }
-
-    return $wpdb->get_results($wpdb->prepare(
-        "SELECT id, count_date, branch_filter, denominations, total_amount, submitted_by, created_at, updated_at
-         FROM {$wpdb->prefix}ps_cash_counts
-         {$where}
-         ORDER BY count_date DESC, id DESC
-         LIMIT %d",
-        $limit
-    )) ?: [];
 }
 
 function ps_is_cash_method($method): bool {
@@ -903,7 +784,6 @@ function bntm_shortcode_ps() {
         'doc'      => wp_create_nonce('ps_doc_nonce'),
         'settings' => wp_create_nonce('ps_settings_nonce'),
         'fn'       => wp_create_nonce('ps_fn_action'),
-        'branch'   => wp_create_nonce('ps_branch_nonce'),
     ];
 
     ob_start();
@@ -926,7 +806,6 @@ function bntm_shortcode_ps() {
                 'payments'    => ['icon'=>'credit-card','label'=>'Payments'],
                 'documents'   => ['icon'=>'printer','label'=>'Documents'],
                 'reports'     => ['icon'=>'bar-chart','label'=>'Reports'],
-                'branches'    => ['icon'=>'branch','label'=>'Branches'],
                 'settings'    => ['icon'=>'settings','label'=>'Settings'],
             ];
             $icons = [
@@ -937,7 +816,6 @@ function bntm_shortcode_ps() {
                 'credit-card' => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" stroke-width="2"/><line x1="1" y1="10" x2="23" y2="10" stroke-width="2"/></svg>',
                 'printer'     => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><polyline stroke-width="2" points="6 9 6 2 18 2 18 9"/><path stroke-width="2" d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8" stroke-width="2"/></svg>',
                 'bar-chart'   => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10" stroke-width="2"/><line x1="12" y1="20" x2="12" y2="4" stroke-width="2"/><line x1="6" y1="20" x2="6" y2="14" stroke-width="2"/><line x1="2" y1="20" x2="22" y2="20" stroke-width="2"/></svg>',
-                'branch'      => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>',
                 'settings'    => '<svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" stroke-width="2"/><path stroke-width="2" d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
             ];
             foreach ($tabs as $key => $tab) {
@@ -958,7 +836,6 @@ function bntm_shortcode_ps() {
                 case 'finance':     echo ps_finance_tab($business_id);     break;
                 case 'documents':   echo ps_documents_tab($business_id);   break;
                 case 'reports':     echo ps_reports_tab($business_id);     break;
-                case 'branches':    echo ps_branches_tab($business_id);    break;
                 case 'settings':    echo ps_settings_tab($business_id);    break;
             }
             ?>
@@ -1571,9 +1448,9 @@ function ps_render_modals() {
                             <div style="font-size:11px;color:#6b7280;margin-top:4px;">Manual entry required for every transaction. Existing ticket numbers are not allowed.</div>
                         </div>
                         <div class="bntm-form-group">
-                            <label>Branch</label>
+                            <label>Ticket Tag</label>
                             <select name="ticket_tag"required>
-                                <option value="">No Branch</option>
+                                <option value="">No Tag</option>
                                 <?php foreach ($ticket_tags as $tag): ?>
                                     <option value="<?php echo esc_attr($tag); ?>"><?php echo esc_html($tag); ?></option>
                                 <?php endforeach; ?>
@@ -1856,10 +1733,10 @@ function ps_render_modals() {
                                 <div class="bntm-form-group" style="grid-column:1/-1;"><label>Address <span style="color:#ef4444;">*</span></label><textarea name="address" rows="2" required placeholder="Complete address"></textarea></div>
                                 <div class="bntm-form-group"><label>City <span style="color:#ef4444;">*</span></label><input type="text" name="city" required placeholder="City"></div>
                                 <div class="bntm-form-group"><label>ZIP Code <span style="color:#ef4444;">*</span></label><input type="text" name="zip_code" required placeholder="ZIP code"></div>
-                                <div class="bntm-form-group"><label>Contact</label><input type="text" name="contact_number" placeholder="09XX XXX XXXX"></div>
+                                <div class="bntm-form-group"><label>Contact <span style="color:#ef4444;">*</span></label><input type="text" name="contact_number" required placeholder="09XX XXX XXXX"></div>
                                 <div class="bntm-form-group"><label>Email</label><input type="email" name="email" placeholder="email@example.com"></div>
                                 <div class="bntm-form-group">
-                                    <label>ID Type</label>
+                                    <label>ID Type <span style="color:#ef4444;">*</span></label>
                                     <select name="id_type" >
                                         <option value="none">Select ID</option>
                                         <option>National ID</option><option>Driver's License</option><option>Passport</option>
@@ -1867,7 +1744,7 @@ function ps_render_modals() {
                                         <option>Voter's ID</option><option>Barangay ID</option><option>Other</option>
                                     </select>
                                 </div>
-                                <div class="bntm-form-group"><label>ID Number</label><input type="text" name="id_number" placeholder="ID number"></div>
+                                <div class="bntm-form-group"><label>ID Number <span style="color:#ef4444;">*</span></label><input type="text" name="id_number" placeholder="ID number"></div>
                                 <div class="bntm-form-group">
                                     <label>Customer Flag</label>
                                     <select name="customer_flag">
@@ -3516,7 +3393,7 @@ function ps_collaterals_tab($business_id) {
     </div>
 
     <div class="bntm-table-wrapper"><table class="bntm-table">
-    <thead><tr><th style="width:32px;"></th><th>Description</th><th>Condition</th><th>Appraised Value</th><th>Ticket / Root</th><th>Customer</th><th>Status</th><th>Actions</th></tr></thead>
+    <thead><tr><th style="width:32px;"></th><th>Category</th><th>Description</th><th>Brand/Model</th><th>Condition</th><th>Appraised Value</th><th>Ticket / Root</th><th>Customer</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>
     <?php if (empty($collaterals)): ?><tr><td colspan="10" style="text-align:center;color:#9ca3af;padding:40px;">No collateral records found</td></tr>
     <?php else: foreach ($collaterals as $col):
@@ -3532,9 +3409,11 @@ function ps_collaterals_tab($business_id) {
             <input type="checkbox" class="collat-auction-cb" value="<?php echo $col->id; ?>" style="width:16px;height:16px;cursor:pointer;">
             <?php endif; ?>
         </td>
+        <td><span class="ps-collateral-cat"><?php echo ucfirst($col->category); ?></span></td>
         <td><div style="font-weight:600;font-size:13px;max-width:180px;"><?php echo esc_html($col->description); ?></div>
             <?php if ($col->karat||$col->weight_grams>0): ?><div style="font-size:11px;color:#9ca3af;"><?php echo $col->karat; ?> <?php echo $col->weight_grams>0?$col->weight_grams.'g':''; ?></div><?php endif; ?>
         </td>
+        <td><?php echo $col->brand ? esc_html($col->brand) : '<span style="color:#d1d5db;">-</span>'; ?><?php if ($col->model): ?><div style="font-size:11px;color:#9ca3af;"><?php echo esc_html($col->model); ?></div><?php endif; ?></td>
         <td><span style="color:<?php echo $cc; ?>;font-weight:600;font-size:12px;text-transform:capitalize;"><?php echo $col->item_condition; ?></span></td>
         <td style="font-weight:700;">&#8369;<?php echo number_format($col->appraised_value,2); ?></td>
         <td><?php if ($col->ticket_number): ?>
@@ -3937,15 +3816,10 @@ function ps_reports_tab( $business_id ) {
         }
     }
 
-    // Auto-load today's saved denomination count when no URL data is present
-    if ($rtype === 'cash_flow_summary' && !$cash_breakdown['has_input'] && $rto === date('Y-m-d')) {
-        $todays_saved = ps_get_cash_flow_breakdown((int)$business_id, $rto, $rtag);
-        if ($todays_saved['has_input']) {
-            $cash_breakdown = $todays_saved;
-            $denomination_data = wp_json_encode($todays_saved['raw']);
-        }
+    if ($rtype === 'cash_flow_summary' && !empty($cash_breakdown['has_input'])) {
+        ps_save_cash_flow_breakdown((int)$business_id, $rto, $cash_breakdown, $rtag);
     }
-
+ 
     $reports = [
         'summary'           => ['label' => 'Summary (All Statuses)', 'date' => 'range'],
         'list_loans'        => ['label' => 'List of Loans Granted',  'date' => 'range'],
@@ -3989,17 +3863,20 @@ function ps_reports_tab( $business_id ) {
         <?php endif; ?>
 
         <?php if ($rtype === 'cash_flow_summary'): ?>
-        <select name="rtag" style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;min-width:180px;">
-            <option value="all" <?php selected($rtag, 'all'); ?>>All Branches</option>
+        <input type="text" name="rtag" list="ps-report-ticket-tags" value="<?php echo esc_attr($rtag); ?>" placeholder="Type tag (e.g. Ranaw)"
+               style="padding:7px 11px;border:1px solid #d1d5db;border-radius:7px;font-size:13px;min-width:210px;">
+        <datalist id="ps-report-ticket-tags">
+            <option value="all">All Branch Tags</option>
             <?php foreach ($ticket_tags as $tag): ?>
-            <option value="<?php echo esc_attr($tag); ?>" <?php selected($rtag, $tag); ?>><?php echo esc_html($tag); ?></option>
+            <option value="<?php echo esc_attr($tag); ?>"></option>
             <?php endforeach; ?>
-        </select>
+        </datalist>
         <?php endif; ?>
  
         <?php if ($rtype === 'cash_flow_summary'): ?>
         <button type="button" onclick="psApplyReportFilters()" class="bntm-btn-secondary" style="padding:7px 14px;">Apply Filter</button>
         <button type="button" onclick="psGenerateDailySummaryPDF()" class="bntm-btn-primary" style="padding:7px 16px;">Generate Cash Flow Summary</button>
+        <button type="button" onclick="psOpenDenominationModal('edit')" class="bntm-btn-secondary" style="padding:7px 14px;">Cash Count</button>
         <?php else: ?>
         <button type="button" onclick="psReportPrepareGenerate()" class="bntm-btn-primary" style="padding:7px 16px;">Apply</button>
         <button type="button" onclick="psReportOpenModal()" class="bntm-btn-secondary" style="padding:7px 14px;">Print PDF</button>
@@ -4064,18 +3941,13 @@ function ps_reports_tab( $business_id ) {
     };
     var psDenominationModalAction = 'generate';
     var psDenominationValues = <?php echo json_encode($cash_breakdown['raw']); ?>;
-    var psCountIsToday = <?php echo json_encode($cash_breakdown['has_input'] && $rto === date('Y-m-d')); ?>;
     window.psOpenDenominationModal = function(action) {
         psDenominationModalAction = action || 'generate';
         var modal = document.getElementById('ps-denomination-modal');
-        // Pre-fill inputs from saved values
         Object.keys(psDenominationValues || {}).forEach(function(key){
             var input = document.querySelector('[data-denom="' + key + '"]');
             if (input) input.value = psDenominationValues[key] || '';
         });
-        // Show/hide today's count badge
-        var badge = document.getElementById('ps-denom-today-badge');
-        if (badge) badge.style.display = psCountIsToday ? 'inline-block' : 'none';
         psUpdateDenominationTotals();
         modal.style.display = 'flex';
     };
@@ -4218,58 +4090,81 @@ function ps_reports_tab( $business_id ) {
     });
     </script>
     <style>
-    .ps-denom-table { width:100%; border-collapse:collapse; }
-    .ps-denom-table th { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#94a3b8; font-weight:600; padding:0 8px 8px; text-align:left; }
-    .ps-denom-table th:last-child { text-align:right; }
-    .ps-denom-table td { padding:5px 8px; border-top:1px solid #f1f5f9; vertical-align:middle; }
-    .ps-denom-row.is-active td { background:#f8fafc; }
-    .ps-denom-bill { font-size:15px; font-weight:700; color:#0f172a; white-space:nowrap; }
-    .ps-denom-input {
-        width:80px; padding:6px 8px; border:1px solid #d1d5db; border-radius:6px;
-        text-align:center; font-size:14px; font-weight:600; color:#0f172a;
-        background:#fff; transition:border-color .15s;
+    .ps-denom-shell { display:grid; grid-template-columns:1fr; gap:12px; }
+    .ps-denom-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:6px; }
+    .ps-denom-card {
+        border:1px solid #e5e7eb; border-radius:6px; padding:8px 10px; background:#fff;
+        display:flex; flex-direction:column; gap:6px; align-items:flex-start;
+        transition:border-color .18s ease, background .18s ease;
     }
-    .ps-denom-input:focus { outline:none; border-color:#475569; box-shadow:0 0 0 2px rgba(71,85,105,.1); }
-    .ps-denom-subtotal { font-size:14px; font-weight:600; color:#334155; text-align:right; white-space:nowrap; }
-    .ps-denom-total-box { background:#f0f9ff; border:1px solid #bfdbfe; border-radius:8px; padding:12px 16px; display:flex; justify-content:space-between; align-items:center; }
-    .ps-denom-total-label { font-size:13px; font-weight:600; color:#1e40af; }
-    .ps-denom-total-value { font-size:22px; font-weight:800; color:#0f172a; }
+    .ps-denom-card:hover { border-color:#cbd5e1; }
+    .ps-denom-card.is-active { border-color:#94a3b8; background:#f8fafc; }
+    .ps-denom-bill {
+        font-size:14px; font-weight:700; color:#0f172a;
+    }
+    .ps-denom-meta { display:flex; flex-direction:column; gap:2px; }
+    .ps-denom-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#64748b; font-weight:700; }
+    .ps-denom-subtotal { font-size:12px; font-weight:700; color:#334155; text-align:left; }
+    .ps-denom-input {
+        width:100%; padding:6px 8px; border:1px solid #d1d5db; border-radius:6px; text-align:center;
+        font-size:13px; font-weight:700; color:#0f172a; background:#fff;
+    }
+    .ps-denom-input:focus { outline:none; border-color:#1e293b; box-shadow:0 0 0 2px rgba(148,163,184,.12); background:#fff; }
+    .ps-denom-field { display:flex; flex-direction:column; gap:3px; width:100%; }
+    .ps-denom-side {
+        border:1px solid #e5e7eb; border-radius:6px; background:#f8fafc;
+        padding:10px 12px; display:flex; flex-direction:column; gap:8px; width:100%;
+    }
+    .ps-denom-total-box { border-radius:6px; background:#f0f9ff; color:#0f172a; padding:10px 12px; border:1px solid #bfdbfe; }
+    .ps-denom-total-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#64748b; }
+    .ps-denom-total-value { font-size:20px; font-weight:800; margin-top:4px; line-height:1; }
+    .ps-denom-tip { font-size:11px; color:#64748b; line-height:1.4; }
     .ps-denom-actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; padding-top:4px; }
+    @media (max-width: 760px) {
+        .ps-denom-card { grid-template-columns:1fr; gap:8px; }
+        .ps-denom-subtotal { text-align:left; }
+    }
     </style>
     <div id="ps-denomination-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.72);z-index:10020;align-items:center;justify-content:center;padding:12px;">
-        <div style="background:#fff;border-radius:14px;width:min(380px,98%);max-height:90vh;overflow:auto;box-shadow:0 20px 48px rgba(0,0,0,.24);">
-            <div style="padding:16px 20px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center;">
-                <div>
-                    <div style="font-size:16px;font-weight:800;color:#111827;">
-                        Cash Count
-                        <span id="ps-denom-today-badge" style="display:<?php echo ($cash_breakdown['has_input'] && $rto === date('Y-m-d')) ? 'inline-block' : 'none'; ?>;margin-left:8px;font-size:11px;font-weight:600;background:#dcfce7;color:#15803d;border-radius:999px;padding:2px 8px;vertical-align:middle;">Today's count loaded</span>
-                    </div>
-                    <div style="font-size:12px;color:#94a3b8;margin-top:2px;">Enter quantity per denomination</div>
-                </div>
-                <button type="button" onclick="psCloseDenominationModal()" style="background:none;border:none;cursor:pointer;color:#9ca3af;font-size:18px;line-height:1;padding:4px;">&times;</button>
+        <div style="background:#fff;border-radius:12px;width:min(480px,98%);max-height:85vh;overflow:auto;box-shadow:0 20px 48px rgba(0,0,0,.24);">
+            <div style="padding:14px 16px;border-bottom:1px solid #e5e7eb;">
+                <div style="font-size:16px;font-weight:800;color:#111827;">Cash Denomination Count</div>
+                <div style="font-size:12px;color:#64748b;margin-top:4px;">Enter quantities for each denomination.</div>
             </div>
-            <div style="padding:16px 20px;">
-                <table class="ps-denom-table">
-                    <thead><tr><th>Denomination</th><th>Qty</th><th>Amount</th></tr></thead>
-                    <tbody>
-                    <?php foreach (ps_get_cash_denominations() as $denom): ?>
-                    <tr class="ps-denom-row" data-denom-row>
-                        <td><span class="ps-denom-bill">P <?php echo number_format($denom, 0); ?></span></td>
-                        <td><input class="ps-denom-input" type="number" min="0" step="1" data-denom="<?php echo esc_attr((string) $denom); ?>" value="<?php echo esc_attr($cash_breakdown['raw'][(string) $denom] ?? 0); ?>"></td>
-                        <td class="ps-denom-subtotal">P <span id="denom-total-<?php echo esc_attr(str_replace('.', '-', (string) $denom)); ?>">0.00</span></td>
-                    </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-
-                <div class="ps-denom-total-box" style="margin-top:14px;">
-                    <span class="ps-denom-total-label">Total</span>
-                    <span class="ps-denom-total-value">P <span id="ps-denomination-grand-total">0.00</span></span>
+            <div style="padding:14px 12px;">
+                <div class="ps-denom-shell">
+                    <div class="ps-denom-grid">
+                        <?php foreach (ps_get_cash_denominations() as $denom): ?>
+                        <div class="ps-denom-card" data-denom-row>
+                            <div class="ps-denom-meta">
+                                <span class="ps-denom-label">Denomination</span>
+                                <span class="ps-denom-bill">P <?php echo number_format($denom, 0); ?></span>
+                            </div>
+                            <div class="ps-denom-field">
+                                <label class="ps-denom-label" style="display:block;">Quantity</label>
+                                <input class="ps-denom-input" type="number" min="0" step="1" data-denom="<?php echo esc_attr((string) $denom); ?>" value="<?php echo esc_attr($cash_breakdown['raw'][(string) $denom] ?? 0); ?>">
+                            </div>
+                            <div class="ps-denom-meta">
+                                <span class="ps-denom-label">Amount</span>
+                                <span class="ps-denom-subtotal">P <span id="denom-total-<?php echo esc_attr(str_replace('.', '-', (string) $denom)); ?>">0.00</span></span>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="ps-denom-side">
+                        <div class="ps-denom-total-box">
+                            <div class="ps-denom-total-label">Total Counted Cash</div>
+                            <div class="ps-denom-total-value">P <span id="ps-denomination-grand-total">0.00</span></div>
+                        </div>
+                        <div class="ps-denom-tip">
+                            This total will be included in the selected cash-count report.
+                        </div>
+                    </div>
                 </div>
-
-                <div class="ps-denom-actions" style="margin-top:14px;">
+                <div class="ps-denom-actions">
                     <button type="button" onclick="psClearDenominationInputs()" class="bntm-btn-secondary" style="padding:8px 14px;">Clear</button>
-                    <button type="button" onclick="psSaveDenominationAndContinue()" class="bntm-btn-primary" style="padding:8px 18px;">Save &amp; Generate</button>
+                    <button type="button" onclick="psCloseDenominationModal()" class="bntm-btn-secondary" style="padding:8px 14px;">Cancel</button>
+                    <button type="button" onclick="psSaveDenominationAndContinue()" class="bntm-btn-primary" style="padding:8px 18px;">Save and Generate PDF</button>
                 </div>
             </div>
         </div>
@@ -4542,9 +4437,10 @@ function ps_analytics_cash_flow_summary($business_id, $from, $to, array $cash_br
             </table>
             <h4 style="margin-top:16px;">Today Denominations</h4>
             <table class="ps-analytics-table">
-                <thead><tr><th>Denom</th><th class="r">Qty</th><th class="r">Amount</th></tr></thead>
+                <thead><tr><th>Denom</th><th class="r">Today Qty</th><th class="r">Today Amount</th></tr></thead>
                 <tbody>
-                    <?php foreach (($cash_breakdown['rows'] ?? []) as $today_row): ?>
+                    <?php foreach (($cash_breakdown['rows'] ?? []) as $today_row):
+                    ?>
                     <tr>
                         <td>P <?php echo number_format((float)$today_row['denomination'], 0); ?></td>
                         <td class="r"><?php echo number_format((int)$today_row['quantity']); ?></td>
@@ -4553,21 +4449,7 @@ function ps_analytics_cash_flow_summary($business_id, $from, $to, array $cash_br
                     <?php endforeach; ?>
                 </tbody>
                 <tfoot>
-                    <tr style="background:#f0f9ff;">
-                        <td colspan="2" style="font-weight:700;color:#1e40af;">Total Counted Cash (Today)</td>
-                        <td class="r" style="font-weight:800;color:#1e40af;font-size:15px;">P <?php echo number_format($counted, 2); ?></td>
-                    </tr>
-                    <tr>
-                        <td colspan="2" style="font-weight:600;color:#64748b;">Yesterday Total Cash</td>
-                        <td class="r" style="font-weight:600;color:#64748b;">P <?php echo number_format($yesterday_total, 2); ?></td>
-                    </tr>
-                    <?php $diff = $counted - $yesterday_total; ?>
-                    <tr>
-                        <td colspan="2" style="font-size:12px;color:#94a3b8;">Change vs Yesterday</td>
-                        <td class="r" style="font-size:12px;font-weight:600;color:<?php echo $diff >= 0 ? '#15803d' : '#dc2626'; ?>;">
-                            <?php echo ($diff >= 0 ? '+' : '') . 'P ' . number_format(abs($diff), 2); ?>
-                        </td>
-                    </tr>
+                    <tr><td style="font-weight:700;">Yesterday Total Cash</td><td></td><td class="r" style="font-weight:700;">P <?php echo number_format($yesterday_total,2); ?></td></tr>
                 </tfoot>
             </table>
         </div>
@@ -4585,55 +4467,6 @@ function ps_analytics_cash_flow_summary($business_id, $from, $to, array $cash_br
             </div>
         </div>
     </div>
-
-    <?php
-    // ---- Cash Count History ----
-    $history = ps_get_cash_count_history((int)$business_id, 30, $tag_filter);
-    if (!empty($history)):
-        $denoms = ps_get_cash_denominations();
-    ?>
-    <div class="ps-analytics-panel" style="margin-top:14px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <h4 style="margin:0;">Cash Count History <span style="font-size:12px;font-weight:400;color:#94a3b8;">(last <?php echo count($history); ?> entries)</span></h4>
-        </div>
-        <div style="overflow-x:auto;">
-        <table class="ps-analytics-table" style="min-width:600px;">
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>Time</th>
-                    <th>Branch</th>
-                    <?php foreach ($denoms as $d): ?>
-                    <th class="r" style="white-space:nowrap;">P <?php echo number_format($d, 0); ?></th>
-                    <?php endforeach; ?>
-                    <th class="r">Total</th>
-                    <th>By</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php foreach ($history as $h):
-                $raw = json_decode($h->denominations, true);
-                if (!is_array($raw)) $raw = [];
-                $user = $h->submitted_by ? get_userdata((int)$h->submitted_by) : null;
-                $username = $user ? esc_html($user->display_name) : '—';
-            ?>
-            <tr>
-                <td style="white-space:nowrap;"><?php echo esc_html(date('M d, Y', strtotime($h->count_date))); ?></td>
-                <td style="white-space:nowrap;color:#94a3b8;font-size:12px;"><?php echo esc_html(date('h:i A', strtotime($h->updated_at ?: $h->created_at))); ?></td>
-                <td><?php echo $h->branch_filter === 'all' ? '<span style="color:#94a3b8;">All</span>' : esc_html(ucwords($h->branch_filter)); ?></td>
-                <?php foreach ($denoms as $d): $qty = (int)($raw[(string)$d] ?? 0); ?>
-                <td class="r" style="<?php echo $qty > 0 ? 'font-weight:600;color:#0f172a;' : 'color:#d1d5db;'; ?>"><?php echo $qty > 0 ? number_format($qty) : '—'; ?></td>
-                <?php endforeach; ?>
-                <td class="r" style="font-weight:700;">P <?php echo number_format((float)$h->total_amount, 2); ?></td>
-                <td style="font-size:12px;color:#64748b;"><?php echo $username; ?></td>
-            </tr>
-            <?php endforeach; ?>
-            </tbody>
-        </table>
-        </div>
-    </div>
-    <?php endif; ?>
-
     <?php
     return ob_get_clean();
 }
@@ -5499,153 +5332,13 @@ function ps_rpt_tickets_by_status( int $business_id, string $from, string $to, s
  
 
 // ============================================================
-// TAB: BRANCHES
-// ============================================================
-
-function ps_branches_tab($business_id) {
-    $branches = ps_get_ticket_tags();
-    $nonce    = wp_create_nonce('ps_branch_nonce');
-    ob_start();
-    ?>
-    <div class="bntm-form-section">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-            <div>
-                <h3 style="margin:0 0 4px;">Branches</h3>
-                <p style="margin:0;color:#6b7280;font-size:14px;">Manage your pawnshop branches. These appear as selectable options when creating pawn tickets.</p>
-            </div>
-        </div>
-
-        <div style="display:flex;gap:10px;margin-bottom:24px;">
-            <input type="text" id="ps-new-branch-input" class="bntm-input" placeholder="e.g. Main Branch, North Branch" style="flex:1;max-width:360px;">
-            <button id="ps-add-branch-btn" class="bntm-btn-primary">
-                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-                Add Branch
-            </button>
-        </div>
-        <div id="ps-branch-message"></div>
-
-        <div id="ps-branches-list">
-            <?php if (empty($branches)): ?>
-            <div id="ps-no-branches" style="text-align:center;padding:48px 20px;background:#f9fafb;border-radius:12px;color:#9ca3af;">
-                <svg width="48" height="48" fill="none" stroke="#d1d5db" viewBox="0 0 24 24" style="margin:0 auto 12px;display:block;"><path stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>
-                <p style="margin:0;font-size:14px;">No branches yet. Add your first branch above.</p>
-            </div>
-            <?php else: ?>
-            <?php foreach ($branches as $branch): ?>
-            <div class="ps-branch-row" data-branch="<?php echo esc_attr($branch); ?>" style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;">
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <svg width="16" height="16" fill="none" stroke="#6b7280" viewBox="0 0 24 24"><path stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>
-                    <span style="font-weight:600;font-size:14px;color:#111827;"><?php echo esc_html($branch); ?></span>
-                </div>
-                <button class="ps-delete-branch-btn bntm-btn-danger" data-branch="<?php echo esc_attr($branch); ?>" style="padding:6px 12px;font-size:12px;">Delete</button>
-            </div>
-            <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
-    </div>
-
-    <script>
-    (function() {
-        const nonce = '<?php echo $nonce; ?>';
-
-        function showMsg(msg, ok) {
-            const el = document.getElementById('ps-branch-message');
-            el.innerHTML = '<div style="padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;background:' + (ok ? '#dcfce7' : '#fee2e2') + ';color:' + (ok ? '#166534' : '#991b1b') + ';">' + msg + '</div>';
-            setTimeout(() => { el.innerHTML = ''; }, 3000);
-        }
-
-        function addBranchRow(name) {
-            const noEl = document.getElementById('ps-no-branches');
-            if (noEl) noEl.remove();
-
-            const list = document.getElementById('ps-branches-list');
-            const row = document.createElement('div');
-            row.className = 'ps-branch-row';
-            row.dataset.branch = name;
-            row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;';
-            row.innerHTML = `
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <svg width="16" height="16" fill="none" stroke="#6b7280" viewBox="0 0 24 24"><path stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zM3 14h7v7H3zM17 3h4v4h-4zM19 7v10M9 6h8M9 17h8"/></svg>
-                    <span style="font-weight:600;font-size:14px;color:#111827;">${name}</span>
-                </div>
-                <button class="ps-delete-branch-btn bntm-btn-danger" data-branch="${name}" style="padding:6px 12px;font-size:12px;">Delete</button>
-            `;
-            list.appendChild(row);
-            bindDelete(row.querySelector('.ps-delete-branch-btn'));
-        }
-
-        function bindDelete(btn) {
-            btn.addEventListener('click', function() {
-                const branchName = this.dataset.branch;
-                if (!confirm('Delete branch "' + branchName + '"?')) return;
-
-                const fd = new FormData();
-                fd.append('action', 'ps_delete_branch');
-                fd.append('branch_name', branchName);
-                fd.append('nonce', nonce);
-
-                fetch(ajaxurl, {method:'POST', body:fd})
-                    .then(r => r.json())
-                    .then(res => {
-                        if (res.success) {
-                            const row = document.querySelector('.ps-branch-row[data-branch="' + branchName + '"]');
-                            if (row) row.remove();
-                            showMsg('Branch deleted.', true);
-                            if (!document.querySelector('.ps-branch-row')) {
-                                document.getElementById('ps-branches-list').innerHTML = '<div id="ps-no-branches" style="text-align:center;padding:48px 20px;background:#f9fafb;border-radius:12px;color:#9ca3af;"><p style="margin:0;font-size:14px;">No branches yet.</p></div>';
-                            }
-                        } else {
-                            showMsg(res.data.message || 'Failed to delete.', false);
-                        }
-                    });
-            });
-        }
-
-        document.querySelectorAll('.ps-delete-branch-btn').forEach(bindDelete);
-
-        const addBtn = document.getElementById('ps-add-branch-btn');
-        const input  = document.getElementById('ps-new-branch-input');
-
-        addBtn.addEventListener('click', function() {
-            const name = input.value.trim();
-            if (!name) { showMsg('Please enter a branch name.', false); return; }
-
-            addBtn.disabled = true;
-            const fd = new FormData();
-            fd.append('action', 'ps_add_branch');
-            fd.append('branch_name', name);
-            fd.append('nonce', nonce);
-
-            fetch(ajaxurl, {method:'POST', body:fd})
-                .then(r => r.json())
-                .then(res => {
-                    addBtn.disabled = false;
-                    if (res.success) {
-                        addBranchRow(name);
-                        input.value = '';
-                        showMsg('Branch added.', true);
-                    } else {
-                        showMsg(res.data.message || 'Failed to add.', false);
-                    }
-                });
-        });
-
-        input.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { e.preventDefault(); addBtn.click(); }
-        });
-    })();
-    </script>
-    <?php
-    return ob_get_clean();
-}
-
-// ============================================================
 // TAB: SETTINGS
 // ============================================================
 
 function ps_settings_tab($business_id) {
     $pm = json_decode(bntm_get_setting('ps_payment_methods', '[]'), true);
     $doc_defs = ps_get_document_definitions();
+    $ticket_tags_text = implode("\n", ps_get_ticket_tags());
     if (!is_array($pm)) $pm = [];
     ob_start();
     ?>
@@ -5736,8 +5429,7 @@ function ps_settings_tab($business_id) {
                 <?php endforeach; ?>
             </div>
         </div>
-        <div class="bntm-form-section">
-            <h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Ticket Numbering</h4>
+        <div class="bntm-form-section"><h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Ticket Numbering</h4>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
                 <div class="bntm-form-group">
                     <label>Ticket Prefix</label>
@@ -5768,6 +5460,15 @@ function ps_settings_tab($business_id) {
                     else echo esc_html(sprintf('%s-%s-%04d',$pfx,date('Ym'),$st));
                 ?></strong></span>
                 <button type="button" onclick="psPreviewTicket()" style="background:#1e40af;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;">Refresh</button>
+            </div>
+        </div>
+
+        <div class="bntm-form-section">
+            <h4 style="margin:0 0 14px;font-size:14px;font-weight:700;">Ticket Tags</h4>
+            <div class="bntm-form-group">
+                <label>Available Tags</label>
+                <textarea name="ps_ticket_tags" rows="5" placeholder="VIP&#10;Auction&#10;Special Terms"><?php echo esc_textarea($ticket_tags_text); ?></textarea>
+                <div style="font-size:11px;color:#6b7280;margin-top:3px;">Enter one tag per line. These appear as optional choices when creating or editing pawn tickets.</div>
             </div>
         </div>
 
@@ -6286,41 +5987,6 @@ function bntm_ajax_ps_get_loan_detail() {
 // ============================================================
 // AJAX: GET TICKET HISTORY
 // ============================================================
-
-function bntm_ajax_ps_add_branch() {
-    check_ajax_referer('ps_branch_nonce', 'nonce');
-    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
-
-    $name = sanitize_text_field($_POST['branch_name'] ?? '');
-    if ($name === '') wp_send_json_error(['message' => 'Branch name cannot be empty.']);
-
-    $existing = ps_get_ticket_tags();
-    if (in_array($name, $existing, true)) {
-        wp_send_json_error(['message' => 'Branch already exists.']);
-    }
-
-    $existing[] = $name;
-    ps_replace_ticket_tags($existing);
-    wp_send_json_success(['message' => 'Branch added.']);
-}
-
-function bntm_ajax_ps_delete_branch() {
-    check_ajax_referer('ps_branch_nonce', 'nonce');
-    if (!is_user_logged_in()) wp_send_json_error(['message' => 'Unauthorized']);
-
-    $name = sanitize_text_field($_POST['branch_name'] ?? '');
-    if ($name === '') wp_send_json_error(['message' => 'Branch name cannot be empty.']);
-
-    $existing = ps_get_ticket_tags();
-    $updated  = array_values(array_filter($existing, fn($t) => $t !== $name));
-
-    if (count($updated) === count($existing)) {
-        wp_send_json_error(['message' => 'Branch not found.']);
-    }
-
-    ps_replace_ticket_tags($updated);
-    wp_send_json_success(['message' => 'Branch deleted.']);
-}
 
 function bntm_ajax_ps_get_ticket_history() {
     check_ajax_referer('ps_loan_nonce', 'nonce');
@@ -7553,6 +7219,7 @@ function bntm_ajax_ps_save_settings() {
         // Backward compatibility for any old code reading this setting directly.
         bntm_set_setting('ps_ticket_tags', implode("\n", $tags));
     }
+
     foreach (array_keys(ps_get_document_definitions()) as $doc_key) {
         $prefix = 'ps_doc_' . $doc_key . '_';
         $doc_text_fields = [
