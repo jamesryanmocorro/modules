@@ -2309,9 +2309,11 @@ function bntm_weimop_md_fetch_all( $days = 7 ) {
 }
 
 /* -------------------------------------------------------
-   Import ALL available files from local market_data/ folder.
-   No HTTP requests — reads only what is already on disk,
-   scrapes the CSV data, and inserts into weimop.sqlite.
+   Import ALL available files — two clear phases:
+   PHASE 1  Download every file listed on IEMOP (all pages)
+            → save to wp-content/uploads/weimop/market_data/{dataset}/
+   PHASE 2  Scan the market_data folder for every CSV on disk
+            → parse each file → insert rows into weimop.sqlite
 ------------------------------------------------------- */
 function bntm_weimop_md_import_all() {
     $db = bntm_weimop_open_db( false );
@@ -2334,16 +2336,64 @@ function bntm_weimop_md_import_all() {
             'msg' => 'Schema migrated — tables recreated with correct column names, log cleared.' ];
     }
 
+    // =========================================================
+    // PHASE 1 — Download all files from IEMOP to market_data/
+    // =========================================================
+    $results[] = [ 'status' => 'info', 'file' => '---',
+        'msg' => 'PHASE 1: Fetching file listings from IEMOP and downloading to market_data/' ];
+
+    foreach ( $datasets as $key => $ds ) {
+        $remote_files = bntm_weimop_md_get_all_pages_files( $ds['post_id'], $ds['folder'], $key );
+
+        if ( empty( $remote_files ) ) {
+            $results[] = [ 'status' => 'warn', 'file' => $key,
+                'msg' => 'No files returned from IEMOP API for this dataset' ];
+            continue;
+        }
+
+        $downloaded = 0;
+        $already    = 0;
+        $errors     = 0;
+
+        foreach ( $remote_files as $f ) {
+            $local_path = bntm_weimop_md_local_dir() . "/{$key}/{$f['filename']}";
+            if ( file_exists( $local_path ) ) {
+                $already++;
+                continue;
+            }
+            $dl = bntm_weimop_md_download_csv( $f['url'], $f['filename'], $key );
+            if ( isset( $dl['error'] ) ) {
+                $results[] = [ 'status' => 'error', 'file' => $f['filename'],
+                    'msg' => 'Download failed: ' . $dl['error'] ];
+                $errors++;
+            } else {
+                $downloaded++;
+            }
+        }
+
+        $results[] = [ 'status' => 'info', 'file' => $key,
+            'msg' => count( $remote_files ) . ' listed on IEMOP — '
+                . "downloaded: {$downloaded}, already on disk: {$already}, errors: {$errors}" ];
+    }
+
+    // =========================================================
+    // PHASE 2 — Scan market_data folder → scrape → import to DB
+    // =========================================================
+    $results[] = [ 'status' => 'info', 'file' => '---',
+        'msg' => 'PHASE 2: Scanning market_data/ folder — importing all CSVs into weimop.sqlite' ];
+
     foreach ( $datasets as $key => $ds ) {
         $local_dir = bntm_weimop_md_local_dir() . "/{$key}";
         $csv_files = is_dir( $local_dir ) ? ( glob( $local_dir . '/*.csv' ) ?: [] ) : [];
-        sort( $csv_files ); // chronological order by filename
 
         if ( empty( $csv_files ) ) {
             $results[] = [ 'status' => 'info', 'file' => $key,
-                'msg' => 'No CSV files found in market_data/' . $key . '/' ];
+                'msg' => 'No CSV files in market_data/' . $key . '/ — nothing to import' ];
             continue;
         }
+
+        $results[] = [ 'status' => 'info', 'file' => $key,
+            'msg' => count( $csv_files ) . ' CSV files found in market_data/' . $key . '/' ];
 
         $imported = 0;
         $skipped  = 0;
@@ -2351,11 +2401,11 @@ function bntm_weimop_md_import_all() {
         foreach ( $csv_files as $local_path ) {
             $filename = basename( $local_path );
 
-            // Extract YYYYMMDD from filename e.g. MP_20260515.csv → 20260515
+            // Extract 8-digit date from filename  e.g. MP_20260515.csv → 20260515
             if ( ! preg_match( '/' . preg_quote( $ds['prefix'], '/' ) . '(\d{8})\.csv$/i', $filename, $m ) ) continue;
             $date = $m[1];
 
-            // Skip if already in import log
+            // Skip if this file was already imported (iemop_market_log)
             $chk = $db->prepare( "SELECT id FROM iemop_market_log WHERE dataset = :ds AND filename = :fn" );
             $chk->bindValue( ':ds', $key,      SQLITE3_TEXT );
             $chk->bindValue( ':fn', $filename, SQLITE3_TEXT );
@@ -2364,9 +2414,9 @@ function bntm_weimop_md_import_all() {
                 continue;
             }
 
-            // Read local file → parse CSV → import rows
-            $body  = file_get_contents( $local_path );
-            $rows  = bntm_weimop_md_parse_csv( $body );
+            // Parse CSV → scrape rows
+            $body = file_get_contents( $local_path );
+            $rows = bntm_weimop_md_parse_csv( $body );
             $count = 0;
             if ( ! empty( $rows ) && function_exists( $ds['importer'] ) ) {
                 $count = call_user_func( $ds['importer'], $db, $rows, $date );
@@ -2384,12 +2434,14 @@ function bntm_weimop_md_import_all() {
             $ins->execute();
 
             $results[] = [ 'status' => 'ok', 'file' => $filename,
-                'msg' => "{$count} rows imported into {$ds['table']}" ];
+                'msg' => "{$count} rows scraped → inserted into weimop.sqlite [{$ds['table']}]" ];
             $imported++;
         }
 
-        $results[] = [ 'status' => 'info', 'file' => $key,
-            'msg' => count( $csv_files ) . " files scanned — {$imported} imported, {$skipped} already in DB" ];
+        if ( $skipped > 0 ) {
+            $results[] = [ 'status' => 'info', 'file' => $key,
+                'msg' => "{$skipped} files already in DB (skipped), {$imported} newly imported" ];
+        }
     }
 
     $db->close();
@@ -2547,7 +2599,7 @@ function weimop_tab_market_data() {
                     </select>
                 </label>
                 <button id="weimop-md-fetch-btn" class="weimop-btn weimop-btn--primary">Fetch from IEMOP</button>
-                <button id="weimop-md-import-all-btn" class="weimop-btn weimop-btn--secondary" title="Read all CSV files from the local market_data folder and import into weimop.sqlite">Import Local Files</button>
+                <button id="weimop-md-import-all-btn" class="weimop-btn weimop-btn--secondary" title="Download and import every available file from IEMOP (all pages)">Import All Files</button>
                 <span id="weimop-md-fetch-status" class="weimop-notice" style="display:none;"></span>
             </div>
         </div>
@@ -2704,16 +2756,16 @@ function weimop_tab_market_data() {
         var importAllBtn = document.getElementById('weimop-md-import-all-btn');
         if (importAllBtn) {
             importAllBtn.addEventListener('click', function() {
-                if (!confirm('This will scan the local market_data/ folder and import all CSV files not yet in the database. Continue?')) return;
+                if (!confirm('This will fetch ALL available pages from IEMOP and import every file not yet in the database. This may take several minutes. Continue?')) return;
                 importAllBtn.disabled = true;
                 importAllBtn.textContent = 'Importing...';
                 fetchStatus.style.display = 'none';
                 logWrap.style.display = 'block';
-                logEl.textContent = 'Scanning local market_data/ folder and importing CSV files...\n';
+                logEl.textContent = 'Fetching all files from IEMOP (all pages, all datasets)...\n';
 
                 mdPost('weimop_import_all_files', {}).then(function(j) {
                     importAllBtn.disabled = false;
-                    importAllBtn.textContent = 'Import Local Files';
+                    importAllBtn.textContent = 'Import All Files';
                     if (!j.success) {
                         logEl.textContent += 'Error: ' + (j.data && j.data.message ? j.data.message : JSON.stringify(j));
                         return;
@@ -2738,7 +2790,7 @@ function weimop_tab_market_data() {
                     if (ok > 0) setTimeout(function(){ window.location.reload(); }, 2000);
                 }).catch(function(e) {
                     importAllBtn.disabled = false;
-                    importAllBtn.textContent = 'Import Local Files';
+                    importAllBtn.textContent = 'Import All Files';
                     logEl.textContent += 'Request failed: ' + e.message;
                 });
             });
