@@ -648,11 +648,11 @@ function bntm_shortcode_cs() {
         box-shadow: 0 3px 10px rgba(0,0,0,.13);
         position: relative;
         z-index: 1;
-        margin-top: -3px;
+        margin-top: 4px;
         border-radius: 6px !important;
-        transition: all .14s ease, z-index 0s;
+        transition: all .14s ease;
     }
-    .cs-action-menu .cs-btn:first-child { margin-top: 0; z-index: 2; }
+    .cs-action-menu .cs-btn:first-child { margin-top: 0; }
     .cs-action-menu .cs-btn:hover { z-index: 3; transform: translateX(-3px); }
     .cs-btn-group {
         display: flex; gap: 8px; flex-wrap: wrap;
@@ -930,6 +930,42 @@ function bntm_shortcode_cs() {
         display: flex; align-items: center; justify-content: center;
         flex-shrink: 0; margin-top: 1px;
     }
+
+    /* ── Subjects Handled Picker ─────────────────────── */
+    .cs-subj-list { border: 1.5px solid var(--cs-border); border-radius: 8px; overflow: hidden; }
+    .cs-subj-list-header {
+        background: var(--cs-surface-2);
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--cs-border);
+        font-size: 11px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: .7px;
+        color: var(--cs-text-muted);
+    }
+    .cs-subj-list-body { max-height: 180px; overflow-y: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
+    .cs-subj-item {
+        display: flex; align-items: center; gap: 10px;
+        padding: 7px 10px;
+        border-radius: 6px;
+        border: 1.5px solid var(--cs-border-soft);
+        cursor: pointer;
+        font-size: 13px; font-weight: 400;
+        transition: border-color .12s, background .12s;
+        user-select: none;
+    }
+    .cs-subj-item:hover { border-color: var(--cs-blue-mid); background: rgba(26,79,138,.04); }
+    .cs-subj-item input[type=checkbox] { accent-color: var(--cs-navy); width: 15px; height: 15px; flex-shrink: 0; cursor: pointer; margin: 0; }
+    .cs-subj-item strong { font-weight: 700; color: var(--cs-text-primary); white-space: nowrap; }
+    .cs-subj-item em { color: var(--cs-text-muted); font-size: 12px; font-style: normal; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cs-subj-empty {
+        background: var(--cs-surface-2);
+        border: 1.5px dashed var(--cs-border);
+        border-radius: 8px;
+        padding: 16px;
+        text-align: center;
+        color: var(--cs-text-muted);
+        font-size: 13px;
+    }
+    .cs-subj-warn { background: #fffbeb; border: 1.5px solid #fde68a; border-radius: 8px; padding: 12px 14px; color: #92400e; font-size: 13px; }
 
     /* ── Print ───────────────────────────────────────────── */
     @media print {
@@ -1934,6 +1970,19 @@ function cs_schedule_tab() {
         "SELECT * FROM {$wpdb->prefix}cs_rooms WHERE status='active' ORDER BY room_code ASC"
     );
 
+    // Build section → department map via cs_courses
+    $courses_dept = $wpdb->get_results(
+        "SELECT course_code, department FROM {$wpdb->prefix}cs_courses"
+    );
+    $course_dept_map = [];
+    foreach ($courses_dept as $cd) {
+        $course_dept_map[$cd->course_code] = $cd->department;
+    }
+    $section_dept_map = [];
+    foreach ($sections as $s) {
+        $section_dept_map[$s->id] = $course_dept_map[$s->course_code] ?? '';
+    }
+
     $selected_section = isset($_GET['cs_sched_section']) ? intval($_GET['cs_sched_section']) : (empty($sections) ? 0 : $sections[0]->id);
     $nonce = wp_create_nonce('cs_schedule_nonce');
 
@@ -2045,9 +2094,10 @@ function cs_schedule_tab() {
     (function () {
         const nonce      = '<?php echo $nonce; ?>';
         const sections   = <?php echo json_encode(array_map(fn($s) => ['id'=>$s->id,'name'=>$s->section_name], $sections)); ?>;
-        const instructors= <?php echo json_encode(array_map(fn($i) => ['id'=>$i->id,'initials'=>$i->initials,'name'=>$i->full_name], $instructors)); ?>;
+        const instructors= <?php echo json_encode(array_map(fn($i) => ['id'=>$i->id,'initials'=>$i->initials,'name'=>$i->full_name,'dept'=>$i->department], $instructors)); ?>;
         const rooms      = <?php echo json_encode(array_map(fn($r) => ['id'=>$r->id,'code'=>$r->room_code], $rooms)); ?>;
         const sectionId  = <?php echo $selected_section ?: 0; ?>;
+        const sectionDepts = <?php echo json_encode($section_dept_map); ?>;
 
         document.getElementById('cs-go-section').addEventListener('click', function () {
             const url = new URL(window.location.href);
@@ -2079,7 +2129,14 @@ function cs_schedule_tab() {
             const secOptions = sections.map(s =>
                 `<option value="${s.id}" ${(data.section||sectionId)==s.id?'selected':''}>${s.name}</option>`
             ).join('');
-            const instOptions = '<option value="">-- Select Instructor --</option>' + instructors.map(i =>
+            // Filter instructors by the selected section's course department
+            const activeSectionId = data.section || sectionId;
+            const secDeptRaw = sectionDepts[activeSectionId] || '';
+            const secDepts = secDeptRaw.split(',').map(d => d.trim()).filter(Boolean);
+            const filteredInsts = secDepts.length
+                ? instructors.filter(i => !i.dept || secDepts.some(d => d === i.dept))
+                : instructors;
+            const instOptions = '<option value="">-- Select Instructor --</option>' + filteredInsts.map(i =>
                 `<option value="${i.initials}|${i.name}" ${data.initials===i.initials?'selected':''}>${i.name} (${i.initials})</option>`
             ).join('');
             const roomOptions = '<option value="">-- Select Room --</option>' + rooms.map(r =>
@@ -2171,7 +2228,25 @@ function cs_schedule_tab() {
             <input type="hidden" id="ef-id" value="${data.id||0}">`;
         }
 
+        function buildInstOptions(sectionId, selectedInitials) {
+            const deptRaw = sectionDepts[sectionId] || '';
+            const depts = deptRaw.split(',').map(d => d.trim()).filter(Boolean);
+            const filtered = depts.length
+                ? instructors.filter(i => !i.dept || depts.some(d => d === i.dept))
+                : instructors;
+            return '<option value="">-- Select Instructor --</option>' + filtered.map(i =>
+                `<option value="${i.initials}|${i.name}" ${(selectedInitials||'')===i.initials?'selected':''}>${i.name} (${i.initials})</option>`
+            ).join('');
+        }
+
         function bindEntryForm() {
+            // Re-filter instructor list when section changes
+            document.getElementById('ef-section').addEventListener('change', function () {
+                const instEl = document.getElementById('ef-inst');
+                instEl.innerHTML = buildInstOptions(this.value, '');
+                document.getElementById('ef-initials').value = '';
+            });
+
             // Auto-fill initials from instructor dropdown
             document.getElementById('ef-inst').addEventListener('change', function () {
                 const parts = this.value.split('|');
@@ -2284,6 +2359,10 @@ function cs_instructors_tab() {
         "SELECT * FROM {$wpdb->prefix}cs_departments WHERE status='active' ORDER BY dept_name ASC"
     );
 
+    $courses_data = $wpdb->get_results(
+        "SELECT course_code, course_title, department FROM {$wpdb->prefix}cs_courses WHERE status='active' ORDER BY course_code ASC"
+    );
+
     $nonce = wp_create_nonce('cs_instructors_nonce');
 
     ob_start();
@@ -2345,6 +2424,31 @@ function cs_instructors_tab() {
     (function () {
         const nonce = '<?php echo $nonce; ?>';
         const deptOptions = <?php echo json_encode(array_map(function($d){ return ['id'=>$d->id,'name'=>$d->dept_name,'code'=>$d->dept_code]; }, $departments)); ?>;
+        const coursesData = <?php echo json_encode(array_map(function($c){ return ['code'=>$c->course_code,'title'=>$c->course_title,'dept'=>$c->department]; }, $courses_data)); ?>;
+
+        function buildSubjectCheckboxes(deptName, selected) {
+            const sel = (selected||'').split(',').map(s => s.trim()).filter(Boolean);
+            if (!deptName) {
+                return '<div class="cs-subj-empty">Select a department to see available courses.</div>';
+            }
+            const filtered = coursesData.filter(c => c.dept.split(',').map(d => d.trim()).includes(deptName));
+            if (!filtered.length) {
+                return '<div class="cs-subj-warn">No courses found for this department.</div>';
+            }
+            let items = '';
+            filtered.forEach(c => {
+                const checked = sel.includes(c.code) ? 'checked' : '';
+                items += '<label class="cs-subj-item">'
+                    + '<input type="checkbox" class="if-subj-check" value="' + c.code.replace(/"/g,'&quot;') + '" ' + checked + '>'
+                    + '<strong>' + c.code + '</strong>'
+                    + (c.title ? '<em>' + c.title + '</em>' : '')
+                    + '</label>';
+            });
+            return '<div class="cs-subj-list">'
+                + '<div class="cs-subj-list-header">' + filtered.length + ' course' + (filtered.length !== 1 ? 's' : '') + ' — select all that apply</div>'
+                + '<div class="cs-subj-list-body">' + items + '</div>'
+                + '</div>';
+        }
 
         function instForm(data) {
             data = data || {};
@@ -2354,33 +2458,42 @@ function cs_instructors_tab() {
                     ${deptOptions.map(d=>`<option value="${d.name.replace(/"/g,'&quot;')}" ${data.dept===d.name?'selected':''}>${d.name}${d.code?' ('+d.code+')':''}</option>`).join('')}
                    </select>`
                 : `<input type="text" id="if-dept" value="${data.dept||''}" placeholder="No departments added yet">`;
+            const statusField = data.id
+                ? `<div class="cs-field">
+                    <label>Status</label>
+                    <select id="if-status">
+                        <option value="active" ${data.status==='active'?'selected':''}>Active</option>
+                        <option value="inactive" ${data.status==='inactive'?'selected':''}>Inactive</option>
+                    </select>
+                   </div>`
+                : '';
             return `
             <h2 class="cs-modal-title">${data.id ? 'Edit Instructor' : 'Add Instructor'}</h2>
-            <div class="cs-form-grid">
+
+            <div style="display:grid;grid-template-columns:150px 1fr;gap:16px;margin-bottom:18px;">
                 <div class="cs-field">
-                    <label>Initials * <small style="color:#5c7ea6;">(shown on timetable)</small></label>
+                    <label>Initials * <small style="color:#5c7ea6;">(timetable)</small></label>
                     <input type="text" id="if-initials" value="${data.initials||''}" placeholder="e.g. EORTIZ" maxlength="30">
                 </div>
                 <div class="cs-field">
                     <label>Full Name *</label>
                     <input type="text" id="if-name" value="${data.name||''}" placeholder="Full legal name">
                 </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:${data.id ? '1fr 150px' : '1fr'};gap:16px;margin-bottom:18px;">
                 <div class="cs-field">
                     <label>Department</label>
                     ${deptSelect}
                 </div>
-                <div class="cs-field cs-field-full">
-                    <label>Subjects Handled <small style="color:#5c7ea6;">(comma-separated)</small></label>
-                    <input type="text" id="if-subjects" value="${data.subjects||''}" placeholder="e.g. Math 101, Physics 201, Calculus">
-                </div>
-                ${data.id ? `<div class="cs-field">
-                    <label>Status</label>
-                    <select id="if-status">
-                        <option value="active" ${data.status==='active'?'selected':''}>Active</option>
-                        <option value="inactive" ${data.status==='inactive'?'selected':''}>Inactive</option>
-                    </select>
-                </div>` : ''}
+                ${statusField}
             </div>
+
+            <div class="cs-field" style="margin-bottom:4px;">
+                <label>Subjects Handled <small style="color:#5c7ea6;">(courses from selected department)</small></label>
+                <div id="if-subjects-wrap" style="margin-top:6px;">${buildSubjectCheckboxes(data.dept||'', data.subjects||'')}</div>
+            </div>
+
             <div id="if-notice"></div>
             <div class="cs-btn-group">
                 <button class="cs-btn cs-btn-primary" id="if-save">Save Instructor</button>
@@ -2390,6 +2503,13 @@ function cs_instructors_tab() {
         }
 
         function bindInstForm() {
+            // Re-populate subject checkboxes when department changes
+            const deptEl = document.getElementById('if-dept');
+            if (deptEl && deptEl.tagName === 'SELECT') {
+                deptEl.addEventListener('change', function () {
+                    document.getElementById('if-subjects-wrap').innerHTML = buildSubjectCheckboxes(this.value, '');
+                });
+            }
             document.getElementById('if-save').addEventListener('click', function () {
                 const btn = this;
                 const fd = new FormData();
@@ -2399,7 +2519,8 @@ function cs_instructors_tab() {
                 fd.append('initials', document.getElementById('if-initials').value.trim().toUpperCase());
                 fd.append('full_name', document.getElementById('if-name').value.trim());
                 fd.append('department', document.getElementById('if-dept').value.trim());
-                fd.append('subjects_handled', document.getElementById('if-subjects').value.trim());
+                const subjChecks = document.querySelectorAll('.if-subj-check:checked');
+                fd.append('subjects_handled', Array.from(subjChecks).map(c => c.value).join(', '));
                 const statusEl = document.getElementById('if-status');
                 if (statusEl) fd.append('status', statusEl.value);
                 btn.disabled = true; btn.textContent = 'Saving...';
