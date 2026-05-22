@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Module Name: Car Rental Booking
  * Module Slug: cr
@@ -3707,6 +3707,9 @@ function bntm_shortcode_cr_form() {
             <input type="hidden" name="selected_city" id="selected_city">
             <input type="hidden" name="rental_type" id="rental_type">
             <input type="hidden" name="total_price" id="total_price">
+            <input type="hidden" name="car_id" id="master-car-id" value="">
+            <input type="hidden" name="start_date" id="hidden-start-date" value="">
+            <input type="hidden" name="end_date" id="hidden-end-date" value="">
             
             <!-- STEP 1: Select City -->
             <div id="step1" class="step-section active">
@@ -3776,7 +3779,7 @@ function bntm_shortcode_cr_form() {
 
                     <div class="bntm-form-group">
                         <label>Available Car *</label>
-                        <select name="car_id" id="commercial-car" required>
+                        <select id="commercial-car">
                             <option value="">Select a car from inventory</option>
                         </select>
                         <small class="cr-spec-note">Loaded from the cars saved for the selected city.</small>
@@ -3802,7 +3805,7 @@ function bntm_shortcode_cr_form() {
                         </div>
                         <div class="bntm-form-group">
                             <label>Rental Date *</label>
-                            <input type="date" name="rental_date" id="commercial-date" required min="<?php echo date('Y-m-d'); ?>">
+                            <input type="date" id="commercial-date" required min="<?php echo date('Y-m-d'); ?>">
                         </div>
                     </div>
                     
@@ -3849,7 +3852,7 @@ function bntm_shortcode_cr_form() {
 
                     <div class="bntm-form-group">
                         <label>Available Car *</label>
-                        <select name="car_id" id="sd-car" required>
+                        <select id="sd-car">
                             <option value="">Select a car from inventory</option>
                         </select>
                         <small class="cr-spec-note">Loaded from the cars saved for the selected city.</small>
@@ -3868,11 +3871,11 @@ function bntm_shortcode_cr_form() {
                     <div class="bntm-form-row">
                         <div class="bntm-form-group">
                             <label>Start Date *</label>
-                            <input type="date" name="sd_start_date" required min="<?php echo date('Y-m-d'); ?>">
+                            <input type="date" name="sd_start_date" id="sd-start-date" required min="<?php echo date('Y-m-d'); ?>">
                         </div>
                         <div class="bntm-form-group">
                             <label>End Date *</label>
-                            <input type="date" name="sd_end_date" required min="<?php echo date('Y-m-d'); ?>">
+                            <input type="date" name="sd_end_date" id="sd-end-date" required min="<?php echo date('Y-m-d'); ?>">
                         </div>
                     </div>
                     
@@ -3936,7 +3939,7 @@ function bntm_shortcode_cr_form() {
 
                     <div class="bntm-form-group">
                         <label>Available Car *</label>
-                        <select name="car_id" id="oot-car" required>
+                        <select id="oot-car">
                             <option value="">Select a car from inventory</option>
                         </select>
                         <small class="cr-spec-note">Loaded from the cars saved for the selected city.</small>
@@ -3959,7 +3962,7 @@ function bntm_shortcode_cr_form() {
                         </div>
                         <div class="bntm-form-group">
                             <label>Travel Date *</label>
-                            <input type="date" name="oot_date" required min="<?php echo date('Y-m-d'); ?>">
+                            <input type="date" id="oot-date" required min="<?php echo date('Y-m-d'); ?>">
                         </div>
                     </div>
                     
@@ -4024,13 +4027,28 @@ function bntm_shortcode_cr_form() {
                     <textarea name="notes" rows="4" placeholder="Any special requests or additional information?"></textarea>
                 </div>
                 
-                <button type="submit" class="bntm-btn-primary">
-                    ✓ Submit Booking Request
+                <button type="button" class="bntm-btn-primary" id="cr-review-btn" onclick="crShowConfirmModal()">
+                    ✓ Review &amp; Confirm Booking
                 </button>
             </div>
         </form>
         
         <div id="booking-message" class="booking-message"></div>
+    </div>
+
+    <!-- Booking Confirmation Modal -->
+    <div id="cr-confirm-modal" style="display:none;position:fixed;z-index:10000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.55);overflow:auto;">
+        <div style="background:#fff;margin:40px auto;padding:30px;border-radius:14px;width:90%;max-width:520px;box-shadow:0 8px 30px rgba(0,0,0,0.18);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:15px;border-bottom:2px solid #e5e7eb;">
+                <h2 style="margin:0;color:#1f2937;font-size:20px;">Confirm Your Booking</h2>
+                <button type="button" onclick="crCloseConfirm()" style="font-size:26px;font-weight:bold;color:#6b7280;border:none;background:none;cursor:pointer;line-height:1;">&times;</button>
+            </div>
+            <div id="cr-confirm-summary"></div>
+            <div style="display:flex;gap:12px;margin-top:20px;">
+                <button type="button" onclick="crCloseConfirm()" style="flex:1;padding:12px;border:1px solid #d1d5db;background:#fff;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;">&#8592; Edit</button>
+                <button type="button" id="cr-confirm-submit-btn" style="flex:2;padding:12px;background:var(--bntm-primary);color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">&#10003; Confirm &amp; Book</button>
+            </div>
+        </div>
     </div>
     
     <script>
@@ -4415,499 +4433,170 @@ function bntm_shortcode_cr_form() {
             });
     }
     
-    document.getElementById('rental-booking-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        
+    // Sync car selects → master hidden car_id
+    function crUpdateMasterCarId(prefix) {
+        const sel = document.getElementById(prefix + '-car');
+        const master = document.getElementById('master-car-id');
+        if (sel && master) master.value = sel.value;
+    }
+
+    // Sync date inputs → hidden start_date / end_date
+    function crUpdateHiddenDates() {
+        const sf = document.getElementById('hidden-start-date');
+        const ef = document.getElementById('hidden-end-date');
+        if (!sf || !ef) return;
+        if (selectedRentalType === 'commercial') {
+            const d = document.getElementById('commercial-date');
+            sf.value = d ? d.value : '';
+            ef.value = d ? d.value : '';
+        } else if (selectedRentalType === 'self_drive') {
+            const s = document.getElementById('sd-start-date');
+            const e = document.getElementById('sd-end-date');
+            sf.value = s ? s.value : '';
+            ef.value = e ? e.value : '';
+        } else if (selectedRentalType === 'out_of_town') {
+            const d = document.getElementById('oot-date');
+            sf.value = d ? d.value : '';
+            ef.value = d ? d.value : '';
+        }
+    }
+
+    // Car select change listeners — update master car_id
+    ['commercial', 'sd', 'oot'].forEach(function(prefix) {
+        const sel = document.getElementById(prefix + '-car');
+        if (sel) sel.addEventListener('change', function() {
+            const activePrefix = selectedRentalType === 'commercial' ? 'commercial'
+                : selectedRentalType === 'self_drive' ? 'sd'
+                : selectedRentalType === 'out_of_town' ? 'oot' : '';
+            if (prefix === activePrefix) crUpdateMasterCarId(prefix);
+            renderSelectedInventoryCar(prefix);
+        });
+    });
+
+    // Date change listeners
+    ['commercial-date', 'sd-start-date', 'sd-end-date', 'oot-date'].forEach(function(id) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('change', crUpdateHiddenDates);
+    });
+
+    // Confirmation modal
+    function crShowConfirmModal() {
         if (!selectedCity || !selectedRentalType) {
-            alert('Please complete all steps');
+            alert('Please complete all steps: select a city and rental type.');
             return;
         }
-        
-        const formData = new FormData(this);
-        const btn = this.querySelector('button[type="submit"]');
-        btn.disabled = true;
-        btn.textContent = 'Submitting...';
-        
-        fetch(ajaxurl, { method: 'POST', body: formData })
+        const prefixMap = { commercial: 'commercial', self_drive: 'sd', out_of_town: 'oot' };
+        const prefix = prefixMap[selectedRentalType] || '';
+        const carSel = document.getElementById(prefix + '-car');
+        if (!carSel || !carSel.value) {
+            alert('Please select a car from the inventory.');
+            return;
+        }
+        const custName  = document.querySelector('[name="customer_name"]');
+        const custEmail = document.querySelector('[name="customer_email"]');
+        const custPhone = document.querySelector('[name="customer_phone"]');
+        if (!custName  || !custName.value.trim())  { alert('Please enter your full name.'); return; }
+        if (!custEmail || !custEmail.value.trim()) { alert('Please enter your email address.'); return; }
+        if (!custPhone || !custPhone.value.trim()) { alert('Please enter your phone number.'); return; }
+
+        crUpdateMasterCarId(prefix);
+        crUpdateHiddenDates();
+
+        const totalPrice = parseFloat(document.getElementById('total_price').value) || 0;
+        const cityLabel  = crCityChoices[selectedCity] || selectedCity.toUpperCase();
+        const typeLabels = { commercial: 'Commercial (City Drive)', self_drive: 'Self-Drive (24hr)', out_of_town: 'Out of Town' };
+        const rentalLabel = typeLabels[selectedRentalType] || selectedRentalType;
+
+        const carOpt  = carSel.options[carSel.selectedIndex];
+        const carName = carOpt && carOpt.value ? (carOpt.dataset.label || carOpt.textContent.trim()) : 'N/A';
+
+        const startDate = document.getElementById('hidden-start-date').value || '—';
+        const endDate   = document.getElementById('hidden-end-date').value   || '—';
+        const dateStr   = startDate === endDate ? startDate : startDate + ' → ' + endDate;
+
+        let detailsHtml = '';
+        if (selectedRentalType === 'commercial') {
+            const hours   = document.getElementById('commercial-hours')?.value || '—';
+            const airport = document.getElementById('airport-pickup')?.value === 'yes' ? ' + Airport Pickup' : '';
+            detailsHtml = '<tr><td style="color:#6b7280;padding:5px 0">Duration</td><td style="font-weight:600;text-align:right">' + hours + ' hrs' + airport + '</td></tr>';
+        } else if (selectedRentalType === 'self_drive') {
+            const days = document.getElementById('sd-days')?.value || '—';
+            detailsHtml = '<tr><td style="color:#6b7280;padding:5px 0">Days</td><td style="font-weight:600;text-align:right">' + days + ' day(s)</td></tr>';
+        } else if (selectedRentalType === 'out_of_town') {
+            const loc = document.getElementById('oot-location')?.value || '—';
+            const hrs = document.getElementById('oot-hours')?.value || '—';
+            detailsHtml = '<tr><td style="color:#6b7280;padding:5px 0">Destination</td><td style="font-weight:600;text-align:right">' + loc + '</td></tr>'
+                        + '<tr><td style="color:#6b7280;padding:5px 0">Hours</td><td style="font-weight:600;text-align:right">' + hrs + ' hrs</td></tr>';
+        }
+
+        const pax   = document.querySelector('[name="number_of_pax"]')?.value || 1;
+        const notes = document.querySelector('[name="notes"]')?.value || '';
+        const notesRow = notes ? '<tr><td style="color:#6b7280;padding:4px 0">Notes</td><td style="font-weight:600;text-align:right;font-size:12px">' + notes + '</td></tr>' : '';
+
+        document.getElementById('cr-confirm-summary').innerHTML =
+            '<table style="width:100%;border-collapse:collapse;font-size:14px">'
+            + '<tr><td style="color:#6b7280;padding:6px 0">City</td><td style="font-weight:600;text-align:right">' + cityLabel + '</td></tr>'
+            + '<tr><td style="color:#6b7280;padding:6px 0">Rental Type</td><td style="font-weight:600;text-align:right">' + rentalLabel + '</td></tr>'
+            + '<tr><td style="color:#6b7280;padding:6px 0">Car</td><td style="font-weight:600;text-align:right">' + carName + '</td></tr>'
+            + '<tr><td style="color:#6b7280;padding:6px 0">Date(s)</td><td style="font-weight:600;text-align:right">' + dateStr + '</td></tr>'
+            + detailsHtml
+            + '<tr><td style="color:#6b7280;padding:6px 0">Passengers</td><td style="font-weight:600;text-align:right">' + pax + '</td></tr>'
+            + '<tr style="border-top:1px solid #e5e7eb"><td style="padding:10px 0;font-size:15px" colspan="2"><strong>Customer Details</strong></td></tr>'
+            + '<tr><td style="color:#6b7280;padding:4px 0">Name</td><td style="font-weight:600;text-align:right">' + custName.value + '</td></tr>'
+            + '<tr><td style="color:#6b7280;padding:4px 0">Email</td><td style="font-weight:600;text-align:right">' + custEmail.value + '</td></tr>'
+            + '<tr><td style="color:#6b7280;padding:4px 0">Phone</td><td style="font-weight:600;text-align:right">' + custPhone.value + '</td></tr>'
+            + notesRow
+            + '</table>'
+            + '<div style="background:linear-gradient(135deg,#f0f9ff,#e0f2fe);border:1px solid #cffafe;border-radius:10px;padding:16px 20px;margin-top:16px;text-align:right">'
+            + '<div style="color:#6b7280;font-size:13px">Total Amount</div>'
+            + '<div style="font-size:26px;font-weight:bold;color:var(--bntm-primary)">&#8369;' + totalPrice.toLocaleString('en-US', {minimumFractionDigits:2}) + '</div>'
+            + '</div>';
+
+        document.getElementById('cr-confirm-modal').style.display = 'block';
+    }
+
+    function crCloseConfirm() {
+        document.getElementById('cr-confirm-modal').style.display = 'none';
+    }
+
+    document.getElementById('cr-confirm-submit-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = 'Submitting...';
+        const form = document.getElementById('rental-booking-form');
+        fetch(ajaxurl, { method: 'POST', body: new FormData(form) })
             .then(r => r.json())
             .then(json => {
+                crCloseConfirm();
                 const msgDiv = document.getElementById('booking-message');
                 msgDiv.classList.remove('success', 'error');
                 msgDiv.classList.add(json.success ? 'success' : 'error');
-                msgDiv.textContent = json.data.message;
+                msgDiv.textContent = (json.data && json.data.message) ? json.data.message : (json.success ? 'Booking submitted!' : 'Submission failed.');
                 msgDiv.classList.add('show');
-                
                 if (json.success) {
-                    setTimeout(() => location.reload(), 3000);
+                    const reviewBtn = document.getElementById('cr-review-btn');
+                    if (reviewBtn) { reviewBtn.disabled = true; reviewBtn.textContent = '✓ Booking Submitted'; }
+                    setTimeout(function() { location.reload(); }, 3000);
                 } else {
-                    btn.disabled = false;
-                    btn.textContent = '✓ Submit Booking Request';
+                    this.disabled = false;
+                    this.textContent = '✓ Confirm & Book';
                 }
-            });
+            }.bind(this))
+            .catch(function() {
+                crCloseConfirm();
+                const msgDiv = document.getElementById('booking-message');
+                msgDiv.className = 'booking-message show error';
+                msgDiv.textContent = 'Network error. Please try again.';
+                this.disabled = false;
+                this.textContent = '✓ Confirm & Book';
+            }.bind(this));
+    });
+
+    window.addEventListener('click', function(e) {
+        if (e.target === document.getElementById('cr-confirm-modal')) crCloseConfirm();
     });
     </script>
     <?php
     return ob_get_clean();
-    ?>
-    <div class="catalog-container" id="catalog-view">
-        <h2 style="text-align: center;">Choose City First</h2>
-        <div class="city-choice-grid">
-            <?php foreach ($city_choices as $city_key => $city_label): ?>
-                <button type="button" class="city-choice-btn" data-city="<?php echo esc_attr($city_key); ?>">
-                    <?php echo esc_html($city_label); ?>
-                </button>
-            <?php endforeach; ?>
-        </div>
-        <p id="city-helper" style="text-align:center;color:#6b7280;margin:0 0 12px;">Select a city to see available vehicles.</p>
-        <div class="catalog-grid">
-            <?php foreach ($packages as $pkg): ?>
-            <div class="car-card" data-city="<?php echo esc_attr($pkg->city ?? 'cebu'); ?>" onclick="selectCar(<?php echo $pkg->id; ?>)" style="display:none;">
-                <?php if ($pkg->photo_url): ?>
-                    <img src="<?php echo esc_url($pkg->photo_url); ?>" class="car-image" alt="<?php echo esc_attr($pkg->package_name); ?>">
-                <?php else: ?>
-                    <div class="car-image" style="display: flex; align-items: center; justify-content: center; font-size: 48px;">🚗</div>
-                <?php endif; ?>
-                <div class="car-details">
-                    <div class="car-name"><?php echo esc_html($pkg->package_name); ?></div>
-                    <div class="car-type"><?php echo esc_html($pkg->boat_type); ?> • <?php echo esc_html($vehicle_labels[$pkg->vehicle_category ?? 'car'] ?? 'Car'); ?></div>
-                    <div class="car-price">Base fee ₱<?php echo number_format($pkg->daily_rate, 2); ?></div>
-            
-                    <div class="car-info">
-                        <span><?php echo esc_html($city_choices[bntm_cr_normalize_city($pkg->city ?? 'cebu')] ?? 'Cebu'); ?></span>
-                        <span>Max person <?php echo $pkg->max_pax; ?> pax</span>
-                        <span>OT ₱<?php echo number_format($pkg->hourly_surcharge, 2); ?>/hr</span>
-                    </div>
-                    <?php if ($pkg->description): ?>
-                    <p style="margin-top: 10px; font-size: 13px; color: #6b7280;">
-                        <?php echo esc_html(substr($pkg->description, 0, 80)); ?><?php echo strlen($pkg->description) > 80 ? '...' : ''; ?>
-                    </p>
-                    <?php endif; ?>
-                </div>
-            </div>
-            <?php endforeach; ?>
-        </div>
-    </div>
-    
-    <div class="booking-form-wrapper" id="booking-form-view">
-        <div class="back-to-catalog" onclick="backToCatalog()">
-            ← Back to Catalog
-        </div>
-        
-        <h2 style="text-align: center; margin-bottom: 30px;">Complete Your Booking</h2>
-        
-        <form id="car-booking-form" class="bntm-form">
-            <input type="hidden" name="package_id" id="selected-package-id">
-            <input type="hidden" name="city" id="selected-city">
-            
-            <div id="selected-car-info" style="padding: 20px; background: #f9fafb; border-radius: 8px; margin-bottom: 20px;">
-                <!-- Selected car info will be shown here -->
-            </div>
-
-            <div class="bntm-form-row">
-                <div class="bntm-form-group">
-                    <label>Destination *</label>
-                    <select name="destination" id="destination-select" required>
-                        <option value="">Select destination</option>
-                    </select>
-                </div>
-                <div class="bntm-form-group">
-                    <label>Base Point</label>
-                    <input type="text" name="base_point" id="base-point" style="background: #f3f4f6;">
-                </div>
-            </div>
-
-            <div class="bntm-form-row">
-                <div class="bntm-form-group">
-                    <label>Distance (KM)</label>
-                    <input type="number" name="distance_km" id="distance-km" readonly style="background: #f3f4f6;">
-                    <small id="distance-source-note" style="color:#6b7280;">Uses the KM saved in your base point route table.</small>
-                </div>
-                <div class="bntm-form-group">
-                    <label>Total Hours *</label>
-                    <input type="number" name="total_hours" id="total-hours" required min="1" step="0.5" placeholder="e.g., 8">
-                </div>
-            </div>
-            
-            <div class="bntm-form-row">
-                <div class="bntm-form-group">
-                    <label>Start Date *</label>
-                    <input type="date" name="start_date" id="start-date" required min="<?php echo date('Y-m-d'); ?>">
-                </div>
-                <div class="bntm-form-group">
-                    <label>End Date *</label>
-                    <input type="date" name="end_date" id="end-date" required min="<?php echo date('Y-m-d'); ?>">
-                </div>
-            </div>
-            
-            <div class="bntm-form-group">
-                <label>Number of Days</label>
-                <input type="number" id="number-of-days" readonly style="background: #f3f4f6; font-weight: bold;">
-            </div>
-            
-            <div class="bntm-form-row">
-                <div class="bntm-form-group">
-                    <label>Full Name *</label>
-                    <input type="text" name="customer_name" required>
-                </div>
-                <div class="bntm-form-group">
-                    <label>Email *</label>
-                    <input type="email" name="customer_email" required>
-                </div>
-            </div>
-            
-            <div class="bntm-form-row">
-                <div class="bntm-form-group">
-                    <label>Phone Number *</label>
-                    <input type="tel" name="customer_phone" required>
-                </div>
-                <div class="bntm-form-group">
-                    <label>Number of Passengers *</label>
-                    <input type="number" name="number_of_pax" id="pax-input" required min="1">
-                    <small id="pax-warning" style="color: #dc2626; display: none;"></small>
-                </div>
-            </div>
-            
-            <div class="bntm-form-group">
-                <label>Additional Notes</label>
-                <textarea name="notes" rows="4" placeholder="Any special requests?"></textarea>
-            </div>
-            
-            <div style="padding: 20px; border: 2px solid var(--bntm-primary); border-radius: 8px; margin-bottom: 20px;">
-                <div class="pricing-breakdown">
-                    <span id="display-daily-rate" style="display:none;"></span>
-                    <div>
-                        <small style="color: #6b7280;">Base Fee</small>
-                        <div style="font-size: 18px; font-weight: bold;">₱<span id="display-base-fee">0.00</span></div>
-                    </div>
-                    <div>
-                        <small style="color: #6b7280;">Distance Charge</small>
-                        <div style="font-size: 18px; font-weight: bold;">₱<span id="display-distance-charge">0.00</span></div>
-                    </div>
-                    <div>
-                        <small style="color: #6b7280;">Base Rate</small>
-                        <div style="font-size: 18px; font-weight: bold;">₱<span id="display-base-rate">0.00</span></div>
-                    </div>
-                    <div>
-                        <small style="color: #6b7280;">Overtime Charge</small>
-                        <div style="font-size: 18px; font-weight: bold;">₱<span id="display-overtime-charge">0.00</span></div>
-                    </div>
-                    <div>
-                        <small style="color: #6b7280;">Number of Days</small>
-                        <div style="font-size: 18px; font-weight: bold;"><span id="display-days">0</span> days</div>
-                    </div>
-                </div>
-                <div id="pricing-note" style="font-size: 13px; color: #6b7280; margin-bottom: 10px;"></div>
-                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 15px 0;">
-                <h3 style="margin: 0; color: var(--bntm-primary);">Total Amount: <span id="total-amount">₱0.00</span></h3>
-            </div>
-            
-            <button type="submit" class="bntm-btn-primary" style="width: 100%; padding: 15px; font-size: 16px;">
-                Submit Booking Request
-            </button>
-        </form>
-        
-        <div id="booking-message" style="margin-top: 20px;"></div>
-    </div>
-    
-    <script>
-    const packages = <?php echo json_encode($packages); ?>;
-    let selectedPackage = null;
-    
-    function selectCar(packageId) {
-        selectedPackage = packages.find(p => p.id == packageId);
-        if (!selectedPackage) return;
-        
-        document.getElementById('selected-package-id').value = packageId;
-        document.getElementById('catalog-view').style.display = 'none';
-        document.getElementById('booking-form-view').style.display = 'block';
-        
-        document.getElementById('selected-car-info').innerHTML = `
-            <div style="display: flex; gap: 20px; align-items: center;">
-                ${selectedPackage.photo_url ? 
-                    `<img src="${selectedPackage.photo_url}" style="width: 150px; height: 100px; object-fit: cover; border-radius: 8px;">` :
-                    `<div style="width: 150px; height: 100px; background: #e5e7eb; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 36px;">🚗</div>`
-                }
-                <div>
-                    <h3 style="margin: 0 0 5px 0;">${selectedPackage.package_name}</h3>
-                    <p style="margin: 0; color: #6b7280;">${selectedPackage.boat_type}</p>
-                    <p style="margin: 5px 0 0 0; font-size: 20px; font-weight: bold; color: var(--bntm-primary);">
-                        ₱${parseFloat(selectedPackage.daily_rate).toLocaleString()}/day
-                    </p>
-                </div>
-            </div>
-        `;
-        
-        document.getElementById('display-daily-rate').textContent = parseFloat(selectedPackage.daily_rate).toLocaleString();
-        document.getElementById('pax-input').max = selectedPackage.max_pax;
-        calculateTotal();
-    }
-    
-    function backToCatalog() {
-        document.getElementById('catalog-view').style.display = 'block';
-        document.getElementById('booking-form-view').style.display = 'none';
-        document.getElementById('car-booking-form').reset();
-    }
-    
-    function calculateDays() {
-        const startDate = document.getElementById('start-date').value;
-        const endDate = document.getElementById('end-date').value;
-        
-        if (startDate && endDate) {
-            const start = new Date(startDate);
-            const end = new Date(endDate);
-            const diffTime = end - start;
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-            
-            if (diffDays >= 0) {
-                document.getElementById('number-of-days').value = diffDays;
-                document.getElementById('display-days').textContent = diffDays;
-                calculateTotal();
-                return diffDays;
-            }
-        }
-        return 0;
-    }
-    
-    function calculateTotal() {
-        if (!selectedPackage) return;
-        
-        const days = calculateDays();
-        const total = days * parseFloat(selectedPackage.daily_rate);
-        
-        document.getElementById('total-amount').textContent = '₱' + total.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    }
-    
-    document.getElementById('start-date').addEventListener('change', function() {
-        const endDateInput = document.getElementById('end-date');
-        endDateInput.min = this.value;
-        if (endDateInput.value && endDateInput.value < this.value) {
-            endDateInput.value = this.value;
-        }
-        calculateDays();
-    });
-    
-    document.getElementById('end-date').addEventListener('change', calculateDays);
-    
-    document.getElementById('pax-input').addEventListener('input', function() {
-        if (selectedPackage && parseInt(this.value) > selectedPackage.max_pax) {
-            document.getElementById('pax-warning').textContent = `Maximum ${selectedPackage.max_pax} passengers allowed`;
-            document.getElementById('pax-warning').style.display = 'block';
-            this.value = selectedPackage.max_pax;
-        } else {
-            document.getElementById('pax-warning').style.display = 'none';
-        }
-    });
-    
-    document.getElementById('car-booking-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        
-        const days = parseInt(document.getElementById('number-of-days').value);
-        if (days <= 0) {
-            alert('Please select valid dates');
-            return;
-        }
-        
-        const formData = new FormData(this);
-        formData.append('action', 'cr_submit_booking');
-        formData.append('nonce', '<?php echo $nonce; ?>');
-        formData.append('number_of_days', days);
-        
-        const btn = this.querySelector('button[type="submit"]');
-        btn.disabled = true;
-        btn.textContent = 'Submitting...';
-        
-        fetch(ajaxurl, {method: 'POST', body: formData})
-        .then(r => r.json())
-        .then(json => {
-            const msgDiv = document.getElementById('booking-message');
-            msgDiv.innerHTML = '<div style="padding: 15px; border-radius: 8px; ' + 
-                (json.success ? 'background: #d1fae5; border: 1px solid #059669; color: #065f46;' : 
-                                'background: #fee2e2; border: 1px solid #dc2626; color: #991b1b;') + 
-                '">' + json.data.message + '</div>';
-        
-            if (json.success) {
-                setTimeout(() => location.reload(), 3000);
-            } else {
-                btn.disabled = false;
-                btn.textContent = 'Submit Booking Request';
-            }
-        });
-    });
-    </script>
-    <script>
-    const crCityChoices = <?php echo wp_json_encode($city_choices); ?>;
-    const crRoutes = <?php echo wp_json_encode($routes); ?>;
-    const crPricingRules = <?php echo wp_json_encode($pricing_rules); ?>;
-    const crVehicleLabels = <?php echo wp_json_encode($vehicle_labels); ?>;
-    const crDefaultCategory = <?php echo wp_json_encode(bntm_cr_get_default_vehicle_category_slug()); ?>;
-    let crSelectedCity = 'cebu';
-
-    function crRenderCatalog(city) {
-        crSelectedCity = city;
-        const cityInput = document.getElementById('selected-city');
-        if (cityInput) cityInput.value = city;
-
-        document.querySelectorAll('.city-choice-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.city === city);
-        });
-
-        let visible = 0;
-        document.querySelectorAll('.car-card').forEach(card => {
-            const show = card.dataset.city === city;
-            card.style.display = show ? 'block' : 'none';
-            if (show) visible += 1;
-        });
-
-        const helper = document.getElementById('city-helper');
-        if (helper) {
-            helper.textContent = visible
-                ? `Showing ${visible} vehicle(s) in ${crCityChoices[city] || city.toUpperCase()}.`
-                : `No vehicles found in ${crCityChoices[city] || city.toUpperCase()}.`;
-        }
-    }
-
-    function crPopulateDestinations(city) {
-        const select = document.getElementById('destination-select');
-        if (!select) return;
-
-        select.innerHTML = '<option value="">Select destination</option>';
-        crRoutes.filter(route => route.city === city).forEach(route => {
-            const option = document.createElement('option');
-            option.value = route.destination;
-            option.textContent = `${route.base_point} -> ${route.destination} (${route.distance_km} KM)`;
-            option.dataset.basePoint = route.base_point;
-            option.dataset.distance = route.distance_km;
-            option.dataset.fixedCar = route.fixed_rates?.car || 0;
-            option.dataset.fixedVan = route.fixed_rates?.van_innova || 0;
-            option.dataset.fixedSuv = route.fixed_rates?.suv_grandia || 0;
-            select.appendChild(option);
-        });
-        crHandleDestinationChange();
-    }
-
-    function crHandleDestinationChange() {
-        const select = document.getElementById('destination-select');
-        const option = select?.options?.[select.selectedIndex];
-        document.getElementById('base-point').value = option?.dataset?.basePoint || '';
-        document.getElementById('distance-km').value = option?.dataset?.distance || '';
-        document.getElementById('distance-source-note').textContent = 'Uses the KM saved in your base point route table.';
-        calculateTotal();
-    }
-
-    function crGetPricing() {
-        if (!selectedPackage) return null;
-
-        const category = selectedPackage.vehicle_category || crDefaultCategory;
-        const rule = crPricingRules[category] || crPricingRules[crDefaultCategory];
-        const option = document.getElementById('destination-select')?.options?.[document.getElementById('destination-select').selectedIndex];
-        const distanceKm = parseFloat(option?.dataset?.distance || 0);
-        const totalHours = parseFloat(document.getElementById('total-hours')?.value || 0);
-        const baseFee = parseFloat(rule.base_fee || 0);
-        const ratePerKm = parseFloat(rule.rate_per_km || 0);
-        const overtimeRate = parseFloat(rule.overtime_rate || 0);
-        const distanceCharge = distanceKm * ratePerKm;
-        const overtimeCharge = Math.max(0, totalHours - 10) * overtimeRate;
-        const fixedRates = {
-            car: parseFloat(option?.dataset?.fixedCar || 0),
-            van_innova: parseFloat(option?.dataset?.fixedVan || 0),
-            suv_grandia: parseFloat(option?.dataset?.fixedSuv || 0),
-        };
-
-        let baseRate = baseFee + distanceCharge;
-        let pricingType = 'formula';
-        if (fixedRates[category] > 0) {
-            baseRate = fixedRates[category];
-            pricingType = 'fixed';
-        }
-
-        return { category, baseFee, ratePerKm, overtimeRate, distanceKm, distanceCharge, baseRate, overtimeCharge, total: baseRate + overtimeCharge, pricingType };
-    }
-
-    backToCatalog = function() {
-        document.getElementById('catalog-view').style.display = 'block';
-        document.getElementById('booking-form-view').style.display = 'none';
-        document.getElementById('car-booking-form').reset();
-        document.getElementById('base-point').value = '';
-        document.getElementById('distance-km').value = '';
-        document.getElementById('pricing-note').textContent = '';
-    };
-
-    calculateDays = function() {
-        const startDate = document.getElementById('start-date').value;
-        const endDate = document.getElementById('end-date').value;
-
-        if (startDate && endDate) {
-            const start = new Date(startDate);
-            const end = new Date(endDate);
-            const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1;
-            if (diffDays > 0) {
-                document.getElementById('number-of-days').value = diffDays;
-                document.getElementById('display-days').textContent = diffDays;
-                return diffDays;
-            }
-        }
-
-        document.getElementById('number-of-days').value = '';
-        document.getElementById('display-days').textContent = '0';
-        return 0;
-    };
-
-    calculateTotal = function() {
-        if (!selectedPackage) return;
-
-        calculateDays();
-        const pricing = crGetPricing();
-        if (!pricing) return;
-
-        document.getElementById('display-base-fee').textContent = pricing.baseFee.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        document.getElementById('display-distance-charge').textContent = pricing.distanceCharge.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        document.getElementById('display-base-rate').textContent = pricing.baseRate.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        document.getElementById('display-overtime-charge').textContent = pricing.overtimeCharge.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-        document.getElementById('pricing-note').textContent = pricing.pricingType === 'fixed'
-            ? `Fixed destination rate applied for ${crVehicleLabels[pricing.category] || pricing.category}. Overtime starts after 10 hours.`
-            : `Base rate = base fee + (${pricing.distanceKm} KM × ₱${pricing.ratePerKm}/KM). Overtime starts after 10 hours at ₱${pricing.overtimeRate}/hr.`;
-        document.getElementById('total-amount').textContent = '₱' + pricing.total.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    };
-
-    selectCar = function(packageId) {
-        selectedPackage = packages.find(p => p.id == packageId);
-        if (!selectedPackage) return;
-
-        crSelectedCity = selectedPackage.city || crSelectedCity || 'cebu';
-        document.getElementById('selected-package-id').value = packageId;
-        document.getElementById('selected-city').value = crSelectedCity;
-        document.getElementById('catalog-view').style.display = 'none';
-        document.getElementById('booking-form-view').style.display = 'block';
-        crPopulateDestinations(crSelectedCity);
-
-        document.getElementById('selected-car-info').innerHTML = `
-            <div style="display: flex; gap: 20px; align-items: center;">
-                ${selectedPackage.photo_url
-                    ? `<img src="${selectedPackage.photo_url}" style="width: 150px; height: 100px; object-fit: cover; border-radius: 8px;">`
-                    : `<div style="width: 150px; height: 100px; background: #e5e7eb; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 36px;">Car</div>`}
-                <div>
-                    <h3 style="margin: 0 0 5px 0;">${selectedPackage.package_name}</h3>
-                    <p style="margin: 0; color: #6b7280;">${selectedPackage.boat_type} • ${crVehicleLabels[selectedPackage.vehicle_category] || 'Car'} • ${crCityChoices[crSelectedCity] || crSelectedCity}</p>
-                    <p style="margin: 5px 0 0 0; font-size: 20px; font-weight: bold; color: var(--bntm-primary);">
-                        Base fee ₱${parseFloat(selectedPackage.daily_rate).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
-                    </p>
-                </div>
-            </div>
-        `;
-
-        document.getElementById('pax-input').max = selectedPackage.max_pax;
-        calculateTotal();
-    };
-
-    document.getElementById('destination-select')?.addEventListener('change', crHandleDestinationChange);
-    document.getElementById('total-hours')?.addEventListener('input', calculateTotal);
-
-    document.querySelectorAll('.city-choice-btn').forEach(btn => {
-        btn.addEventListener('click', function() {
-            crRenderCatalog(this.dataset.city);
-        });
-    });
-
 }
 function bntm_shortcode_cr_invoice() {
     $booking_id = isset($_GET['id']) ? sanitize_text_field($_GET['id']) : '';
@@ -5311,6 +5000,7 @@ function bntm_shortcode_cr_invoice() {
     <?php
     return ob_get_clean();
 }
+
 // ============================================================================
 // AJAX HANDLERS
 // ============================================================================
