@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * Module Name: WESM/EIMOP Trading Dashboard
  * Module Slug: weimop
@@ -70,11 +70,24 @@ function bntm_weimop_conf_dir() {
 function bntm_weimop_sqlite_schema() {
     return [
         'RTDSchedules' => "CREATE TABLE IF NOT EXISTS RTDSchedules (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            TIME_INTERVAL TEXT NOT NULL UNIQUE,
-            SCHEDULE REAL DEFAULT 0, LMP REAL DEFAULT 0,
-            PRICE_NODE TEXT DEFAULT '', UNIT_ID TEXT DEFAULT '', MARKET_RUN TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
+            TIME_INTERVAL DATE UNIQUE,
+            RESOURCE_NAME TEXT,
+            SCHEDULE TEXT,
+            LMP TEXT,
+            LOSS_FACTOR TEXT,
+            LMP_ENERGY TEXT,
+            LMP_LOSS TEXT,
+            LMP_CONGESTION TEXT
+        );",
+        'HAPSchedules' => "CREATE TABLE IF NOT EXISTS HAPSchedules (
+            TIME_INTERVAL DATE UNIQUE,
+            RESOURCE_NAME TEXT,
+            SCHEDULE TEXT,
+            LMP TEXT,
+            LOSS_FACTOR TEXT,
+            LMP_ENERGY TEXT,
+            LMP_LOSS TEXT,
+            LMP_CONGESTION TEXT
         );",
         'HAPResults' => "CREATE TABLE IF NOT EXISTS HAPResults (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,11 +102,17 @@ function bntm_weimop_sqlite_schema() {
             created_at TEXT DEFAULT (datetime('now'))
         );",
         'OCCResourcesComplianceDetail' => "CREATE TABLE IF NOT EXISTS OCCResourcesComplianceDetail (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            TIME_INTERVAL TEXT NOT NULL UNIQUE,
-            OFFERED_CAP REAL DEFAULT 0, SCHEDULED_CAP REAL DEFAULT 0,
-            UNIT_ID TEXT DEFAULT '', REGION TEXT DEFAULT '',
-            created_at TEXT DEFAULT (datetime('now'))
+            TIME_INTERVAL TEXT UNIQUE,
+            RESOURCE_NAME TEXT,
+            REGISTERED_CAP INTEGER,
+            OFFERED_CAP INTEGER,
+            NON_COMPLIANCE_FLAG TEXT,
+            NON_COMPLIANCE_COUNT INTEGER,
+            PROBABLE_BREACH TEXT,
+            PREVIOUS_VIOLATION TEXT,
+            OCC_ENABLED TEXT,
+            COMPLIANCE_EXEMPT TEXT,
+            EMAIL_SENT INTEGER DEFAULT 0
         );",
         'ExtractorLog' => "CREATE TABLE IF NOT EXISTS ExtractorLog (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,8 +251,11 @@ add_action( 'wp_ajax_weimop_upload_export_conf',  'bntm_ajax_weimop_upload_expor
 add_action( 'wp_ajax_weimop_fetch_historical',    'bntm_ajax_weimop_fetch_historical'    );
 add_action( 'wp_ajax_weimop_diag',               'bntm_ajax_weimop_diag'               );
 add_action( 'wp_ajax_weimop_fetch_market_data',  'bntm_ajax_weimop_fetch_market_data'  );
-add_action( 'wp_ajax_weimop_get_md_chart',       'bntm_ajax_weimop_get_md_chart'       );
-add_action( 'wp_ajax_weimop_import_all_files',   'bntm_ajax_weimop_import_all_files'   );
+add_action( 'wp_ajax_weimop_get_md_chart',          'bntm_ajax_weimop_get_md_chart'          );
+add_action( 'wp_ajax_weimop_get_md_regions',        'bntm_ajax_weimop_get_md_regions'        );
+add_action( 'wp_ajax_weimop_get_md_resources',      'bntm_ajax_weimop_get_md_resources'      );
+add_action( 'wp_ajax_weimop_import_all_files',      'bntm_ajax_weimop_import_all_files'      );
+add_action( 'wp_ajax_weimop_get_trading_series',    'bntm_ajax_weimop_get_trading_series'    );
 add_action( 'weimop_md_auto_fetch_cron',         'bntm_weimop_md_cron_run'             );
 add_filter( 'cron_schedules',                    function( $s ) {
     if ( ! isset( $s['weimop_hourly'] ) ) {
@@ -377,12 +399,432 @@ function weimop_tab_overview() { ob_start(); ?>
    H. TAB -- TRADING / SUGGESTIONS
 ------------------------------------------------------- */
 
-function weimop_tab_trading() { ob_start(); ?>
-    <div class="weimop-card">
-        <div class="weimop-card__header"><h3 class="weimop-card__title">Trading Workspace</h3></div>
-        <p>Order blotter, position management, PnL and settlement preview &mdash; scheduled for next release.</p>
+function weimop_tab_trading() {
+    ob_start();
+    $db       = bntm_weimop_open_db( true );
+    $datasets = bntm_weimop_md_datasets();
+    $date_ranges = [];
+    $regions_by_ds   = [];
+    $resources_by_ds  = [];
+    if ( $db ) {
+        foreach ( $datasets as $key => $ds ) {
+            $r = $db->querySingle( "SELECT MIN(file_date) AS min_d, MAX(file_date) AS max_d FROM {$ds['table']}", true );
+            if ( is_array( $r ) && ! empty( $r['max_d'] ) ) $date_ranges[ $key ] = $r;
+            // Collect distinct regions where applicable
+            $region_col = null;
+            if ( in_array( $key, [ 'mcp', 'regional', 'reserve_mcp', 'reserve_sched' ], true ) ) $region_col = 'region';
+            if ( $region_col ) {
+                try {
+                    $rres = $db->query( "SELECT DISTINCT {$region_col} FROM {$ds['table']} WHERE {$region_col} IS NOT NULL AND {$region_col} != '' ORDER BY {$region_col} ASC" );
+                    while ( $row = $rres->fetchArray( SQLITE3_NUM ) ) {
+                        if ( ! empty( $row[0] ) ) $regions_by_ds[ $key ][] = $row[0];
+                    }
+                } catch ( Exception $e ) {}
+            }
+            // Collect distinct resources where applicable
+            $resource_col = null;
+            if ( in_array( $key, [ 'mcp', 'reserve_mcp', 'reserve_sched' ], true ) ) $resource_col = 'resource_name';
+            elseif ( $key === 'congestion' ) $resource_col = 'equipment_name';
+            if ( $resource_col ) {
+                try {
+                    $rres2 = $db->query( "SELECT DISTINCT {$resource_col} FROM {$ds['table']} WHERE {$resource_col} IS NOT NULL AND {$resource_col} != '' ORDER BY {$resource_col} ASC" );
+                    while ( $row = $rres2->fetchArray( SQLITE3_NUM ) ) {
+                        if ( ! empty( $row[0] ) ) $resources_by_ds[ $key ][] = $row[0];
+                    }
+                } catch ( Exception $e ) {}
+            }
+        }
+        $db->close();
+    }
+    // Merge all regions for a global region filter
+    $all_regions = [];
+    foreach ( $regions_by_ds as $rlist ) {
+        foreach ( $rlist as $rg ) {
+            if ( ! in_array( $rg, $all_regions ) ) $all_regions[] = $rg;
+        }
+    }
+    sort( $all_regions );
+    // Merge all resources for a global resource filter
+    $all_resources = [];
+    foreach ( $resources_by_ds as $rlist ) {
+        foreach ( $rlist as $rs ) {
+            if ( ! in_array( $rs, $all_resources ) ) $all_resources[] = $rs;
+        }
+    }
+    sort( $all_resources );
+
+    $all_max = '';
+    foreach ( $date_ranges as $dr ) {
+        if ( ! $all_max || $dr['max_d'] > $all_max ) $all_max = $dr['max_d'];
+    }
+    $fmt_html = function( $d ) {
+        return strlen( $d ) === 8 ? substr( $d, 0, 4 ) . '-' . substr( $d, 4, 2 ) . '-' . substr( $d, 6, 2 ) : $d;
+    };
+    $def = $all_max ? $fmt_html( $all_max ) : date( 'Y-m-d' );
+
+    $chart_configs = [
+        'mcp'          => [ 'title' => 'RTD Market Clearing Price',   'subtitle' => 'Marginal Price per Resource &middot; PHP/MWh',          'color' => '#2962ff' ],
+        'regional'     => [ 'title' => 'RTD Regional Summaries',      'subtitle' => 'Generation by Region &middot; MW',                      'color' => '#00b746' ],
+        'reserve_mcp'  => [ 'title' => 'RTD Reserve MCP',             'subtitle' => 'Reserve Marginal Price per Resource &middot; PHP/MWh',  'color' => '#7b1fa2' ],
+        'congestion'   => [ 'title' => 'Congestions in RTD',          'subtitle' => 'MW Flow per Equipment',                                 'color' => '#ef5350' ],
+        'reserve_sched'=> [ 'title' => 'RTD Reserve Schedules',       'subtitle' => 'Schedule Price per Resource &middot; PHP/MWh',          'color' => '#ff6d00' ],
+    ];
+    ?>
+    <div class="weimop-tv-wrap">
+
+        <!-- Toolbar -->
+        <div class="weimop-tv-toolbar">
+            <span style="font-size:13px;font-weight:700;color:#d1d4dc;letter-spacing:.3px;white-space:nowrap;">RTD Trading</span>
+            <label class="weimop-tv-toolbar-label">From
+                <input type="date" id="weimop-tg-from" class="weimop-tv-input" value="<?php echo esc_attr( $def ); ?>">
+            </label>
+            <label class="weimop-tv-toolbar-label">To
+                <input type="date" id="weimop-tg-to" class="weimop-tv-input" value="<?php echo esc_attr( $def ); ?>">
+            </label>
+            <label class="weimop-tv-toolbar-label">Region
+                <select id="weimop-tg-region" class="weimop-tv-select">
+                    <option value="">All Regions</option>
+                    <?php foreach ( $all_regions as $rg ): ?>
+                    <option value="<?php echo esc_attr( $rg ); ?>"><?php echo esc_html( $rg ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label class="weimop-tv-toolbar-label">Resource
+                <select id="weimop-tg-resource" class="weimop-tv-select" style="min-width:160px;">
+                    <option value="">All Resources</option>
+                    <?php foreach ( $all_resources as $rs ): ?>
+                    <option value="<?php echo esc_attr( $rs ); ?>"><?php echo esc_html( $rs ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <button id="weimop-tg-load" class="weimop-tv-btn">Load Charts</button>
+            <span id="weimop-tg-status" style="font-size:11px;color:#787b86;"></span>
+        </div>
+
+        <!-- RTD Schedule vs LMP panel (NMMS live data) -->
+        <div class="weimop-tv-panel" id="weimop-tv-panel-rtdsched">
+            <div class="weimop-tv-panel-header">
+                <span class="weimop-tv-panel-title" style="border-left:3px solid #f48024;padding-left:8px;">RTD Schedule vs LMP</span>
+                <span class="weimop-tv-panel-sub">NMMS MPI &middot; Schedule MW (left) / LMP PHP per MWh (right)</span>
+                <div class="weimop-tv-panel-stats" id="weimop-tg-stats-rtdsched">
+                    <span class="weimop-tv-stat"><span class="weimop-tv-stat-lbl">Pts</span><span class="weimop-tv-stat-val" data-k="count">—</span></span>
+                </div>
+            </div>
+            <div class="weimop-tv-chart" id="weimop-tg-chart-rtdsched">
+                <div class="weimop-tv-placeholder" id="weimop-tg-ph-rtdsched"><p>Loading RTD Schedule data…</p></div>
+                <div class="weimop-tv-tooltip" id="weimop-tg-tt-rtdsched" style="display:none;pointer-events:none;"></div>
+            </div>
+            <div id="weimop-tg-legend-rtdsched" class="weimop-tv-legend"></div>
+        </div>
+
+        <!-- 5 IEMOP panels -->
+        <?php foreach ( $chart_configs as $key => $cfg ):
+            $dr     = $date_ranges[ $key ] ?? null;
+            $latest = $dr ? date( 'M d, Y', strtotime( $fmt_html( $dr['max_d'] ) ) ) : null;
+        ?>
+        <div class="weimop-tv-panel" id="weimop-tv-panel-<?php echo esc_attr( $key ); ?>">
+            <div class="weimop-tv-panel-header">
+                <span class="weimop-tv-panel-title" style="border-left:3px solid <?php echo esc_attr( $cfg['color'] ); ?>;padding-left:8px;"><?php echo esc_html( $cfg['title'] ); ?></span>
+                <span class="weimop-tv-panel-sub"><?php echo $cfg['subtitle']; ?></span>
+                <?php if ( $latest ): ?>
+                <span class="weimop-tv-badge" style="color:<?php echo esc_attr( $cfg['color'] ); ?>;border-color:<?php echo esc_attr( $cfg['color'] ); ?>44;">Latest: <?php echo esc_html( $latest ); ?></span>
+                <?php endif; ?>
+                <div class="weimop-tv-panel-stats" id="weimop-tg-stats-<?php echo esc_attr( $key ); ?>">
+                    <span class="weimop-tv-stat"><span class="weimop-tv-stat-lbl">Min</span><span class="weimop-tv-stat-val" data-k="min">—</span></span>
+                    <span class="weimop-tv-stat"><span class="weimop-tv-stat-lbl">Max</span><span class="weimop-tv-stat-val" data-k="max">—</span></span>
+                    <span class="weimop-tv-stat"><span class="weimop-tv-stat-lbl">Avg</span><span class="weimop-tv-stat-val" data-k="avg">—</span></span>
+                    <span class="weimop-tv-stat"><span class="weimop-tv-stat-lbl">Pts</span><span class="weimop-tv-stat-val" data-k="count">—</span></span>
+                </div>
+            </div>
+            <div class="weimop-tv-chart" id="weimop-tg-chart-<?php echo esc_attr( $key ); ?>">
+                <div class="weimop-tv-placeholder" id="weimop-tg-ph-<?php echo esc_attr( $key ); ?>">
+                    <p><?php echo $dr ? 'Click "Load Charts" to view data.' : 'No data yet — fetch via Market Data tab.'; ?></p>
+                </div>
+                <div class="weimop-tv-tooltip" id="weimop-tg-tt-<?php echo esc_attr( $key ); ?>" style="display:none;pointer-events:none;"></div>
+            </div>
+            <div id="weimop-tg-legend-<?php echo esc_attr( $key ); ?>" class="weimop-tv-legend"></div>
+        </div>
+        <?php endforeach; ?>
     </div>
-<?php return ob_get_clean(); }
+
+    <script>
+    (function(){
+        var cfgEl = document.getElementById('weimop-config-data');
+        var CFG   = cfgEl ? JSON.parse(cfgEl.textContent || cfgEl.innerHTML) : {};
+        var AJAX  = CFG.ajaxurl || '';
+        var NONCE = CFG.nonce   || '';
+
+        function tgPost(data) {
+            var fd = new FormData();
+            fd.append('nonce', NONCE);
+            Object.keys(data).forEach(function(k){ fd.append(k, data[k]); });
+            return fetch(AJAX, { method:'POST', body:fd }).then(function(r){ return r.json(); });
+        }
+
+        var TV_BG   = '#131722';
+        var TV_GRID = '#1e2230';
+        var TV_TEXT = '#d1d4dc';
+        var TV_MUTED = '#787b86';
+        var TV_BORDER = '#2a2e39';
+
+        var KEYS    = ['mcp','regional','reserve_mcp','congestion','reserve_sched'];
+        var PALETTE = ['#2962ff','#00b746','#ab47bc','#ef5350','#ff6d00','#00bcd4','#fdd835','#5c6bc0','#ec407a','#26a69a'];
+        var charts  = {};
+
+        function makeTvChart(id, opts) {
+            if (!window.LightweightCharts) return null;
+            var el = document.getElementById(id);
+            if (!el) return null;
+            var defaults = {
+                layout:{ textColor:TV_TEXT, background:{ type:'solid', color:TV_BG } },
+                rightPriceScale:{ borderColor:TV_BORDER },
+                leftPriceScale:{ visible: false, borderColor:TV_BORDER },
+                timeScale:{ borderColor:TV_BORDER, timeVisible:true, secondsVisible:false },
+                grid:{ vertLines:{ color:TV_GRID }, horzLines:{ color:TV_GRID } },
+                crosshair:{ mode:LightweightCharts.CrosshairMode.Normal },
+                handleScroll:true, handleScale:true, height:300,
+            };
+            if (opts) Object.assign(defaults, opts);
+            return LightweightCharts.createChart(el, defaults);
+        }
+
+        // Init chart objects for the 5 IEMOP panels
+        KEYS.forEach(function(key){
+            var el = document.getElementById('weimop-tg-chart-' + key);
+            if (el && window.LightweightCharts) {
+                charts[key] = { chart: makeTvChart('weimop-tg-chart-' + key), series: [] };
+            }
+        });
+
+        // RTD Schedule vs LMP dual-axis chart
+        var rtdChart = null;
+        var rtdSchedEl = document.getElementById('weimop-tg-chart-rtdsched');
+        if (rtdSchedEl && window.LightweightCharts) {
+            rtdChart = makeTvChart('weimop-tg-chart-rtdsched', {
+                leftPriceScale:{ visible: true, borderColor:TV_BORDER },
+                rightPriceScale:{ borderColor:TV_BORDER },
+            });
+            charts['rtdsched'] = { chart: rtdChart, series: [] };
+            loadRtdSched();
+        } else {
+            var ph = document.getElementById('weimop-tg-ph-rtdsched');
+            if (ph) ph.querySelector('p').textContent = 'LightweightCharts not loaded.';
+        }
+
+        window.addEventListener('resize', function(){
+            var allKeys = KEYS.concat(['rtdsched']);
+            allKeys.forEach(function(key){
+                var c = charts[key];
+                var el = document.getElementById('weimop-tg-chart-' + key);
+                if (c && c.chart && el) c.chart.applyOptions({ width: el.clientWidth });
+            });
+        });
+
+        function dateToFd(d){ return d ? d.replace(/-/g,'') : ''; }
+        function fmtNum(v){ return parseFloat(v).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+
+        function setTooltip(key, chart, seriesList, seriesLabels) {
+            chart.subscribeCrosshairMove(function(param){
+                var tt = document.getElementById('weimop-tg-tt-' + key);
+                if (!tt) return;
+                if (!param.point || !param.time) { tt.style.display = 'none'; return; }
+                var t = param.time;
+                var tStr = typeof t === 'number'
+                    ? new Date(t * 1000).toLocaleString('en-PH',{month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'})
+                    : String(t);
+                var html = '<div style="font-size:11px;font-weight:700;color:#d1d4dc;margin-bottom:4px;">' + tStr + '</div>';
+                seriesList.forEach(function(s, i){
+                    var v = param.seriesData && param.seriesData.get ? param.seriesData.get(s) : null;
+                    if (v && v.value !== undefined) {
+                        var color = PALETTE[i % PALETTE.length];
+                        html += '<div style="display:flex;align-items:center;gap:6px;font-size:11px;"><span style="width:8px;height:8px;border-radius:50%;background:' + color + ';flex-shrink:0;display:inline-block;"></span><span style="color:#787b86;">' + (seriesLabels[i] || '') + '</span><span style="color:#d1d4dc;font-variant-numeric:tabular-nums;margin-left:auto;padding-left:12px;">' + fmtNum(v.value) + '</span></div>';
+                    }
+                });
+                tt.innerHTML = html;
+                var x = param.point ? param.point.x : 0;
+                var y = param.point ? param.point.y : 0;
+                var container = document.getElementById('weimop-tg-chart-' + key);
+                var cw = container ? container.clientWidth : 400;
+                var ch = container ? container.clientHeight : 300;
+                var tw = 200, th = 80;
+                var left = x + 14;
+                var top  = y - 10;
+                if (left + tw > cw) left = x - tw - 14;
+                if (top + th  > ch) top  = ch - th - 10;
+                tt.style.left    = left + 'px';
+                tt.style.top     = top  + 'px';
+                tt.style.display = 'block';
+            });
+        }
+
+        function loadRtdSched() {
+            var ph = document.getElementById('weimop-tg-ph-rtdsched');
+            tgPost({ action:'weimop_get_chart_series' }).then(function(j){
+                if (!j.success || !j.data) {
+                    if (ph) { ph.querySelector('p').textContent = 'No RTD schedule data.'; ph.style.display = 'flex'; }
+                    return;
+                }
+                var d = j.data;
+                var rtdPts = d.rtd || [];
+                var lmpPts = d.lmp || [];
+                if (!rtdPts.length && !lmpPts.length) {
+                    if (ph) { ph.querySelector('p').textContent = 'No RTD data yet — fetch via Settings.'; ph.style.display = 'flex'; }
+                    return;
+                }
+                if (ph) ph.style.display = 'none';
+
+                var c = charts['rtdsched'];
+                c.series.forEach(function(s){ try{ c.chart.removeSeries(s); }catch(e){} });
+                c.series = [];
+
+                var schedSeries = c.chart.addLineSeries({
+                    color: '#f48024', lineWidth: 2,
+                    priceScaleId: 'left',
+                    title: 'Schedule MW',
+                    lastValueVisible: true, priceLineVisible: false,
+                });
+                var lmpSeries = c.chart.addAreaSeries({
+                    lineColor: '#2962ff', topColor: 'rgba(41,98,255,0.28)', bottomColor: 'rgba(41,98,255,0.02)',
+                    lineWidth: 2,
+                    priceScaleId: 'right',
+                    title: 'LMP',
+                    lastValueVisible: true, priceLineVisible: false,
+                });
+
+                schedSeries.setData(rtdPts.filter(function(p){ return p.time && !isNaN(p.value); }).map(function(p){ return { time:p.time, value:p.value }; }));
+                lmpSeries.setData(lmpPts.filter(function(p){ return p.time && !isNaN(p.value); }).map(function(p){ return { time:p.time, value:p.value }; }));
+
+                c.series = [schedSeries, lmpSeries];
+                c.chart.timeScale().fitContent();
+
+                var legend = document.getElementById('weimop-tg-legend-rtdsched');
+                if (legend) legend.innerHTML = '<span class="weimop-tv-legend-item"><span class="weimop-tv-legend-dot" style="background:#f48024"></span>Schedule MW</span><span class="weimop-tv-legend-item"><span class="weimop-tv-legend-dot" style="background:#2962ff"></span>LMP PHP/MWh</span>';
+
+                var stats = document.getElementById('weimop-tg-stats-rtdsched');
+                if (stats) stats.querySelector('[data-k="count"]').textContent = (rtdPts.length).toLocaleString();
+
+                setTooltip('rtdsched', c.chart, c.series, ['Schedule MW', 'LMP PHP/MWh']);
+            }).catch(function(e){
+                if (ph) { ph.querySelector('p').textContent = 'Failed: ' + e.message; ph.style.display = 'flex'; }
+            });
+        }
+
+        function loadDataset(key, fd_from, fd_to, region, resource) {
+            var ph     = document.getElementById('weimop-tg-ph-' + key);
+            var stats  = document.getElementById('weimop-tg-stats-' + key);
+            var legend = document.getElementById('weimop-tg-legend-' + key);
+            if (ph) { ph.querySelector('p').textContent = 'Loading…'; ph.style.display = 'flex'; }
+            if (legend) legend.innerHTML = '';
+
+            var postData = { action:'weimop_get_trading_series', dataset:key, date_from:fd_from, date_to:fd_to };
+            if (region)   postData.region   = region;
+            if (resource) postData.resource = resource;
+
+            tgPost(postData).then(function(j){
+                if (!j.success || !j.data) {
+                    if (ph) { ph.querySelector('p').textContent = 'Error: ' + ((j.data && j.data.message) ? j.data.message : 'Unknown'); ph.style.display = 'flex'; }
+                    return;
+                }
+                var d = j.data;
+                var seriesObj = d.series || {};
+                var seriesKeys = Object.keys(seriesObj);
+
+                if (!seriesKeys.length || !d.count) {
+                    if (ph) { ph.querySelector('p').textContent = 'No data for selected range.'; ph.style.display = 'flex'; }
+                    return;
+                }
+                if (ph) ph.style.display = 'none';
+
+                var c = charts[key];
+                if (c) {
+                    c.series.forEach(function(s){ try{ c.chart.removeSeries(s); }catch(e){} });
+                    c.series = [];
+                }
+
+                var allVals = [];
+                var legendHtml = '';
+                var colorIdx = 0;
+                var seriesLabels = [];
+
+                seriesKeys.slice(0, 10).forEach(function(sk){
+                    var pts = seriesObj[sk];
+                    if (!pts || !pts.length) return;
+                    var color = PALETTE[colorIdx++ % PALETTE.length];
+                    var isSingle = seriesKeys.length === 1;
+                    var ls;
+                    if (isSingle) {
+                        ls = c.chart.addAreaSeries({
+                            lineColor: color,
+                            topColor: color.replace(/^#/, 'rgba(').replace(/(..)(..)(..)$/, function(_, r, g, b){
+                                return parseInt(r,16)+','+parseInt(g,16)+','+parseInt(b,16)+',0.28)';
+                            }),
+                            bottomColor: color.replace(/^#/, 'rgba(').replace(/(..)(..)(..)$/, function(_, r, g, b){
+                                return parseInt(r,16)+','+parseInt(g,16)+','+parseInt(b,16)+',0.02)';
+                            }),
+                            lineWidth: 2,
+                            lastValueVisible: true, priceLineVisible: false,
+                        });
+                    } else {
+                        ls = c.chart.addLineSeries({
+                            color: color,
+                            lineWidth: seriesKeys.length > 5 ? 1 : 2,
+                            lastValueVisible: false,
+                            priceLineVisible: false,
+                        });
+                    }
+                    var lwData = pts.filter(function(p){ return p.time && !isNaN(p.value); })
+                                    .map(function(p){ return { time:p.time, value:p.value }; });
+                    ls.setData(lwData);
+                    c.series.push(ls);
+                    seriesLabels.push(sk);
+                    pts.forEach(function(p){ if (!isNaN(p.value)) allVals.push(p.value); });
+                    legendHtml += '<span class="weimop-tv-legend-item"><span class="weimop-tv-legend-dot" style="background:' + color + '"></span>' + sk + '</span>';
+                });
+
+                c.chart.timeScale().fitContent();
+                if (legend) legend.innerHTML = legendHtml;
+
+                if (allVals.length && stats) {
+                    var mn  = Math.min.apply(null, allVals);
+                    var mx  = Math.max.apply(null, allVals);
+                    var avg = allVals.reduce(function(a,b){ return a+b; }, 0) / allVals.length;
+                    var minEl  = stats.querySelector('[data-k="min"]');
+                    var maxEl  = stats.querySelector('[data-k="max"]');
+                    var avgEl  = stats.querySelector('[data-k="avg"]');
+                    var cntEl  = stats.querySelector('[data-k="count"]');
+                    if (minEl) minEl.textContent  = fmtNum(mn);
+                    if (maxEl) maxEl.textContent  = fmtNum(mx);
+                    if (avgEl) avgEl.textContent  = fmtNum(avg);
+                    if (cntEl) cntEl.textContent  = d.count.toLocaleString();
+                }
+
+                setTooltip(key, c.chart, c.series, seriesLabels);
+            }).catch(function(e){
+                if (ph) { ph.querySelector('p').textContent = 'Request failed: ' + e.message; ph.style.display = 'flex'; }
+            });
+        }
+
+        var loadBtn = document.getElementById('weimop-tg-load');
+        if (loadBtn) {
+            loadBtn.addEventListener('click', function(){
+                var fromVal  = document.getElementById('weimop-tg-from').value;
+                var toVal    = document.getElementById('weimop-tg-to').value;
+                var region   = document.getElementById('weimop-tg-region')   ? document.getElementById('weimop-tg-region').value   : '';
+                var resource = document.getElementById('weimop-tg-resource') ? document.getElementById('weimop-tg-resource').value : '';
+                var fd_from  = dateToFd(fromVal);
+                var fd_to    = dateToFd(toVal);
+                var status   = document.getElementById('weimop-tg-status');
+                if (!fd_from || !fd_to) { status.textContent = 'Select a date range first.'; return; }
+                status.textContent = 'Loading…';
+                KEYS.forEach(function(key){ loadDataset(key, fd_from, fd_to, region, resource); });
+                setTimeout(function(){ status.textContent = ''; }, 3000);
+            });
+        }
+    })();
+    </script>
+    <?php
+    return ob_get_clean();
+}
 
 function weimop_tab_suggestions() { ob_start(); ?>
     <div class="weimop-card">
@@ -639,7 +1081,7 @@ function weimop_tab_settings( $uid, $s ) {
                         else echo '<span class="weimop-field-flag weimop-field-flag--warn">Upload above to set</span>'; ?>
                     </label>
                     <input type="text" class="weimop-input" name="nmms_cert_path" id="weimop-cert-path"
-                           value="<?php echo esc_attr($s['nmms_cert_path']); ?>" placeholder="Auto-filled on certificate upload">
+                           value="<?php echo esc_attr($s['nmms_cert_path']); ?>" placeholder="Auto-filled on certificate upload" readonly>
                 </div>
                 <div class="weimop-form-group">
                     <label class="weimop-label">Certificate Password <span class="weimop-muted">(leave blank to keep current)</span></label>
@@ -890,6 +1332,7 @@ function bntm_weimop_nmms_soap_request( $s, $result_type, $interval_end ) {
             CURLOPT_TIMEOUT        => 30,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_SSLVERSION     => CURL_SSLVERSION_TLSv1_2,
             CURLOPT_HTTPHEADER     => [
                 'Content-Type: text/xml; charset=utf-8',
                 'SOAPAction: "exportResults"',
@@ -919,19 +1362,25 @@ function bntm_weimop_nmms_soap_request( $s, $result_type, $interval_end ) {
         $total_time_ms = (int) curl_getinfo($ch, CURLINFO_TOTAL_TIME_T);
         curl_close($ch);
 
-        // Some NMMS environments use private/untrusted CA chains on HTTPS.
-        // If strict TLS verification fails, retry once with verification disabled.
+        // Some NMMS environments fail strict TLS due to trust chain/cipher/protocol mismatch.
+        // If HTTPS fails at TLS layer, retry once with a compatibility profile.
         if ( $is_https && ! empty($curl_err) ) {
             $ssl_errnos = [35, 51, 58, 60, 77, 83, 90];
             $is_ssl_trust_error = in_array((int)$curl_errno, $ssl_errnos, true)
                 || stripos($curl_err, 'certificate') !== false
                 || stripos($curl_err, 'schannel') !== false
-                || stripos($curl_err, 'untrusted') !== false;
+                || stripos($curl_err, 'untrusted') !== false
+                || stripos($curl_err, 'handshake') !== false
+                || stripos($curl_err, 'sslv3 alert') !== false;
 
             if ( $is_ssl_trust_error ) {
                 $ch2 = curl_init();
                 $curl_opts[CURLOPT_SSL_VERIFYPEER] = false;
                 $curl_opts[CURLOPT_SSL_VERIFYHOST] = 0;
+                $curl_opts[CURLOPT_SSLVERSION]     = CURL_SSLVERSION_TLSv1_2;
+                if ( defined('CURLOPT_SSL_CIPHER_LIST') ) {
+                    $curl_opts[CURLOPT_SSL_CIPHER_LIST] = 'DEFAULT@SECLEVEL=0';
+                }
                 curl_setopt_array( $ch2, $curl_opts );
                 $response  = curl_exec($ch2);
                 $http_code = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
@@ -1227,6 +1676,35 @@ function bntm_weimop_parse_nmms_response( $xml_string, $result_type = '', $setti
     );
 }
 
+function bntm_weimop_migrate_core_tables( $db ) {
+    $needs = false;
+
+    $rtd_cols = [];
+    $res = $db->query("PRAGMA table_info(RTDSchedules)");
+    while($res && ($c = $res->fetchArray(SQLITE3_ASSOC))) $rtd_cols[] = $c['name'];
+    if ( empty($rtd_cols) || !in_array('RESOURCE_NAME', $rtd_cols, true) || !in_array('LMP_CONGESTION', $rtd_cols, true) ) $needs = true;
+
+    $hap_exists = false;
+    $res = $db->querySingle("SELECT name FROM sqlite_master WHERE type='table' AND name='HAPSchedules'");
+    if ($res) $hap_exists = true;
+    if (!$hap_exists) $needs = true;
+
+    $occ_cols = [];
+    $res = $db->query("PRAGMA table_info(OCCResourcesComplianceDetail)");
+    while($res && ($c = $res->fetchArray(SQLITE3_ASSOC))) $occ_cols[] = $c['name'];
+    if ( empty($occ_cols) || !in_array('REGISTERED_CAP', $occ_cols, true) || !in_array('NON_COMPLIANCE_FLAG', $occ_cols, true) ) $needs = true;
+
+    if (!$needs) return;
+
+    foreach (['RTDSchedules','HAPSchedules','OCCResourcesComplianceDetail'] as $t) {
+        $db->exec("DROP TABLE IF EXISTS {$t}");
+    }
+    $schema = bntm_weimop_sqlite_schema();
+    foreach (['RTDSchedules','HAPSchedules','OCCResourcesComplianceDetail'] as $t) {
+        if (!empty($schema[$t])) $db->exec($schema[$t]);
+    }
+}
+
 function bntm_weimop_insert_rows( $db, $table, $rows ) {
     $inserted = 0;
     foreach ($rows as $r) {
@@ -1235,22 +1713,44 @@ function bntm_weimop_insert_rows( $db, $table, $rows ) {
         try {
             switch ($table) {
                 case 'RTDSchedules':
-                    $st = $db->prepare("INSERT OR REPLACE INTO RTDSchedules (TIME_INTERVAL,SCHEDULE,LMP,UNIT_ID) VALUES (?,?,?,?)");
-                    $st->bindValue(1,$ts); $st->bindValue(2,(float)($r['schedule']??$r['SCHEDULE']??0));
-                    $st->bindValue(3,(float)($r['lmp']??$r['LMP']??0)); $st->bindValue(4,$r['unitId']??$r['UNIT_ID']??'');
+                    $st = $db->prepare("INSERT OR REPLACE INTO RTDSchedules (TIME_INTERVAL,RESOURCE_NAME,SCHEDULE,LMP,LOSS_FACTOR,LMP_ENERGY,LMP_LOSS,LMP_CONGESTION) VALUES (?,?,?,?,?,?,?,?)");
+                    $st->bindValue(1,$ts);
+                    $st->bindValue(2,(string)($r['resourceName']??$r['RESOURCE_NAME']??$r['unitId']??$r['UNIT_ID']??''));
+                    $st->bindValue(3,(string)($r['schedule']??$r['SCHEDULE']??'0'));
+                    $st->bindValue(4,(string)($r['lmp']??$r['LMP']??'0'));
+                    $st->bindValue(5,(string)($r['lossFactor']??$r['LOSS_FACTOR']??''));
+                    $st->bindValue(6,(string)($r['lmpEnergy']??$r['LMP_ENERGY']??''));
+                    $st->bindValue(7,(string)($r['lmpLoss']??$r['LMP_LOSS']??''));
+                    $st->bindValue(8,(string)($r['lmpCongestion']??$r['LMP_CONGESTION']??''));
                     $st->execute(); $inserted++; break;
-                case 'HAPResults':
-                    $st = $db->prepare("INSERT OR REPLACE INTO HAPResults (TIME_INTERVAL,PRICE) VALUES (?,?)");
-                    $st->bindValue(1,$ts); $st->bindValue(2,(float)($r['price']??$r['PRICE']??0));
+                case 'HAPSchedules':
+                    $st = $db->prepare("INSERT OR REPLACE INTO HAPSchedules (TIME_INTERVAL,RESOURCE_NAME,SCHEDULE,LMP,LOSS_FACTOR,LMP_ENERGY,LMP_LOSS,LMP_CONGESTION) VALUES (?,?,?,?,?,?,?,?)");
+                    $st->bindValue(1,$ts);
+                    $st->bindValue(2,(string)($r['resourceName']??$r['RESOURCE_NAME']??$r['unitId']??$r['UNIT_ID']??''));
+                    $st->bindValue(3,(string)($r['schedule']??$r['SCHEDULE']??'0'));
+                    $st->bindValue(4,(string)($r['lmp']??$r['LMP']??$r['price']??$r['PRICE']??'0'));
+                    $st->bindValue(5,(string)($r['lossFactor']??$r['LOSS_FACTOR']??''));
+                    $st->bindValue(6,(string)($r['lmpEnergy']??$r['LMP_ENERGY']??''));
+                    $st->bindValue(7,(string)($r['lmpLoss']??$r['LMP_LOSS']??''));
+                    $st->bindValue(8,(string)($r['lmpCongestion']??$r['LMP_CONGESTION']??''));
                     $st->execute(); $inserted++; break;
                 case 'DAPResults':
                     $st = $db->prepare("INSERT OR REPLACE INTO DAPResults (TIME_INTERVAL,PRICE) VALUES (?,?)");
                     $st->bindValue(1,$ts); $st->bindValue(2,(float)($r['price']??$r['PRICE']??0));
                     $st->execute(); $inserted++; break;
                 case 'OCCResourcesComplianceDetail':
-                    $st = $db->prepare("INSERT OR REPLACE INTO OCCResourcesComplianceDetail (TIME_INTERVAL,OFFERED_CAP,SCHEDULED_CAP,UNIT_ID) VALUES (?,?,?,?)");
-                    $st->bindValue(1,$ts); $st->bindValue(2,(float)($r['offeredCapacity']??$r['OFFERED_CAP']??0));
-                    $st->bindValue(3,(float)($r['scheduledCapacity']??$r['SCHEDULED_CAP']??0)); $st->bindValue(4,$r['unitId']??$r['UNIT_ID']??'');
+                    $st = $db->prepare("INSERT OR REPLACE INTO OCCResourcesComplianceDetail (TIME_INTERVAL,RESOURCE_NAME,REGISTERED_CAP,OFFERED_CAP,NON_COMPLIANCE_FLAG,NON_COMPLIANCE_COUNT,PROBABLE_BREACH,PREVIOUS_VIOLATION,OCC_ENABLED,COMPLIANCE_EXEMPT,EMAIL_SENT) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+                    $st->bindValue(1,$ts);
+                    $st->bindValue(2,(string)($r['resourceName']??$r['RESOURCE_NAME']??$r['unitId']??$r['UNIT_ID']??''));
+                    $st->bindValue(3,(int)($r['registeredCapacity']??$r['REGISTERED_CAP']??0));
+                    $st->bindValue(4,(int)($r['offeredCapacity']??$r['OFFERED_CAP']??0));
+                    $st->bindValue(5,(string)($r['nonComplianceFlag']??$r['NON_COMPLIANCE_FLAG']??''));
+                    $st->bindValue(6,(int)($r['nonComplianceCount']??$r['NON_COMPLIANCE_COUNT']??0));
+                    $st->bindValue(7,(string)($r['probableBreach']??$r['PROBABLE_BREACH']??''));
+                    $st->bindValue(8,(string)($r['previousViolation']??$r['PREVIOUS_VIOLATION']??''));
+                    $st->bindValue(9,(string)($r['occEnabled']??$r['OCC_ENABLED']??''));
+                    $st->bindValue(10,(string)($r['complianceExempt']??$r['COMPLIANCE_EXEMPT']??''));
+                    $st->bindValue(11,(int)($r['emailSent']??$r['EMAIL_SENT']??0));
                     $st->execute(); $inserted++; break;
             }
         } catch (Exception $e) {}
@@ -1285,6 +1785,7 @@ function bntm_ajax_weimop_fetch_historical() {
 
     $db = bntm_weimop_open_db(false);
     if (!$db) wp_send_json_error(['message'=>'Cannot open SQLite database.']);
+    bntm_weimop_migrate_core_tables($db);
 
     $now            = time();
     $step           = 300;
@@ -1296,7 +1797,7 @@ function bntm_ajax_weimop_fetch_historical() {
         ? [ [ 'type' => $s['nmms_result_type'], 'table' => 'RTDSchedules' ] ]
         : [
             [ 'type' => 'RTD_LMP',  'table' => 'RTDSchedules' ],
-            [ 'type' => 'HAP',      'table' => 'HAPResults'   ],
+            [ 'type' => 'HAP',      'table' => 'HAPSchedules' ],
             [ 'type' => 'DAP',      'table' => 'DAPResults'   ],
             [ 'type' => 'OCC_COMP', 'table' => 'OCCResourcesComplianceDetail' ],
           ];
@@ -1352,14 +1853,14 @@ function bntm_weimop_check_connection() {
         $db = bntm_weimop_open_db(true);
         if ($db) {
             try {
-                $needed  = ['RTDSchedules','HAPResults','DAPResults','OCCResourcesComplianceDetail'];
+                $needed  = ['RTDSchedules','HAPSchedules','DAPResults','OCCResourcesComplianceDetail'];
                 $present = [];
                 $res = $db->query("SELECT name FROM sqlite_master WHERE type='table'");
                 while ($r = $res->fetchArray(SQLITE3_ASSOC)) $present[] = $r['name'];
                 $checks['tables_exist'] = count(array_intersect($needed,$present)) === count($needed);
                 if (!$checks['tables_exist']) $issues[] = 'One or more WESM tables are missing. Click Re-initialize Tables.';
                 $checks['has_rtd'] = (int)$db->querySingle("SELECT COUNT(*) FROM RTDSchedules") > 0;
-                $checks['has_hap'] = (int)$db->querySingle("SELECT COUNT(*) FROM HAPResults")   > 0;
+                $checks['has_hap'] = ((int)$db->querySingle("SELECT COUNT(*) FROM HAPSchedules") > 0) || ((int)$db->querySingle("SELECT COUNT(*) FROM HAPResults") > 0);
                 $checks['has_dap'] = (int)$db->querySingle("SELECT COUNT(*) FROM DAPResults")   > 0;
                 $checks['has_occ'] = (int)$db->querySingle("SELECT COUNT(*) FROM OCCResourcesComplianceDetail") > 0;
             } catch (Exception $e) { $issues[] = 'Database query error: ' . $e->getMessage(); }
@@ -1751,8 +2252,12 @@ function bntm_weimop_read_snapshot(){
         if(is_array($r)){$o['last_interval']=(string)($r['TIME_INTERVAL']??'--');$o['rtd_schedule']=isset($r['SCHEDULE'])?number_format((float)$r['SCHEDULE'],2):'--';$o['lmp_price']=isset($r['LMP'])?number_format((float)$r['LMP'],2):'--';}
         $r=$db->querySingle("SELECT OFFERED_CAP FROM OCCResourcesComplianceDetail ORDER BY TIME_INTERVAL DESC LIMIT 1",true);
         if(is_array($r)&&isset($r['OFFERED_CAP']))$o['offered_cap']=number_format((float)$r['OFFERED_CAP'],2);
-        $r=$db->querySingle("SELECT PRICE FROM HAPResults ORDER BY TIME_INTERVAL DESC LIMIT 1",true);
-        if(is_array($r)&&isset($r['PRICE']))$o['hap_price']=number_format((float)$r['PRICE'],2);
+        $r=$db->querySingle("SELECT LMP FROM HAPSchedules ORDER BY TIME_INTERVAL DESC LIMIT 1",true);
+        if(is_array($r)&&isset($r['LMP']))$o['hap_price']=number_format((float)$r['LMP'],2);
+        else {
+            $r=$db->querySingle("SELECT PRICE FROM HAPResults ORDER BY TIME_INTERVAL DESC LIMIT 1",true);
+            if(is_array($r)&&isset($r['PRICE']))$o['hap_price']=number_format((float)$r['PRICE'],2);
+        }
         $r=$db->querySingle("SELECT PRICE FROM DAPResults ORDER BY TIME_INTERVAL DESC LIMIT 1",true);
         if(is_array($r)&&isset($r['PRICE']))$o['dap_price']=number_format((float)$r['PRICE'],2);
     }catch(Exception $e){}
@@ -1767,9 +2272,10 @@ function bntm_weimop_read_rtd_series(){
 }
 function bntm_weimop_read_hap_series(){
     $o=['hap'=>[]];$db=bntm_weimop_open_db(true);if(!$db)return $o;
-    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,PRICE FROM HAPResults ORDER BY TIME_INTERVAL DESC LIMIT 48"));
+    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,LMP FROM HAPSchedules ORDER BY TIME_INTERVAL DESC LIMIT 48"));
+    if(empty($rows)) $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,PRICE FROM HAPResults ORDER BY TIME_INTERVAL DESC LIMIT 48"));
     $db->close();
-    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['hap'][]=['time'=>$ts,'value'=>(float)($r['PRICE']??0)];}
+    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['hap'][]=['time'=>$ts,'value'=>(float)($r['LMP']??$r['PRICE']??0)];}
     return $o;
 }
 function bntm_weimop_read_dap_series(){
@@ -1781,9 +2287,9 @@ function bntm_weimop_read_dap_series(){
 }
 function bntm_weimop_read_occ_series(){
     $o=['offered'=>[],'scheduled'=>[]];$db=bntm_weimop_open_db(true);if(!$db)return $o;
-    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,OFFERED_CAP,SCHEDULED_CAP FROM OCCResourcesComplianceDetail ORDER BY TIME_INTERVAL DESC LIMIT 288"));
+    $rows=array_reverse(bntm_weimop_fetch_rows($db,"SELECT TIME_INTERVAL,OFFERED_CAP FROM OCCResourcesComplianceDetail ORDER BY TIME_INTERVAL DESC LIMIT 288"));
     $db->close();
-    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$o['offered'][]=['time'=>$ts,'value'=>(float)($r['OFFERED_CAP']??0)];$o['scheduled'][]=['time'=>$ts,'value'=>(float)($r['SCHEDULED_CAP']??0)];}
+    foreach($rows as $r){$ts=strtotime((string)($r['TIME_INTERVAL']??''));if(!$ts)continue;$off=(float)($r['OFFERED_CAP']??0);$o['offered'][]=['time'=>$ts,'value'=>$off];$o['scheduled'][]=['time'=>$ts,'value'=>0];}
     return $o;
 }
 
@@ -2441,12 +2947,112 @@ function bntm_ajax_weimop_import_all_files() {
 }
 
 /* ---- AJAX: Get chart data for a dataset + date ---- */
+/* -------------------------------------------------------
+   N2. TRADING GRAPH SERIES AJAX
+   Returns time-series data for the 5 RTD datasets for
+   LightweightCharts, grouped by key (resource / region /
+   equipment), limited to top 10 series by row count.
+------------------------------------------------------- */
+
+function bntm_ajax_weimop_get_trading_series() {
+    check_ajax_referer( 'weimop_nonce', 'nonce' );
+    if ( ! is_user_logged_in() ) wp_send_json_error( [ 'message' => 'Unauthorized' ] );
+
+    $dataset   = sanitize_text_field( $_POST['dataset']   ?? '' );
+    $date_from = sanitize_text_field( $_POST['date_from'] ?? '' );
+    $date_to   = sanitize_text_field( $_POST['date_to']   ?? '' );
+    $region    = sanitize_text_field( $_POST['region']    ?? '' );
+    $resource  = sanitize_text_field( $_POST['resource']  ?? '' );
+    $datasets  = bntm_weimop_md_datasets();
+
+    if ( ! isset( $datasets[ $dataset ] ) ||
+         ! preg_match( '/^\d{8}$/', $date_from ) ||
+         ! preg_match( '/^\d{8}$/', $date_to   ) ) {
+        wp_send_json_error( [ 'message' => 'Invalid parameters' ] );
+        return;
+    }
+
+    $db = bntm_weimop_open_db( true );
+    if ( ! $db ) { wp_send_json_error( [ 'message' => 'Cannot open database' ] ); return; }
+
+    $table = $datasets[ $dataset ]['table'];
+    // Region filter
+    $region_datasets = [ 'mcp', 'regional', 'reserve_mcp', 'reserve_sched' ];
+    $use_region = $region && in_array( $dataset, $region_datasets, true );
+    // Resource filter — column differs per dataset
+    $resource_col_map = [ 'mcp' => 'resource_name', 'reserve_mcp' => 'resource_name', 'congestion' => 'equipment_name', 'reserve_sched' => 'resource_name' ];
+    $use_resource = $resource && isset( $resource_col_map[ $dataset ] );
+    $sql = "SELECT * FROM {$table} WHERE file_date >= :fd_from AND file_date <= :fd_to";
+    if ( $use_region )   $sql .= " AND region = :region";
+    if ( $use_resource ) $sql .= " AND {$resource_col_map[$dataset]} = :resource";
+    $sql .= " ORDER BY time_interval ASC LIMIT 10000";
+    $stmt = $db->prepare( $sql );
+    $stmt->bindValue( ':fd_from', $date_from, SQLITE3_TEXT );
+    $stmt->bindValue( ':fd_to',   $date_to,   SQLITE3_TEXT );
+    if ( $use_region )   $stmt->bindValue( ':region',   $region,   SQLITE3_TEXT );
+    if ( $use_resource ) $stmt->bindValue( ':resource', $resource, SQLITE3_TEXT );
+    $res  = $stmt->execute();
+    $rows = [];
+    while ( $row = $res->fetchArray( SQLITE3_ASSOC ) ) $rows[] = $row;
+    $db->close();
+
+    // Build series grouped by series key
+    $series = [];
+    foreach ( $rows as $r ) {
+        $ti = (string) ( $r['time_interval'] ?? '' );
+        $ts = $ti ? strtotime( $ti ) : 0;
+        if ( ! $ts ) continue;
+
+        switch ( $dataset ) {
+            case 'mcp':
+                $val = (float) ( $r['marginal_price'] ?? 0 );
+                $sk  = $r['resource_name'] ?? 'MCP';
+                break;
+            case 'regional':
+                $val = (float) ( $r['generation'] ?? 0 );
+                $sk  = trim( ( $r['region'] ?? '' ) . ( ! empty( $r['commodity_type'] ) ? '/' . $r['commodity_type'] : '' ) );
+                break;
+            case 'reserve_mcp':
+                $val = (float) ( $r['marginal_price'] ?? 0 );
+                $sk  = trim( ( $r['resource_name'] ?? '' ) . ( ! empty( $r['commodity_type'] ) ? '/' . $r['commodity_type'] : '' ) );
+                break;
+            case 'congestion':
+                $val = (float) ( $r['mw_flow'] ?? 0 );
+                $sk  = $r['equipment_name'] ?? 'Equipment';
+                break;
+            case 'reserve_sched':
+                $val = (float) ( ! empty( $r['price'] ) ? $r['price'] : ( $r['sched_mw'] ?? 0 ) );
+                $sk  = trim( ( $r['resource_name'] ?? '' ) . ( ! empty( $r['commodity_type'] ) ? '/' . $r['commodity_type'] : '' ) );
+                break;
+            default:
+                $val = 0;
+                $sk  = 'Value';
+        }
+
+        $series[ $sk ][] = [ 'time' => $ts, 'value' => $val ];
+    }
+
+    // Sort by count desc, keep top 10
+    uasort( $series, function( $a, $b ) { return count( $b ) - count( $a ); } );
+    $series = array_slice( $series, 0, 10, true );
+
+    wp_send_json_success( [
+        'dataset'   => $dataset,
+        'date_from' => $date_from,
+        'date_to'   => $date_to,
+        'series'    => $series,
+        'count'     => count( $rows ),
+    ] );
+}
+
 function bntm_ajax_weimop_get_md_chart() {
     check_ajax_referer( 'weimop_nonce', 'nonce' );
     if ( ! is_user_logged_in() ) wp_send_json_error( [ 'message' => 'Unauthorized' ] );
 
     $dataset   = sanitize_text_field( $_POST['dataset'] ?? '' );
     $file_date = sanitize_text_field( $_POST['file_date'] ?? '' );
+    $region    = sanitize_text_field( $_POST['region']    ?? '' );
+    $resource  = sanitize_text_field( $_POST['resource']  ?? '' );
     $datasets  = bntm_weimop_md_datasets();
 
     if ( ! isset( $datasets[ $dataset ] ) || ! preg_match( '/^\d{8}$/', $file_date ) ) {
@@ -2457,8 +3063,18 @@ function bntm_ajax_weimop_get_md_chart() {
     if ( ! $db ) wp_send_json_error( [ 'message' => 'Cannot open database' ] );
 
     $table   = $datasets[ $dataset ]['table'];
-    $stmt    = $db->prepare( "SELECT * FROM {$table} WHERE file_date = :fd ORDER BY id ASC" );
+    $region_datasets  = [ 'mcp', 'regional', 'reserve_mcp', 'reserve_sched' ];
+    $resource_col_map = [ 'mcp' => 'resource_name', 'reserve_mcp' => 'resource_name', 'congestion' => 'equipment_name', 'reserve_sched' => 'resource_name' ];
+    $use_region   = $region   && in_array( $dataset, $region_datasets, true );
+    $use_resource = $resource && isset( $resource_col_map[ $dataset ] );
+    $sql = "SELECT * FROM {$table} WHERE file_date = :fd";
+    if ( $use_region )   $sql .= " AND region = :region";
+    if ( $use_resource ) $sql .= " AND {$resource_col_map[$dataset]} = :resource";
+    $sql .= " ORDER BY id ASC";
+    $stmt    = $db->prepare( $sql );
     $stmt->bindValue( ':fd', $file_date, SQLITE3_TEXT );
+    if ( $use_region )   $stmt->bindValue( ':region',   $region,   SQLITE3_TEXT );
+    if ( $use_resource ) $stmt->bindValue( ':resource', $resource, SQLITE3_TEXT );
     $res     = $stmt->execute();
     $rows    = [];
     while ( $row = $res->fetchArray( SQLITE3_ASSOC ) ) $rows[] = $row;
@@ -2493,6 +3109,51 @@ function bntm_ajax_weimop_get_md_chart() {
         'rows'     => array_slice( $tbl, 0, 200 ),
         'count'    => count( $rows ),
     ] );
+}
+
+function bntm_ajax_weimop_get_md_regions() {
+    check_ajax_referer( 'weimop_nonce', 'nonce' );
+    if ( ! is_user_logged_in() ) wp_send_json_error( [ 'message' => 'Unauthorized' ] );
+    $dataset  = sanitize_text_field( $_POST['dataset'] ?? '' );
+    $datasets = bntm_weimop_md_datasets();
+    if ( ! isset( $datasets[ $dataset ] ) ) wp_send_json_error( [ 'message' => 'Invalid dataset' ] );
+    $region_datasets = [ 'mcp', 'regional', 'reserve_mcp', 'reserve_sched' ];
+    if ( ! in_array( $dataset, $region_datasets, true ) ) { wp_send_json_success( [ 'regions' => [] ] ); return; }
+    $db = bntm_weimop_open_db( true );
+    if ( ! $db ) wp_send_json_error( [ 'message' => 'Cannot open database' ] );
+    $table   = $datasets[ $dataset ]['table'];
+    $regions = [];
+    try {
+        $res = $db->query( "SELECT DISTINCT region FROM {$table} WHERE region IS NOT NULL AND region != '' ORDER BY region ASC" );
+        while ( $row = $res->fetchArray( SQLITE3_NUM ) ) {
+            if ( ! empty( $row[0] ) ) $regions[] = $row[0];
+        }
+    } catch ( Exception $e ) {}
+    $db->close();
+    wp_send_json_success( [ 'regions' => $regions ] );
+}
+
+function bntm_ajax_weimop_get_md_resources() {
+    check_ajax_referer( 'weimop_nonce', 'nonce' );
+    if ( ! is_user_logged_in() ) wp_send_json_error( [ 'message' => 'Unauthorized' ] );
+    $dataset  = sanitize_text_field( $_POST['dataset'] ?? '' );
+    $datasets = bntm_weimop_md_datasets();
+    if ( ! isset( $datasets[ $dataset ] ) ) wp_send_json_error( [ 'message' => 'Invalid dataset' ] );
+    $resource_col_map = [ 'mcp' => 'resource_name', 'reserve_mcp' => 'resource_name', 'congestion' => 'equipment_name', 'reserve_sched' => 'resource_name' ];
+    if ( ! isset( $resource_col_map[ $dataset ] ) ) { wp_send_json_success( [ 'resources' => [] ] ); return; }
+    $db = bntm_weimop_open_db( true );
+    if ( ! $db ) wp_send_json_error( [ 'message' => 'Cannot open database' ] );
+    $table   = $datasets[ $dataset ]['table'];
+    $col     = $resource_col_map[ $dataset ];
+    $resources = [];
+    try {
+        $res = $db->query( "SELECT DISTINCT {$col} FROM {$table} WHERE {$col} IS NOT NULL AND {$col} != '' ORDER BY {$col} ASC" );
+        while ( $row = $res->fetchArray( SQLITE3_NUM ) ) {
+            if ( ! empty( $row[0] ) ) $resources[] = $row[0];
+        }
+    } catch ( Exception $e ) {}
+    $db->close();
+    wp_send_json_success( [ 'resources' => $resources ] );
 }
 
 /* ---- Market Data Tab UI ---- */
@@ -2592,9 +3253,24 @@ function weimop_tab_market_data() {
         <div id="weimop-md-chart-wrap" class="weimop-md-chart-wrap" style="display:none;">
             <div class="weimop-md-chart-header">
                 <span id="weimop-md-chart-title" class="weimop-md-chart-title"></span>
-                <button id="weimop-md-chart-close" class="weimop-btn weimop-btn--sm">Close</button>
+                <div style="display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap;">
+                    <label style="font-size:11px;color:#787b86;display:flex;align-items:center;gap:6px;">Region
+                        <select id="weimop-md-region" class="weimop-tv-select" style="min-width:120px;">
+                            <option value="">All Regions</option>
+                        </select>
+                    </label>
+                    <label style="font-size:11px;color:#787b86;display:flex;align-items:center;gap:6px;">Resource
+                        <select id="weimop-md-resource" class="weimop-tv-select" style="min-width:150px;">
+                            <option value="">All Resources</option>
+                        </select>
+                    </label>
+                    <button id="weimop-md-chart-close" class="weimop-btn weimop-btn--sm">Close</button>
+                </div>
             </div>
-            <canvas id="weimop-md-canvas" class="weimop-md-canvas"></canvas>
+            <div id="weimop-md-lw-chart" class="weimop-md-lw-chart">
+                <div class="weimop-tv-tooltip" id="weimop-md-tt" style="display:none;pointer-events:none;"></div>
+            </div>
+            <div id="weimop-md-legend" class="weimop-tv-legend" style="background:#1a1e2e;padding:6px 14px;"></div>
             <div id="weimop-md-table-wrap" class="weimop-md-table-wrap">
                 <table class="weimop-md-table">
                     <thead id="weimop-md-table-head"></thead>
@@ -2758,52 +3434,139 @@ function weimop_tab_market_data() {
         document.getElementById('weimop-md-chart-close') &&
             document.getElementById('weimop-md-chart-close').addEventListener('click', function() {
                 document.getElementById('weimop-md-chart-wrap').style.display = 'none';
+                if (mdLwChart) { mdLwChart.remove(); mdLwChart = null; }
             });
 
+        var mdLwChart = null;
+        var mdLwSeries = [];
+        var MD_PALETTE = ['#2962ff','#00b746','#ab47bc','#ef5350','#ff6d00','#00bcd4','#fdd835','#5c6bc0','#ec407a','#26a69a'];
+        var mdCurrentDataset = '';
+        var mdCurrentDate    = '';
+
+        // Region / Resource selector change triggers reload
+        ['weimop-md-region', 'weimop-md-resource'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (el) el.addEventListener('change', function() {
+                if (mdCurrentDataset && mdCurrentDate) weimopMdLoadChart(mdCurrentDataset, mdCurrentDate);
+            });
+        });
+
         function weimopMdLoadChart(dataset, file_date) {
-            var wrap = document.getElementById('weimop-md-chart-wrap');
-            var title = document.getElementById('weimop-md-chart-title');
-            var thead = document.getElementById('weimop-md-table-head');
-            var tbody = document.getElementById('weimop-md-table-body');
+            mdCurrentDataset = dataset;
+            mdCurrentDate    = file_date;
+            var wrap     = document.getElementById('weimop-md-chart-wrap');
+            var title    = document.getElementById('weimop-md-chart-title');
+            var thead    = document.getElementById('weimop-md-table-head');
+            var tbody    = document.getElementById('weimop-md-table-body');
+            var region   = document.getElementById('weimop-md-region')   ? document.getElementById('weimop-md-region').value   : '';
+            var resource = document.getElementById('weimop-md-resource') ? document.getElementById('weimop-md-resource').value : '';
             wrap.style.display = 'block';
-            title.textContent  = 'Loading...';
+            title.textContent  = 'Loading…';
             thead.innerHTML    = '';
             tbody.innerHTML    = '';
 
-            mdPost('weimop_get_md_chart', { dataset: dataset, file_date: file_date }).then(function(j) {
+            var postData = { dataset: dataset, file_date: file_date };
+            if (region)   postData.region   = region;
+            if (resource) postData.resource = resource;
+
+            mdPost('weimop_get_md_chart', postData).then(function(j) {
                 if (!j.success) { title.textContent = 'Error: ' + (j.data && j.data.message ? j.data.message : 'Unknown'); return; }
                 var d = j.data;
                 title.textContent = dataset.toUpperCase() + ' — ' + file_date + ' (' + d.count + ' rows)';
 
-                // Canvas chart
-                var canvas = document.getElementById('weimop-md-canvas');
-                var ctx    = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                var seriesObj  = d.series || {};
+                var seriesKeys = Object.keys(seriesObj);
 
-                var colors = ['#2563eb','#16a34a','#9333ea','#dc2626','#d97706','#0891b2'];
+                // Populate dropdowns on first load (no filters set yet)
+                if (!region && !resource && seriesKeys.length) {
+                    weimopMdPopulateRegions(dataset);
+                    weimopMdPopulateResources(dataset);
+                }
+
+                // Build LightweightCharts
+                var container = document.getElementById('weimop-md-lw-chart');
+                if (!container || !window.LightweightCharts) return;
+
+                if (mdLwChart) { mdLwChart.remove(); mdLwChart = null; mdLwSeries = []; }
+
+                mdLwChart = LightweightCharts.createChart(container, {
+                    layout:{ textColor:'#d1d4dc', background:{ type:'solid', color:'#131722' } },
+                    rightPriceScale:{ borderColor:'#2a2e39' },
+                    timeScale:{ borderColor:'#2a2e39', timeVisible:true, secondsVisible:false },
+                    grid:{ vertLines:{ color:'#1e2230' }, horzLines:{ color:'#1e2230' } },
+                    crosshair:{ mode:LightweightCharts.CrosshairMode.Normal },
+                    handleScroll:true, handleScale:true, height:320,
+                });
+
+                var legendHtml = '';
+                mdLwSeries = [];
+                var seriesLabels = [];
                 var colorIdx = 0;
-                var series = d.series || {};
-                var allLabels = [];
-                var datasets  = [];
 
-                Object.keys(series).forEach(function(key) {
-                    var pts = series[key];
-                    pts.forEach(function(p){ if (allLabels.indexOf(p.time) === -1) allLabels.push(p.time); });
+                seriesKeys.slice(0, 10).forEach(function(sk) {
+                    var pts = seriesObj[sk];
+                    if (!pts || !pts.length) return;
+                    var color = MD_PALETTE[colorIdx++ % MD_PALETTE.length];
+                    var isSingle = seriesKeys.length === 1;
+                    var ts;
+                    if (isSingle) {
+                        ts = mdLwChart.addAreaSeries({
+                            lineColor: color,
+                            topColor: hexToRgba(color, 0.28),
+                            bottomColor: hexToRgba(color, 0.02),
+                            lineWidth: 2,
+                            lastValueVisible: true, priceLineVisible: false,
+                        });
+                    } else {
+                        ts = mdLwChart.addLineSeries({
+                            color: color,
+                            lineWidth: seriesKeys.length > 5 ? 1 : 2,
+                            lastValueVisible: false, priceLineVisible: false,
+                        });
+                    }
+                    var lwData = pts.filter(function(p){ return p.time; }).map(function(p){
+                        var t = typeof p.time === 'number' ? p.time : (new Date(p.time).getTime() / 1000);
+                        return { time: Math.floor(t), value: parseFloat(p.value) || 0 };
+                    }).sort(function(a,b){ return a.time - b.time; });
+                    ts.setData(lwData);
+                    mdLwSeries.push(ts);
+                    seriesLabels.push(sk);
+                    legendHtml += '<span class="weimop-tv-legend-item"><span class="weimop-tv-legend-dot" style="background:' + color + '"></span>' + sk + '</span>';
                 });
-                allLabels.sort();
 
-                Object.keys(series).slice(0, 8).forEach(function(key) {
-                    var pts = series[key];
-                    var map = {};
-                    pts.forEach(function(p){ map[p.time] = p.value; });
-                    datasets.push({
-                        label: key,
-                        data:  allLabels.map(function(l){ return map[l] !== undefined ? map[l] : null; }),
-                        color: colors[colorIdx++ % colors.length],
+                mdLwChart.timeScale().fitContent();
+                var legendEl = document.getElementById('weimop-md-legend');
+                if (legendEl) legendEl.innerHTML = legendHtml;
+
+                // Tooltip
+                mdLwChart.subscribeCrosshairMove(function(param){
+                    var tt = document.getElementById('weimop-md-tt');
+                    if (!tt) return;
+                    if (!param.point || !param.time) { tt.style.display = 'none'; return; }
+                    var t = param.time;
+                    var tStr = typeof t === 'number'
+                        ? new Date(t * 1000).toLocaleString('en-PH',{month:'short',day:'2-digit',hour:'2-digit',minute:'2-digit'})
+                        : String(t);
+                    var html = '<div style="font-size:11px;font-weight:700;color:#d1d4dc;margin-bottom:4px;">' + tStr + '</div>';
+                    mdLwSeries.forEach(function(s, i){
+                        var v = param.seriesData && param.seriesData.get ? param.seriesData.get(s) : null;
+                        if (v && v.value !== undefined) {
+                            var c2 = MD_PALETTE[i % MD_PALETTE.length];
+                            html += '<div style="display:flex;align-items:center;gap:6px;font-size:11px;"><span style="width:8px;height:8px;border-radius:50%;background:' + c2 + ';flex-shrink:0;display:inline-block;"></span><span style="color:#787b86;">' + (seriesLabels[i]||'') + '</span><span style="color:#d1d4dc;margin-left:auto;padding-left:12px;">' + parseFloat(v.value).toFixed(2) + '</span></div>';
+                        }
                     });
+                    tt.innerHTML = html;
+                    var cw = container.clientWidth || 600;
+                    var ch = container.clientHeight || 320;
+                    var tw = 200, th = 80;
+                    var left = param.point.x + 14;
+                    var top  = param.point.y - 10;
+                    if (left + tw > cw) left = param.point.x - tw - 14;
+                    if (top + th  > ch) top  = ch - th - 10;
+                    tt.style.left = left + 'px';
+                    tt.style.top  = top + 'px';
+                    tt.style.display = 'block';
                 });
-
-                weimopMdDrawChart(ctx, canvas, allLabels, datasets);
 
                 // Table
                 var rows = d.rows || [];
@@ -2820,75 +3583,45 @@ function weimop_tab_market_data() {
             });
         }
 
-        function weimopMdDrawChart(ctx, canvas, labels, datasets) {
-            var W = canvas.offsetWidth || 700;
-            var H = 240;
-            canvas.width  = W;
-            canvas.height = H;
-            var pad = { top: 20, right: 20, bottom: 50, left: 60 };
-            var cW  = W - pad.left - pad.right;
-            var cH  = H - pad.top  - pad.bottom;
-
-            // Gather all values for scale
-            var allVals = [];
-            datasets.forEach(function(ds) {
-                ds.data.forEach(function(v){ if (v !== null) allVals.push(v); });
-            });
-            var minV = allVals.length ? Math.min.apply(null, allVals) : 0;
-            var maxV = allVals.length ? Math.max.apply(null, allVals) : 1;
-            if (minV === maxV) { maxV = minV + 1; }
-
-            ctx.clearRect(0, 0, W, H);
-            ctx.fillStyle = '#f8fafc';
-            ctx.fillRect(0, 0, W, H);
-
-            // Grid lines
-            ctx.strokeStyle = '#e2e8f0';
-            ctx.lineWidth   = 1;
-            for (var g = 0; g <= 5; g++) {
-                var gy = pad.top + (g / 5) * cH;
-                ctx.beginPath(); ctx.moveTo(pad.left, gy); ctx.lineTo(pad.left + cW, gy); ctx.stroke();
-                var gv = maxV - (g / 5) * (maxV - minV);
-                ctx.fillStyle = '#64748b'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
-                ctx.fillText(gv.toFixed(2), pad.left - 5, gy + 4);
-            }
-
-            // X labels (sample every Nth)
-            var n     = labels.length;
-            var step  = Math.max(1, Math.floor(n / 8));
-            ctx.fillStyle = '#64748b'; ctx.font = '9px sans-serif'; ctx.textAlign = 'center';
-            for (var i = 0; i < n; i += step) {
-                var lx = pad.left + (i / (n - 1 || 1)) * cW;
-                var lbl = String(labels[i] || '').substring(11) || String(labels[i] || '').substring(0, 10);
-                ctx.fillText(lbl, lx, H - pad.bottom + 16);
-            }
-
-            // Lines
-            datasets.forEach(function(ds) {
-                ctx.strokeStyle = ds.color;
-                ctx.lineWidth   = 1.5;
-                ctx.beginPath();
-                var started = false;
-                ds.data.forEach(function(v, i) {
-                    if (v === null) { started = false; return; }
-                    var px = pad.left + (i / (n - 1 || 1)) * cW;
-                    var py = pad.top  + (1 - (v - minV) / (maxV - minV)) * cH;
-                    if (!started) { ctx.moveTo(px, py); started = true; }
-                    else { ctx.lineTo(px, py); }
+        function weimopMdPopulateRegions(dataset) {
+            var regionSel = document.getElementById('weimop-md-region');
+            if (!regionSel) return;
+            var regionDs = ['mcp','regional','reserve_mcp','reserve_sched'];
+            if (regionDs.indexOf(dataset) === -1) { regionSel.innerHTML = '<option value="">All Regions</option>'; return; }
+            mdPost('weimop_get_md_regions', { dataset: dataset }).then(function(j2) {
+                if (!j2 || !j2.success || !j2.data || !j2.data.regions) return;
+                var cur = regionSel.value;
+                regionSel.innerHTML = '<option value="">All Regions</option>';
+                j2.data.regions.forEach(function(r) {
+                    var opt = document.createElement('option');
+                    opt.value = r; opt.textContent = r;
+                    if (r === cur) opt.selected = true;
+                    regionSel.appendChild(opt);
                 });
-                ctx.stroke();
-            });
+            }).catch(function(){});
+        }
 
-            // Legend
-            var lx = pad.left;
-            datasets.forEach(function(ds) {
-                ctx.fillStyle = ds.color;
-                ctx.fillRect(lx, H - pad.bottom + 28, 12, 8);
-                ctx.fillStyle = '#1a2b3c'; ctx.font = '9px sans-serif'; ctx.textAlign = 'left';
-                ctx.fillText(ds.label, lx + 15, H - pad.bottom + 36);
-                lx += ctx.measureText(ds.label).width + 30;
-                if (lx > W - 80) lx = pad.left;
-            });
+        function weimopMdPopulateResources(dataset) {
+            var resourceSel = document.getElementById('weimop-md-resource');
+            if (!resourceSel) return;
+            var resourceDs = ['mcp','reserve_mcp','congestion','reserve_sched'];
+            if (resourceDs.indexOf(dataset) === -1) { resourceSel.innerHTML = '<option value="">All Resources</option>'; return; }
+            mdPost('weimop_get_md_resources', { dataset: dataset }).then(function(j2) {
+                if (!j2 || !j2.success || !j2.data || !j2.data.resources) return;
+                var cur = resourceSel.value;
+                resourceSel.innerHTML = '<option value="">All Resources</option>';
+                j2.data.resources.forEach(function(r) {
+                    var opt = document.createElement('option');
+                    opt.value = r; opt.textContent = r;
+                    if (r === cur) opt.selected = true;
+                    resourceSel.appendChild(opt);
+                });
+            }).catch(function(){});
+        }
+
+        function hexToRgba(hex, alpha) {
+            var r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+            return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
         }
     })();
     </script>
@@ -3057,6 +3790,32 @@ code{font-size:11px;background:#f2f5f8;border:1px solid #e2e8f0;border-radius:3p
 .weimop-md-section-title{font-size:13px;font-weight:700;color:#102a43;margin:0 0 10px;}
 .weimop-md-empty{font-size:12px;color:#718096;padding:20px 0;}
 .weimop-md-mono{font-family:monospace;font-size:11px;}
+/* ---- Trading Graph Tab (TV Dark) ---- */
+.weimop-tv-wrap{background:#0d1117;border-radius:8px;overflow:hidden;margin-bottom:0;}
+.weimop-tv-toolbar{display:flex;align-items:center;gap:12px;padding:10px 16px;background:#1e222d;border-bottom:1px solid #2a2e39;flex-wrap:wrap;}
+.weimop-tv-toolbar-label{display:flex;align-items:center;gap:6px;font-size:11px;color:#787b86;}
+.weimop-tv-input{background:#2a2e39;border:1px solid #363c4e;color:#d1d4dc;border-radius:4px;padding:5px 8px;font-size:12px;}
+.weimop-tv-select{background:#2a2e39;border:1px solid #363c4e;color:#d1d4dc;border-radius:4px;padding:5px 8px;font-size:12px;}
+.weimop-tv-btn{background:#2962ff;color:#fff;border:none;border-radius:4px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;}
+.weimop-tv-btn:hover{background:#1a53e8;}
+.weimop-tv-panel{background:#1e222d;border-bottom:1px solid #2a2e39;}
+.weimop-tv-panel-header{display:flex;align-items:center;gap:10px;padding:10px 14px;flex-wrap:wrap;min-height:38px;}
+.weimop-tv-panel-title{font-size:12px;font-weight:700;color:#d1d4dc;white-space:nowrap;}
+.weimop-tv-panel-sub{font-size:11px;color:#787b86;flex:1;}
+.weimop-tv-badge{font-size:10px;font-weight:600;padding:2px 8px;border-radius:3px;border:1px solid;color:#787b86;}
+.weimop-tv-panel-stats{display:flex;align-items:center;gap:0;margin-left:auto;flex-wrap:nowrap;}
+.weimop-tv-stat{display:flex;flex-direction:column;align-items:center;padding:0 10px;border-right:1px solid #2a2e39;}
+.weimop-tv-stat:last-child{border-right:none;}
+.weimop-tv-stat-lbl{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#787b86;}
+.weimop-tv-stat-val{font-size:12px;font-weight:700;color:#d1d4dc;font-variant-numeric:tabular-nums;}
+.weimop-tv-chart{height:300px;position:relative;background:#131722;width:100%;}
+.weimop-tv-placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#131722;color:#787b86;font-size:12px;}
+.weimop-tv-tooltip{position:absolute;z-index:100;background:#1e222d;border:1px solid #2a2e39;border-radius:4px;padding:8px 10px;min-width:160px;max-width:260px;box-shadow:0 4px 12px rgba(0,0,0,.5);}
+.weimop-tv-legend{display:flex;flex-wrap:wrap;gap:10px;padding:6px 14px;background:#1a1e2e;min-height:28px;}
+.weimop-tv-legend-item{display:flex;align-items:center;gap:5px;font-size:10px;color:#787b86;}
+.weimop-tv-legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+/* ---- Market Data LW Chart ---- */
+.weimop-md-lw-chart{height:340px;position:relative;background:#131722;border-radius:4px;overflow:hidden;margin-bottom:2px;}
 ';}
 
 /* -------------------------------------------------------
