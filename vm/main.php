@@ -1,11 +1,11 @@
-<?php
+﻿<?php
 /**
  * Module Name: VAT Management
  * Module Slug: vm
  * Description: Manage OR receipts, expenses, sales, and quarterly VAT reporting with receipt scanning
  * Version: 1.0.0
  * Author: BNTM Framework
- * Icon: 📊
+ * Icon: ðŸ“Š
  */
 
 // Prevent direct access
@@ -409,8 +409,8 @@ function vat_overview_tab() {
             </div>
             <div class="stat-content">
                 <h3>Expense VAT (Q<?php echo $current_quarter; ?>)</h3>
-                <p class="stat-number">₱<?php echo number_format($expense_vat, 2); ?></p>
-                <span class="stat-label">Total Expenses: ₱<?php echo number_format($total_expenses, 2); ?></span>
+                <p class="stat-number">â‚±<?php echo number_format($expense_vat, 2); ?></p>
+                <span class="stat-label">Total Expenses: â‚±<?php echo number_format($total_expenses, 2); ?></span>
             </div>
         </div>
         
@@ -422,8 +422,8 @@ function vat_overview_tab() {
             </div>
             <div class="stat-content">
                 <h3>Sales VAT (Q<?php echo $current_quarter; ?>)</h3>
-                <p class="stat-number">₱<?php echo number_format($sales_vat, 2); ?></p>
-                <span class="stat-label">Total Sales: ₱<?php echo number_format($total_sales, 2); ?></span>
+                <p class="stat-number">â‚±<?php echo number_format($sales_vat, 2); ?></p>
+                <span class="stat-label">Total Sales: â‚±<?php echo number_format($total_sales, 2); ?></span>
             </div>
         </div>
         
@@ -435,7 +435,7 @@ function vat_overview_tab() {
             </div>
             <div class="stat-content">
                 <h3>VAT <?php echo $vat_payable >= 0 ? 'Payable' : 'Refundable'; ?> (Q<?php echo $current_quarter; ?>)</h3>
-                <p class="stat-number">₱<?php echo number_format(abs($vat_payable), 2); ?></p>
+                <p class="stat-number">â‚±<?php echo number_format(abs($vat_payable), 2); ?></p>
                 <span class="stat-label"><?php echo $vat_payable >= 0 ? 'Amount to Pay' : 'Deduction Available'; ?></span>
             </div>
         </div>
@@ -446,19 +446,19 @@ function vat_overview_tab() {
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-top: 15px;">
             <div style="padding: 20px; background: #fef3c7; border-radius: 8px; border-left: 4px solid #f59e0b;">
                 <div style="font-size: 13px; color: #92400e; font-weight: 500; margin-bottom: 8px;">YTD Expense VAT</div>
-                <div style="font-size: 24px; font-weight: 700; color: #92400e;">₱<?php echo number_format($ytd_expense_vat, 2); ?></div>
+                <div style="font-size: 24px; font-weight: 700; color: #92400e;">â‚±<?php echo number_format($ytd_expense_vat, 2); ?></div>
                 <div style="font-size: 12px; color: #92400e; margin-top: 4px;"><?php echo intval($ytd_stats->expense_count); ?> receipts</div>
             </div>
             
             <div style="padding: 20px; background: #d1fae5; border-radius: 8px; border-left: 4px solid #10b981;">
                 <div style="font-size: 13px; color: #065f46; font-weight: 500; margin-bottom: 8px;">YTD Sales VAT</div>
-                <div style="font-size: 24px; font-weight: 700; color: #065f46;">₱<?php echo number_format($ytd_sales_vat, 2); ?></div>
+                <div style="font-size: 24px; font-weight: 700; color: #065f46;">â‚±<?php echo number_format($ytd_sales_vat, 2); ?></div>
                 <div style="font-size: 12px; color: #065f46; margin-top: 4px;"><?php echo intval($ytd_stats->sales_count); ?> receipts</div>
             </div>
             
             <div style="padding: 20px; background: <?php echo $ytd_vat_payable >= 0 ? '#fce7f3' : '#dbeafe'; ?>; border-radius: 8px; border-left: 4px solid <?php echo $ytd_vat_payable >= 0 ? '#ec4899' : '#3b82f6'; ?>;">
                 <div style="font-size: 13px; color: <?php echo $ytd_vat_payable >= 0 ? '#9f1239' : '#1e3a8a'; ?>; font-weight: 500; margin-bottom: 8px;">YTD Net VAT</div>
-                <div style="font-size: 24px; font-weight: 700; color: <?php echo $ytd_vat_payable >= 0 ? '#9f1239' : '#1e3a8a'; ?>;">₱<?php echo number_format(abs($ytd_vat_payable), 2); ?></div>
+                <div style="font-size: 24px; font-weight: 700; color: <?php echo $ytd_vat_payable >= 0 ? '#9f1239' : '#1e3a8a'; ?>;">â‚±<?php echo number_format(abs($ytd_vat_payable), 2); ?></div>
                 <div style="font-size: 12px; color: <?php echo $ytd_vat_payable >= 0 ? '#9f1239' : '#1e3a8a'; ?>; margin-top: 4px;"><?php echo $ytd_vat_payable >= 0 ? 'Payable' : 'Refundable'; ?></div>
             </div>
         </div>
@@ -541,7 +541,7 @@ function vat_overview_tab() {
                             label: function(context) {
                                 let label = context.dataset.label || '';
                                 if (label) label += ': ';
-                                label += '₱' + context.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2});
+                                label += 'â‚±' + context.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2});
                                 return label;
                             }
                         }
@@ -552,7 +552,7 @@ function vat_overview_tab() {
                         beginAtZero: true,
                         ticks: {
                             callback: function(value) {
-                                return '₱' + value.toLocaleString();
+                                return 'â‚±' + value.toLocaleString();
                             }
                         }
                     }
@@ -636,8 +636,8 @@ function vat_expenses_tab() {
                                 <?php echo esc_html($receipt->category ?: 'Uncategorized'); ?>
                             </span>
                         </td>
-                        <td>₱<?php echo number_format($receipt->amount, 2); ?></td>
-                        <td class="bntm-stat-expense">₱<?php echo number_format($receipt->vat_amount, 2); ?></td>
+                        <td>â‚±<?php echo number_format($receipt->amount, 2); ?></td>
+                        <td class="bntm-stat-expense">â‚±<?php echo number_format($receipt->vat_amount, 2); ?></td>
                         <td>
                             <span class="bntm-badge" style="background: <?php echo $receipt->vat_type === 'vat' ? '#dcfce7' : '#f3f4f6'; ?>; color: <?php echo $receipt->vat_type === 'vat' ? '#166534' : '#6b7280'; ?>;">
                                 <?php echo $receipt->vat_type === 'vat' ? 'VAT' : 'Non-VAT'; ?>
@@ -1013,8 +1013,8 @@ function vat_sales_tab() {
                                 <?php echo esc_html($receipt->category ?: 'Uncategorized'); ?>
                             </span>
                         </td>
-                        <td>₱<?php echo number_format($receipt->amount, 2); ?></td>
-                        <td class="bntm-stat-income">₱<?php echo number_format($receipt->vat_amount, 2); ?></td>
+                        <td>â‚±<?php echo number_format($receipt->amount, 2); ?></td>
+                        <td class="bntm-stat-income">â‚±<?php echo number_format($receipt->vat_amount, 2); ?></td>
                         <td>
                             <span class="bntm-badge" style="background: <?php echo $receipt->vat_type === 'vat' ? '#dcfce7' : '#f3f4f6'; ?>; color: <?php echo $receipt->vat_type === 'vat' ? '#166534' : '#6b7280'; ?>;">
                                 <?php echo $receipt->vat_type === 'vat' ? 'VAT' : 'Non-VAT'; ?>
@@ -1309,16 +1309,16 @@ function vat_quarterly_tab() {
                 
                 <div style="margin-bottom: 12px; padding: 12px; background: #fef3c7; border-radius: 8px;">
                     <div style="font-size: 12px; color: #92400e; margin-bottom: 4px;">Expense VAT (Deduction)</div>
-                    <div style="font-size: 20px; font-weight: 700; color: #92400e;">₱<?php echo number_format($data['expense_vat'], 2); ?></div>
-                    <div style="font-size: 11px; color: #92400e; margin-top: 2px;">From ₱<?php echo number_format($data['total_expenses'], 2); ?> expenses</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #92400e;">â‚±<?php echo number_format($data['expense_vat'], 2); ?></div>
+                    <div style="font-size: 11px; color: #92400e; margin-top: 2px;">From â‚±<?php echo number_format($data['total_expenses'], 2); ?> expenses</div>
                     <div style="font-size: 11px; color: #92400e; margin-top: 6px;">Offset: <?php echo vat_format_currency($data['offset_expenses']); ?> (VAT <?php echo vat_format_currency($data['offset_expense_vat']); ?>)</div>
                     <div style="font-size: 11px; color: #92400e; margin-top: 2px;">Company: <?php echo vat_format_currency($data['company_expenses']); ?> (VAT <?php echo vat_format_currency($data['company_expense_vat']); ?>)</div>
                 </div>
                 
                 <div style="margin-bottom: 12px; padding: 12px; background: #d1fae5; border-radius: 8px;">
                     <div style="font-size: 12px; color: #065f46; margin-bottom: 4px;">Sales VAT (Collection)</div>
-                    <div style="font-size: 20px; font-weight: 700; color: #065f46;">₱<?php echo number_format($data['sales_vat'], 2); ?></div>
-                    <div style="font-size: 11px; color: #065f46; margin-top: 2px;">From ₱<?php echo number_format($data['total_sales'], 2); ?> sales</div>
+                    <div style="font-size: 20px; font-weight: 700; color: #065f46;">â‚±<?php echo number_format($data['sales_vat'], 2); ?></div>
+                    <div style="font-size: 11px; color: #065f46; margin-top: 2px;">From â‚±<?php echo number_format($data['total_sales'], 2); ?> sales</div>
                 </div>
                 
                 <div style="padding: 12px; background: <?php echo $data['vat_payable'] >= 0 ? '#fce7f3' : '#dbeafe'; ?>; border-radius: 8px;">
@@ -1326,7 +1326,7 @@ function vat_quarterly_tab() {
                         Net VAT <?php echo $data['vat_payable'] >= 0 ? 'Payable' : 'Refundable'; ?>
                     </div>
                     <div style="font-size: 24px; font-weight: 700; color: <?php echo $data['vat_payable'] >= 0 ? '#9f1239' : '#1e3a8a'; ?>;">
-                        ₱<?php echo number_format(abs($data['vat_payable']), 2); ?>
+                        â‚±<?php echo number_format(abs($data['vat_payable']), 2); ?>
                     </div>
                 </div>
                 
@@ -1990,7 +1990,7 @@ function vat_import_tab() {
     (function() {
         const nonce = '<?php echo $nonce; ?>';
 
-        // ── Sales section ──────────────────────────────────────────
+        // â”€â”€ Sales section â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         function updateSalesCount() {
             const selected = document.querySelectorAll('.sales-receipt-checkbox:checked').length;
             document.getElementById('selected-sales-count').textContent = selected > 0 ? `${selected} selected` : '';
@@ -2030,7 +2030,7 @@ function vat_import_tab() {
             }
 
             const totalAmount = selected.reduce((sum, cb) => sum + parseFloat(cb.dataset.amount || '0'), 0);
-            if (!confirm(`Import ${selected.length} sales receipt(s) to Finance?\n\nTotal Amount: ₱${totalAmount.toFixed(2)}`)) return;
+            if (!confirm(`Import ${selected.length} sales receipt(s) to Finance?\n\nTotal Amount: â‚±${totalAmount.toFixed(2)}`)) return;
 
             this.disabled = true;
             this.textContent = 'Importing...';
@@ -2156,7 +2156,7 @@ function vat_import_tab() {
             }
 
             const totalAmount = selected.reduce((sum, cb) => sum + parseFloat(cb.dataset.amount || '0'), 0);
-            if (!confirm(`Import ${selected.length} company expense(s) to Finance?\n\nTotal Amount: ₱${totalAmount.toFixed(2)}`)) return;
+            if (!confirm(`Import ${selected.length} company expense(s) to Finance?\n\nTotal Amount: â‚±${totalAmount.toFixed(2)}`)) return;
 
             this.disabled = true;
             this.textContent = 'Importing...';
@@ -2777,7 +2777,7 @@ function vat_calculate_vat($total_amount, $vat_exempt = 0) {
 }
 
 function vat_format_currency($amount) {
-    return '₱' . number_format($amount, 2);
+    return 'â‚±' . number_format($amount, 2);
 }
 
 function vat_get_quarter($date) {
@@ -2820,4 +2820,3 @@ function vat_get_stats($year = null, $quarter = null) {
     
     return $stats;
 }
-?>
