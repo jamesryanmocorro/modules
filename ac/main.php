@@ -1,11 +1,11 @@
-<?php
+﻿<?php
 /**
  * Module Name: Accounting Module
  * Module Slug: ac
  * Description: Journal Entry, General Ledger, and Trial Balance management
  * Version: 1.0.0
  * Author: Your Name
- * Icon: 📊
+ * Icon: ðŸ“Š
  */
 
 // Prevent direct access
@@ -497,7 +497,7 @@ function ac_journal_tab($business_id) {
                         <input type="number" name="debit[]" placeholder="Debit" step="0.01" min="0" class="debit-input">
                         <input type="number" name="credit[]" placeholder="Credit" step="0.01" min="0" class="credit-input">
                         <input type="text" name="line_description[]" placeholder="Line description">
-                        <button type="button" class="bntm-btn-small bntm-btn-danger remove-line-btn" style="display:none;">×</button>
+                        <button type="button" class="bntm-btn-small bntm-btn-danger remove-line-btn" style="display:none;">Ã—</button>
                     </div>
                 </div>
                 
@@ -507,8 +507,8 @@ function ac_journal_tab($business_id) {
                 
                 <div style="margin: 15px 0; padding: 15px; background: #f9fafb; border-radius: 8px;">
                     <div style="display: flex; justify-content: space-between; font-weight: bold;">
-                        <span>Total Debit: <span id="total-debit">₱0.00</span></span>
-                        <span>Total Credit: <span id="total-credit">₱0.00</span></span>
+                        <span>Total Debit: <span id="total-debit">â‚±0.00</span></span>
+                        <span>Total Credit: <span id="total-credit">â‚±0.00</span></span>
                         <span id="balance-check" style="color: #dc2626;">Not Balanced</span>
                     </div>
                 </div>
@@ -660,12 +660,12 @@ function ac_journal_tab($business_id) {
                 totalCredit += parseFloat(input.value) || 0;
             });
             
-            document.getElementById('total-debit').textContent = '₱' + totalDebit.toFixed(2);
-            document.getElementById('total-credit').textContent = '₱' + totalCredit.toFixed(2);
+            document.getElementById('total-debit').textContent = 'â‚±' + totalDebit.toFixed(2);
+            document.getElementById('total-credit').textContent = 'â‚±' + totalCredit.toFixed(2);
             
             const balanceCheck = document.getElementById('balance-check');
             if (Math.abs(totalDebit - totalCredit) < 0.01 && totalDebit > 0) {
-                balanceCheck.textContent = 'Balanced ✓';
+                balanceCheck.textContent = 'Balanced âœ“';
                 balanceCheck.style.color = '#059669';
             } else {
                 balanceCheck.textContent = 'Not Balanced';
@@ -992,7 +992,7 @@ function ac_trial_balance_tab($business_id) {
                 <?php if (abs($total_debit - $total_credit) < 0.01): ?>
                 <tr style="background: #d1fae5;">
                     <td colspan="5" style="text-align: center; color: #065f46; font-weight: bold;">
-                        Trial Balance is Balanced ✓
+                        Trial Balance is Balanced âœ“
                     </td>
                 </tr>
                 <?php else: ?>
@@ -1314,7 +1314,7 @@ function ac_finance_sync_tab($business_id) {
                     <td><?php echo esc_html($txn->notes); ?></td>
                     <td>
                         <?php if ($txn->is_imported): ?>
-                        <span style="color: #059669;">Synced ✓</span>
+                        <span style="color: #059669;">Synced âœ“</span>
                         <?php else: ?>
                         <span style="color: #6b7280;">Not Synced</span>
                         <?php endif; ?>
@@ -2003,7 +2003,7 @@ add_action('wp_ajax_ac_sync_fn_transactions', 'bntm_ajax_ac_sync_fn_transactions
  * Format amount with currency
  */
 function ac_format_amount($amount) {
-    return '₱' . number_format($amount, 2);
+    return 'â‚±' . number_format($amount, 2);
 }
 
 /**
@@ -2276,4 +2276,3 @@ function ac_initialize_default_accounts() {
     }
 }
 
-?>
